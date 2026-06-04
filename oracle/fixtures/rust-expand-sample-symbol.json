@@ -1,0 +1,43 @@
+{
+  "scope": {
+    "id": "sample.py:calculate_total_price:1",
+    "name": "calculate_total_price",
+    "path": "examples/sample.py",
+    "language": "python",
+    "start_line": 1,
+    "end_line": 5,
+    "kind": "function_definition",
+    "parser": "tree-sitter:python",
+    "confidence": "high",
+    "fallback_action": "selected",
+    "reason": "tree-sitter parse succeeded with production adapter"
+  },
+  "compactness": "symbol",
+  "compact_code": "def f1(a, b):\n    c = 0\n    for d in a:\n        c += d.price * d.quantity\n    return c + c * b",
+  "symbol_map": {
+    "scope_id": "sample.py:calculate_total_price:1",
+    "symbols": {
+      "calculate_total_price": "f1",
+      "item": "d",
+      "items": "a",
+      "subtotal": "c",
+      "tax_rate": "b"
+    },
+    "reverse": {
+      "a": "items",
+      "b": "tax_rate",
+      "c": "subtotal",
+      "d": "item",
+      "f1": "calculate_total_price"
+    }
+  },
+  "metrics": {
+    "raw_chars": 172,
+    "compact_chars": 94,
+    "savings_pct": 45.35
+  },
+  "parser": "tree-sitter:python",
+  "confidence": "high",
+  "fallback_action": "selected",
+  "reason": "tree-sitter parse succeeded with production adapter"
+}

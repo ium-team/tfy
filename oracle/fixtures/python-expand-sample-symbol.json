@@ -1,0 +1,35 @@
+{
+  "scope": {
+    "id": "sample.py:calculate_total_price:1",
+    "name": "calculate_total_price",
+    "path": "examples/sample.py",
+    "language": "python",
+    "start_line": 1,
+    "end_line": 8,
+    "kind": "scope"
+  },
+  "compactness": "symbol",
+  "compact_code": "def f1(a, b):\n    c = 0\n    for d in a:\n        c += d.price * d.quantity\n    return c + c * b",
+  "symbol_map": {
+    "scope_id": "sample.py:calculate_total_price:1",
+    "symbols": {
+      "calculate_total_price": "f1",
+      "items": "a",
+      "tax_rate": "b",
+      "subtotal": "c",
+      "item": "d"
+    },
+    "reverse": {
+      "f1": "calculate_total_price",
+      "a": "items",
+      "b": "tax_rate",
+      "c": "subtotal",
+      "d": "item"
+    }
+  },
+  "metrics": {
+    "raw_chars": 175,
+    "compact_chars": 94,
+    "savings_pct": 46.29
+  }
+}

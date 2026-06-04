@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tfy-token-interface"
+version = "0.1.0"
+description = "TFY token-efficient AI work interface"
+requires-python = ">=3.9"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "TFY"}]
+
+[project.scripts]
+tfy = "tfy.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

@@ -1,0 +1,35 @@
+{
+  "root": "examples/sample.py",
+  "parser": "mixed",
+  "confidence": "high",
+  "fallback_action": "selected",
+  "reason": "all indexed files parsed with production adapters",
+  "scopes": [
+    {
+      "id": "sample.py:calculate_total_price:1",
+      "name": "calculate_total_price",
+      "path": "examples/sample.py",
+      "language": "python",
+      "start_line": 1,
+      "end_line": 5,
+      "kind": "function_definition",
+      "parser": "tree-sitter:python",
+      "confidence": "high",
+      "fallback_action": "selected",
+      "reason": "tree-sitter parse succeeded with production adapter"
+    },
+    {
+      "id": "sample.py:unrelated_helper:8",
+      "name": "unrelated_helper",
+      "path": "examples/sample.py",
+      "language": "python",
+      "start_line": 8,
+      "end_line": 9,
+      "kind": "function_definition",
+      "parser": "tree-sitter:python",
+      "confidence": "high",
+      "fallback_action": "selected",
+      "reason": "tree-sitter parse succeeded with production adapter"
+    }
+  ]
+}

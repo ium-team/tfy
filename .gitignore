@@ -1,0 +1,25 @@
+# Build outputs
+target/
+
+# Python caches/test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local TFY runtime/raw output state
+.tfy/
+.tfy-test-raw/
+.tfy-test-raw2/
+
+# OMX local runtime state
+.omx/
+
+# Editor/OS noise
+.DS_Store
+.idea/
+.vscode/
+
+# Python packaging metadata
+*.egg-info/

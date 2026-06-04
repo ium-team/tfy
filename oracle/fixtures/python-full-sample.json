@@ -1,0 +1,12 @@
+{
+  "scope": {
+    "id": "sample.py:calculate_total_price:1",
+    "name": "calculate_total_price",
+    "path": "examples/sample.py",
+    "language": "python",
+    "start_line": 1,
+    "end_line": 8,
+    "kind": "scope"
+  },
+  "code": "def calculate_total_price(items, tax_rate):\n    subtotal = 0\n    for item in items:\n        subtotal += item.price * item.quantity\n    return subtotal + subtotal * tax_rate\n\n\n"
+}

@@ -1,0 +1,12 @@
+{
+  "languages": [
+    "python",
+    "javascript",
+    "jsx",
+    "typescript",
+    "tsx",
+    "rust",
+    "go",
+    "c-family-experimental"
+  ]
+}

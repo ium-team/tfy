@@ -1,0 +1,23 @@
+{
+  "root": "examples/sample.py",
+  "scopes": [
+    {
+      "id": "sample.py:calculate_total_price:1",
+      "name": "calculate_total_price",
+      "path": "examples/sample.py",
+      "language": "python",
+      "start_line": 1,
+      "end_line": 8,
+      "kind": "scope"
+    },
+    {
+      "id": "sample.py:unrelated_helper:8",
+      "name": "unrelated_helper",
+      "path": "examples/sample.py",
+      "language": "python",
+      "start_line": 8,
+      "end_line": 10,
+      "kind": "scope"
+    }
+  ]
+}

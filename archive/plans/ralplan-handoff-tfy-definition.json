@@ -1,0 +1,42 @@
+{
+  "task_slug": "tfy-definition",
+  "status": "complete",
+  "planning_artifacts": {
+    "context_snapshot": ".omx/context/tfy-definition-20260604T021026Z.md",
+    "prd": ".omx/plans/prd-tfy-definition.md",
+    "test_spec": ".omx/plans/test-spec-tfy-definition.md"
+  },
+  "ralplan_architect_review": {
+    "order": 1,
+    "agent_id": "019e906b-23dd-7613-b6b0-ebd3203ac796",
+    "verdict": "APPROVE",
+    "summary": "Revised artifacts are architecturally sound. Revision 1 additions convert implicit safety assumptions into explicit testable rules without contradiction.",
+    "warnings": [
+      "Keep readable/lightly compacted bodies separated from core TFY compact contract unless intentionally supporting a second operational mode.",
+      "Define adapter proof of safety in future implementation planning.",
+      "Standardize token counting metric across benchmarks."
+    ]
+  },
+  "ralplan_critic_review": {
+    "order": 2,
+    "agent_id": "019e906c-e7ca-7de2-bf5a-4925e6fe3364",
+    "verdict": "APPROVE",
+    "summary": "Revised artifacts satisfy prior Critic iteration requirements: serious baseline alternative, map/collision rules, expansion triggers, evaluation baseline, and concrete acceptance gates.",
+    "residual_risks": [
+      "First supported language and adapter proof details remain deferred.",
+      "Success thresholds are deferred until empirical evaluation.",
+      "Expansion heuristics are policy-level, not yet algorithmic."
+    ]
+  },
+  "ralplan_consensus_gate": {
+    "complete": true,
+    "required_order": ["architect", "critic"],
+    "approving_verdicts_present": true
+  },
+  "recommended_next_steps": {
+    "default": "$ultragoal create-goals --brief-file .omx/plans/prd-tfy-definition.md",
+    "architecture_review": "$ralplan .omx/plans/prd-tfy-definition.md if a deeper implementation architecture is desired",
+    "parallel_delivery": "$team .omx/plans/prd-tfy-definition.md after ultragoal goal decomposition if multiple implementation lanes are needed",
+    "explicit_fallback": "$ralph .omx/plans/prd-tfy-definition.md only if persistent single-owner verification is intentionally selected"
+  }
+}

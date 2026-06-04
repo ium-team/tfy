@@ -1,0 +1,20 @@
+{
+  "scope": {
+    "id": "sample.py:calculate_total_price:1",
+    "name": "calculate_total_price",
+    "path": "examples/sample.py",
+    "language": "python",
+    "start_line": 1,
+    "end_line": 5,
+    "kind": "function_definition",
+    "parser": "tree-sitter:python",
+    "confidence": "high",
+    "fallback_action": "selected",
+    "reason": "tree-sitter parse succeeded with production adapter"
+  },
+  "code": "def calculate_total_price(items, tax_rate):\n    subtotal = 0\n    for item in items:\n        subtotal += item.price * item.quantity\n    return subtotal + subtotal * tax_rate",
+  "parser": "tree-sitter:python",
+  "confidence": "high",
+  "fallback_action": "selected",
+  "reason": "tree-sitter parse succeeded with production adapter"
+}
