@@ -527,3 +527,292 @@ fn rust_c_string_prefixes_are_not_symbol_renamed() {
         exp.compact_code
     );
 }
+
+#[test]
+fn rust_git_checks_not_successful_is_critical() {
+    let dir = tempfile::tempdir().unwrap();
+    let summary = summarize_command_output(
+        "gh pr checks 42",
+        "Some checks were not successful\nbuild / rust cancelled\n",
+        0,
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(summary.risk, "critical");
+    assert!(summary.summary.contains("not successful"));
+    assert!(summary.summary.contains("raw_ref="));
+}
+
+#[test]
+fn rust_git_github_url_evidence_and_command_are_redacted() {
+    let dir = tempfile::tempdir().unwrap();
+    let command = "gh api https://user:secret@github.com/repos/ium-team/tfy?access_token=secret";
+    let raw = "failed artifact https://token-user:secret@github.com/ium-team/tfy/actions/runs/99?token=secret#frag\n";
+    let summary = summarize_command_output(command, raw, 1, dir.path()).unwrap();
+    assert_eq!(summary.risk, "critical");
+    assert_eq!(
+        summary.command,
+        "gh api https://github.com/repos/ium-team/tfy"
+    );
+    assert!(summary
+        .summary
+        .contains("https://github.com/ium-team/tfy/actions/runs/99"));
+    for secret in [
+        "user:secret",
+        "token-user",
+        "access_token",
+        "?token=secret",
+        "#frag",
+    ] {
+        assert!(
+            !summary.summary.contains(secret),
+            "leaked {secret}: {}",
+            summary.summary
+        );
+        assert!(
+            !summary.command.contains(secret),
+            "leaked {secret}: {}",
+            summary.command
+        );
+    }
+    let raw_output = raw_output(dir.path(), &summary.raw_ref, None, 3).unwrap();
+    assert!(raw_output.contains("token-user:secret"));
+    assert!(raw_output.contains("?token=secret#frag"));
+}
+
+#[test]
+fn rust_git_github_malformed_url_redaction_does_not_crash() {
+    let dir = tempfile::tempdir().unwrap();
+    let command =
+        "gh api https://user:secret@github.com:bad/repos/ium-team/tfy?access_token=secret";
+    let raw = "failed artifact https://user:secret@github.com:bad/org/repo?token=secret\n";
+    let summary = summarize_command_output(command, raw, 1, dir.path()).unwrap();
+    assert_eq!(summary.risk, "critical");
+    assert!(summary
+        .command
+        .contains("https://github.com/repos/ium-team/tfy"));
+    assert!(summary.summary.contains("https://github.com/org/repo"));
+    assert!(!summary.summary.contains(":bad"));
+    assert!(!summary.summary.contains("user:secret"));
+}
+
+#[test]
+fn rust_git_status_and_data_commands_are_conservative() {
+    let dir = tempfile::tempdir().unwrap();
+    let clean = summarize_command_output(
+        "git status --branch --short",
+        "## main...origin/main\n",
+        0,
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(clean.risk, "success");
+
+    let dirty = summarize_command_output(
+        "git status --short",
+        " M docs/failed_checks.md\n",
+        0,
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(dirty.risk, "unknown");
+    assert!(dirty
+        .summary
+        .contains("status= M path=docs/failed_checks.md"));
+
+    let conflict =
+        summarize_command_output("git status --short", "UU src/app.rs\n", 0, dir.path()).unwrap();
+    assert_eq!(conflict.risk, "critical");
+    assert!(conflict.summary.contains("src/app.rs"));
+
+    let diff = summarize_command_output(
+        "git diff -- src/app.rs",
+        "diff --git a/src/app.rs b/src/app.rs\n@@ -1 +1 @@\n-error = 'not found'\n+error = 'handled'\n",
+        0,
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(diff.risk, "unknown");
+    assert!(diff.summary.contains("@@ -1 +1 @@"));
+}
+
+#[test]
+fn public_summaries_redact_urls_for_generic_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = "artifact https://user:secret@github.com/org/repo?token=secret#frag\n";
+    let summary = summarize_command_output("sh -c print-url", raw, 0, dir.path()).unwrap();
+    assert!(matches!(summary.risk.as_str(), "success" | "unknown"));
+    assert!(summary.summary.contains("https://github.com/org/repo"));
+    assert!(!summary.summary.contains("user:secret"));
+    assert!(!summary.summary.contains("?token=secret"));
+    assert_eq!(
+        raw_output(dir.path(), &summary.raw_ref, None, 1).unwrap(),
+        raw
+    );
+}
+
+#[test]
+fn public_summaries_cap_unicode_on_char_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = format!("A{}\n", "😀".repeat(100));
+    let summary = summarize_command_output("unicode", &raw, 0, dir.path()).unwrap();
+    assert_eq!(summary.risk, "unknown");
+    assert!(summary.summary.contains("line capped"));
+    assert!(summary.summary.contains("raw_ref="));
+}
+
+#[test]
+fn run_command_enforces_summary_limit_without_losing_raw_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let summary = run_command(
+        &["sh".into(), "-c".into(), "printf '%0500d' 0".into()],
+        None,
+        dir.path(),
+        160,
+    )
+    .unwrap();
+    assert!(summary.summary.len() < 240, "{}", summary.summary.len());
+    assert!(summary.summary.contains(
+        "
+…
+raw_ref="
+    ));
+    assert!(summary.summary.contains("raw_ref="));
+    let raw = raw_output(dir.path(), &summary.raw_ref, None, 1).unwrap();
+    assert!(raw.len() >= 500);
+}
+
+#[test]
+fn explicit_git_github_policy_handles_wrapped_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let summary = summarize_command_output_with_policy(
+        "sh -c gh pr checks 42",
+        "Some checks were not successful\n",
+        0,
+        dir.path(),
+        ToolPolicy::GitGithub,
+    )
+    .unwrap();
+    assert_eq!(summary.risk, "critical");
+}
+
+#[cfg(unix)]
+#[test]
+fn raw_store_uses_private_unix_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let store = RawStore::new(dir.path()).unwrap();
+    let rf = store.put("cmd", "raw", 0).unwrap();
+    let dir_mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
+    let file_mode = std::fs::metadata(dir.path().join(format!("{rf}.json")))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(dir_mode, 0o700);
+    assert_eq!(file_mode, 0o600);
+}
+
+#[test]
+fn evidence_excerpt_is_unicode_safe_around_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = format!("{}error{}\n", "😀".repeat(100), "😀".repeat(100));
+    let summary = summarize_command_output("unicode-error", &raw, 0, dir.path()).unwrap();
+    assert_eq!(summary.risk, "critical");
+    assert!(summary.summary.contains("error"));
+    assert!(summary.summary.contains("raw_ref="));
+}
+
+#[test]
+fn tiny_summary_limit_caps_body_but_preserves_raw_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let summary = run_command(
+        &["sh".into(), "-c".into(), "printf '%0500d' 0".into()],
+        None,
+        dir.path(),
+        64,
+    )
+    .unwrap();
+    assert!(summary.summary.contains(
+        "
+…
+raw_ref="
+    ));
+    assert!(summary.summary.contains("raw_ref="));
+    assert_eq!(
+        raw_output(dir.path(), &summary.raw_ref, None, 1)
+            .unwrap()
+            .len(),
+        500
+    );
+}
+
+#[test]
+fn git_diff_error_words_are_not_diagnostic_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let summary = summarize_command_output(
+        "git diff -- src/app.rs",
+        "diff --git a/src/app.rs b/src/app.rs\n@@ -1 +1 @@\n-error = 'not found'\n+error = 'handled'\n",
+        0,
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(summary.risk, "unknown");
+    assert!(summary.summary.contains("@@ -1 +1 @@"));
+    assert!(
+        !summary
+            .evidence
+            .iter()
+            .any(|line| line.contains("not found")),
+        "{:?}",
+        summary.evidence
+    );
+}
+
+#[test]
+fn generic_long_credential_url_is_redacted_before_evidence_excerpt() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = format!(
+        "{} https://user:secret@github.com/org/repo/actions/runs/{}?token=secret#frag error\n",
+        "noise".repeat(120),
+        "9".repeat(80)
+    );
+    let summary = summarize_command_output("generic-critical", &raw, 0, dir.path()).unwrap();
+    assert_eq!(summary.risk, "critical");
+    assert!(summary.summary.contains("github.com"));
+    for secret in ["user:secret", "token=secret", "#frag", ":secret@"] {
+        assert!(
+            !summary.summary.contains(secret),
+            "leaked {secret}: {}",
+            summary.summary
+        );
+        assert!(
+            !summary.evidence.iter().any(|line| line.contains(secret)),
+            "leaked {secret}: {:?}",
+            summary.evidence
+        );
+    }
+    assert!(raw_output(dir.path(), &summary.raw_ref, None, 1)
+        .unwrap()
+        .contains("user:secret"));
+}
+
+#[test]
+fn generic_success_words_do_not_hide_later_failure_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let summary =
+        summarize_command_output("wrapped-checks", "setup ok\ntoken expired\n", 0, dir.path())
+            .unwrap();
+    assert_eq!(summary.risk, "critical");
+    assert!(summary.summary.contains("token expired"));
+
+    let checks = summarize_command_output(
+        "wrapped-gh",
+        "Some checks were not successful\n",
+        0,
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(checks.risk, "critical");
+    assert!(checks.summary.contains("not successful"));
+}

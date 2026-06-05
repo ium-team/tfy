@@ -1,89 +1,80 @@
-# TFY Tool Feedback Layer
+# TFY Tool Feedback Method Family
 
-## Purpose
+This document specializes the final architecture for command, shell, test, CI, Git, GitHub, and generic tool outputs.
 
-TFY should also reduce token waste from commands and tool outputs used by AI agents.
+## Registry entries
 
-Examples:
+### Risk-aware tool feedback compression
 
-- `git status`, `git diff`, `git log`
-- test logs
-- build/typecheck logs
-- shell outputs like `find`, `grep`, `ls`, `cat`
-- generic tool calls
+- **Target:** command/tool output.
+- **Mechanism:** classify risk and emit compact summaries with raw refs.
+- **Savings:** success/no-action noise is reduced.
+- **Risk:** missed errors.
+- **Fallback:** raw/full or around-based expansion.
 
-## Core Policy
+### Tool-output fingerprinting
+
+- **Target:** repeated successful outputs.
+- **Mechanism:** send status, hash, duration, and raw ref when output is unchanged.
+- **Savings:** repeated test/build/status output becomes near-zero.
+- **Risk:** false unchanged classification.
+- **Fallback:** raw ref and changed-hash expansion.
+
+### Error clustering
+
+- **Target:** repeated diagnostics.
+- **Mechanism:** group by file, symbol, assertion, error code, stack frame, or root-cause signature.
+- **Savings:** avoids repeating duplicate failures.
+- **Risk:** grouping distinct failures together.
+- **Fallback:** representative evidence plus raw refs for every cluster.
+
+### Test/CI selective evidence
+
+- **Target:** test and CI logs.
+- **Mechanism:** compress passing noise; preserve failing test names, assertion deltas, file/line refs, job/check names, and raw refs.
+- **Savings:** large green logs shrink aggressively.
+- **Risk:** hiding flaky/slow signals.
+- **Fallback:** raw/ranged expansion.
+
+## Core policy
 
 ```text
-error/important output -> preserve evidence, compress only whitespace/repetition/noise
-success/no-action output -> compress aggressively
-all output -> keep raw original available by reference
+critical/error output -> preserve evidence + raw ref
+warning/unknown output -> conservative summary + raw ref
+success/no-action output -> aggressive summary or fingerprint + raw ref
+repeated unchanged output -> status/hash/ref only
 ```
 
-## Output Shape
-
-Example failure summary:
+## Summary shape
 
 ```json
 {
   "command": "npm test",
-  "status": "failed",
+  "exit_code": 1,
+  "risk": "critical",
   "summary": "2 tests failed, 128 passed",
-  "important": [
+  "evidence": [
     "auth.test.ts:42 expected 401, got 200",
     "token.test.ts:19 expired token accepted"
   ],
   "omitted": {
     "passing_tests": 128,
-    "progress_lines": 340
+    "duplicate_lines": 340
   },
   "raw_ref": "cmdout_001"
 }
 ```
 
-Example success summary:
+## Raw fallback
 
-```json
-{
-  "command": "npm test",
-  "status": "ok",
-  "summary": "All 130 tests passed",
-  "omitted": {
-    "full_log_lines": 900
-  },
-  "raw_ref": "cmdout_002"
-}
+```sh
+tfy raw cmdout_001
+tfy raw cmdout_001 --around auth.test.ts:42
+tfy raw cmdout_001 --around "failed check"
 ```
 
-## Raw Output Expansion
+Raw fallback is mandatory for every summarized command/tool result.
 
-AI or user can request:
+## Relationship to Git/GitHub
 
-```text
-show raw cmdout_001
-show raw cmdout_001 around auth.test.ts:42
-```
-
-TFY then provides the full output or selected raw ranges.
-
-## Risk Tiers
-
-| Tier | Policy |
-|---|---|
-| Critical/error | preserve raw evidence and line/file/error details |
-| Warning/important | preserve warning lines and nearby context |
-| Normal success | summarize strongly |
-| No signal | emit minimal status only |
-| Unknown | conservative summary + raw ref |
-
-## Relationship to Code Compression
-
-Code and command output use the same philosophy:
-
-```text
-Code:
-  names first -> selected body -> full context
-
-Command output:
-  summary first -> selected raw range -> full raw output
-```
+Git and GitHub are specialized high-frequency tool-feedback domains. `GIT_GITHUB_HARNESS.md` defines their evidence contract. That harness is a method-family specialization, not a separate product identity.

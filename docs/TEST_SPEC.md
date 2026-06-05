@@ -1,96 +1,104 @@
-# Test Spec: TFY Standalone Concept
+# TFY Test and Evaluation Specification
 
-## Code Compression Tests
+## Purpose
 
-- Build semantic index from source functions/scopes.
-- Generate compact code with short symbols.
-- Emit deterministic local symbol map.
+TFY tests validate the final whole-workflow token-saving architecture. Tests must prove not only that output is shorter, but that correctness, evidence, restoration, and fallback behavior survive compression.
+
+## Universal method tests
+
+Every registry method should have tests or evaluation evidence for:
+
+- gross token savings
+- net token savings after refs/maps/expansions/raw requests
+- fallback behavior
+- missed-needed-context failures
+- missed-evidence failures
+- local performance overhead
+- restoration/audit recovery
+- method metadata completeness
+
+## Registry metadata tests
+
+Each method entry must declare:
+
+- target artifact type
+- mechanism
+- prerequisites
+- core vs optional-adapter status
+- savings metric
+- performance cost
+- correctness/evidence risk
+- fallback trigger
+- validation gate
+
+## Code/context tests
+
+- Build semantic index and skeletons from supported source files.
+- Generate compact code with safe symbol maps.
 - Restore no-op compact roundtrip to readable source.
-- Reject ambiguous compact patches.
-- Expand selected function body on request.
-- Fall back to full context when ambiguity is high.
+- Reject ambiguous bare scopes and unmapped compact symbols.
+- Preserve Python layout/string literals where required.
+- Expand selected -> related -> full context when diagnostics require it.
+- Measure compactness against full-context baseline.
 
-## Symbol Map Tests
+## Tool feedback tests
 
-- Scope-aware maps avoid collisions.
-- Shadowed variables restore correctly.
-- Public/unsafe names are preserved or marked non-renamable.
-- Map output is deterministic across unchanged code.
+- Failed commands preserve actionable evidence.
+- Successful/no-action commands compress or fingerprint aggressively.
+- Raw output is stored and requestable by raw ref.
+- Around expansion recovers nearby evidence.
+- Unknown output uses conservative summaries.
+- Repeated unchanged output can be represented by status/hash/ref.
+- Error clustering preserves representative evidence and raw recovery.
 
-## Tool Feedback Tests
+## Git/GitHub harness tests
 
-- Failed command preserves error evidence.
-- Successful command compresses aggressively.
-- Raw output is stored and requestable.
-- Raw range expansion works around a file/line/error.
-- Unknown output uses conservative compression.
+`GIT_GITHUB_HARNESS.md` is the canonical specialized contract. Required fixture/replay classes:
 
-## Evaluation Tests
+- clean status
+- dirty status
+- diff/name-status/hunk output
+- conflict output
+- push rejection/auth failure
+- CI/check failure
+- PR requested changes/review comments
+- API/rate-limit/403/404 error
 
-Measure:
+Tests must not require live GitHub credentials, network access, or mutable remote writes unless live integration is explicitly in scope.
 
-- raw token count
-- compact token count
-- net savings after expansions
-- AI task success/failure
-- missed-needed-code failures
-- missed-command-error failures
-- fallback frequency
-- restoration success/failure
+## Provider adapter tests
 
-## Compatibility Tests
+Provider adapters are optional. Adapter tests must prove:
 
-- Run the same compact-context scenario through at least two agent/tool integration shapes, such as direct CLI protocol and editor/agent prompt wrapper.
-- Verify command-output raw refs can be expanded regardless of agent/tool frontend.
-- Verify compact patch restoration remains deterministic when the agent emits only compact symbols.
-- Verify language adapters expose a common scope index contract across different languages.
+- neutral TFY behavior works without the adapter
+- stable/volatile context bands are laid out correctly
+- provider usage metadata is captured when available
+- cache hit/miss or cached-token benefit is reported honestly
+- adapter miss/failure degrades to neutral protocol
+- no provider-specific feature is required for correctness
 
-## Release-Grade Gates
+## Security/redaction tests
 
-- Token savings are reported as net savings after maps, expansions, and raw requests.
-- Correctness degradation is measured against a baseline full-context workflow.
-- Any missed-needed-code or missed-command-error failure is classified and used to tune fallback policy.
-- Full raw command output and full code context remain recoverable for audit/debug.
-- Documentation clearly distinguishes TFY from RTK while preserving RTK-derived lessons for tool feedback.
+- Secrets, long tokens, and sensitive blobs can be replaced with local refs.
+- Redacted values can be recovered locally only when authorized.
+- Redaction does not corrupt evidence or restoration.
+- False positives/negatives are classified.
 
-## Pass/Fail Criteria
+## Release gates
 
-These thresholds are initial release gates and can be tightened after benchmark data exists.
+A release-ready method passes only when:
 
-### Token Savings
+- net token savings is positive for at least one target workflow class
+- compact workflow quality matches full-context baseline within tolerance
+- raw/full fallback works for high-risk cases
+- every missed-needed-context or missed-evidence failure is classified
+- local overhead is acceptable
+- documentation states implementation status truthfully
 
-- **Pass:** median net token savings is positive after maps, expansions, and raw requests.
-- **Pass:** at least one evaluated workflow class reaches meaningful savings without correctness regression.
-- **Fail:** apparent savings disappear after required expansions/raw requests.
+## Documentation consistency tests
 
-### Correctness Degradation
-
-- **Pass:** compact workflows complete the same benchmark tasks as the full-context baseline within the configured tolerance.
-- **Fail:** compact mode causes repeated task failures that full-context baseline does not show.
-- **Fail:** any correctness regression is left unclassified.
-
-### Restoration
-
-- **Pass:** no-op compact roundtrip restores byte-equivalent or formatter-equivalent readable code.
-- **Pass:** restored patches parse successfully for languages with parser support.
-- **Fail:** any unmapped, collision-prone, or ambiguous symbol is accepted instead of rejected.
-- **Fail:** restored output changes public/unsafe/non-renamable identifiers without explicit policy.
-
-### Missing Needed Code
-
-- **Pass:** every missed-needed-code case is classified with a fallback-policy update or explicit known limitation.
-- **Fail:** any unclassified missed-needed-code failure remains before release.
-
-### Missed Command Error
-
-- **Pass:** non-zero exits, stderr, stack traces, compiler diagnostics, and test failures preserve actionable evidence in compact output.
-- **Pass:** raw output is available by `raw_ref` for every summarized command/tool result.
-- **Fail:** any unclassified missed-command-error failure remains before release.
-
-## RTK Reference Tests
-
-When comparing with RTK-like behavior:
-
-- verify TFY can match or learn from command-output compression patterns
-- verify TFY remains broader than command-output filtering
-- compare raw-output recovery policies
+- Docs describe the final architecture directly, not 1st/2nd/3rd phases.
+- README and all public docs under `docs/*.md` align with the method registry.
+- Provider/model cache behavior is optional adapter behavior.
+- No public doc frames TFY as only a code minifier, only an RTK-style command-output filter, or a phased MVP.
+- Specialized docs link back to canonical architecture.

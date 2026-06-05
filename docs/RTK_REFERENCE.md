@@ -1,59 +1,46 @@
 # RTK Reference Notes for TFY
 
-## Why RTK Matters
+## Supersession note
 
-RTK is a useful reference for TFY's tool feedback layer because it already focuses on reducing LLM token consumption from command outputs.
+This is a reference document, not the TFY product definition. The canonical architecture is `TOKEN_SAVING_ARCHITECTURE.md`.
 
-Observed RTK concepts worth learning from:
+## Why RTK matters
+
+RTK is useful evidence for one TFY method family: command/tool feedback compression. It demonstrates patterns that reduce LLM token waste from command output.
+
+Useful RTK-like lessons:
 
 - command proxying
-- hook-based command rewriting
-- command-specific filters
-- TOML filters
+- command-family filters
 - raw output tee/recovery
 - token savings tracking
-- error-only and test-failure-only wrappers
+- error-preserving summaries
 - success/noise compression
 
-## What TFY Should Not Copy Blindly
+## Boundary
 
-TFY should not become only an RTK clone.
-
-RTK primarily does:
+RTK primarily optimizes:
 
 ```text
 command output -> compact command output
 ```
 
-TFY should do:
+TFY optimizes:
 
 ```text
-AI work context -> token-efficient AI interface
+whole AI coding workflow -> token-efficient, recoverable, evaluated representations
 ```
 
-That includes code representation, semantic name maps, on-demand code expansion, command feedback compression, raw fallback, and readable restoration.
+That includes code, docs, task state, command feedback, CI/Git/GitHub evidence, patches, provider context, refs, deltas, restoration, and evaluation gates.
 
-## RTK-Inspired TFY Tool Feedback
+## How TFY should use RTK lessons
 
-TFY should learn these patterns:
+RTK-inspired behavior belongs in the tool feedback registry entries:
 
-1. **Preserve errors**
-   - Do not hide diagnostic lines.
-   - Keep file/line/symbol/exit code.
+- preserve errors and diagnostic evidence
+- compress success/no-action output
+- keep raw refs
+- measure savings and missed signals
+- use command-family policies
 
-2. **Compress success**
-   - Passing tests and normal progress logs can be heavily summarized.
-
-3. **Keep raw refs**
-   - Store original output and allow on-demand raw expansion.
-
-4. **Measure savings**
-   - Compare raw vs compressed output.
-   - Track whether compression caused missed signals.
-
-5. **Use command families**
-   - git/test/build/shell output need different policies.
-
-## Independence Statement
-
-RTK is a reference and benchmark. TFY is a separate product concept with its own architecture and identity.
+RTK should never narrow TFY into a command-output-only product.

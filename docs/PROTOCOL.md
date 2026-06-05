@@ -1,34 +1,57 @@
 # TFY Agent-Neutral Protocol
 
-TFY is exposed as a CLI so any AI agent, shell wrapper, editor integration, or tool runner can call it without depending on one vendor-specific agent format.
+TFY exposes an agent-neutral protocol so any AI agent, editor, shell wrapper, or orchestration layer can use the same token-saving service.
 
-## Commands
+## Current implemented CLI surface
 
-- `tfy index <path>`: returns semantic scope names first.
-- `tfy expand <path> <scope-id-or-unique-name> [--compactness light|symbol]`: returns selected compact body, local symbol map, and token/char metrics. Duplicate bare names are rejected; use the scope `id` from `tfy index` when ambiguous.
-- `tfy full <path> <scope>`: returns full source for fallback.
-- `tfy decide-context`: reads payload JSON and returns `selected`, `related`, or `full`.
-- `tfy restore`: reads compact payload JSON and deterministically restores readable code.
-- `tfy run -- <command...>`: executes a command and prints risk-aware compact feedback.
-- `tfy raw <raw_ref>`: returns full or ranged raw command output.
-- `tfy languages`: lists language adapters.
+- `tfy index <path>` — semantic scope names first.
+- `tfy expand <path> <scope> [--compactness light|symbol]` — selected compact body, map, metrics.
+- `tfy full <path> <scope>` — full source fallback.
+- `tfy decide-context` — selected/related/full fallback decision from payload and diagnostics.
+- `tfy restore` — deterministic readable restoration from compact payload.
+- `tfy run -- <command...>` — risk-aware compact command feedback.
+- `tfy raw <raw_ref>` — full or ranged raw command output.
+- `tfy eval-code <path> <scope>` — raw vs compact token estimate and quality gate placeholder.
+- `tfy languages` — language adapters.
 
-## Agent Contract
+## Final protocol capabilities
 
-1. Ask `index` before requesting full code.
-2. Use `expand` for selected scopes; if a name is ambiguous, retry with the exact scope `id`.
-3. If diagnostics or unmapped compact symbols appear, call `decide-context` and then `full` if needed.
-4. Emit compact patches only with the symbol map that TFY provided.
-5. Use `restore` before presenting code to humans or writing project-ready output. Restoration is token-aware for Python and rejects unmapped compact symbols instead of guessing.
-6. Use `run` for bounded command feedback and `raw` when the summary is insufficient. Raw refs are validated, append-only records.
+The final architecture extends the protocol around registry methods:
 
-All data-bearing commands return JSON except `run` compact summaries and `raw` raw text recovery. `expand` payloads include `compactness` so `restore` can keep strict unmapped-symbol checks for `symbol` mode while treating `light` mode as symbol-free source normalization.
+- `registry` — list available token-saving methods and their gates.
+- `ref put/get` — content-addressed artifact references for stable/repeated artifacts; command raw refs remain opaque append-only evidence handles.
+- `delta` — changed-artifact views since a known snapshot.
+- `skeleton` — semantic structure without full bodies.
+- `budget` — choose cheapest sufficient representation for a token budget.
+- `ledger` — compact task/conversation state.
+- `adapter` — optional provider/model layout and usage accounting.
 
-## Hardened Contracts
+Names may change during implementation, but the concepts are part of the first public architecture.
 
-- Scope names are presentation hints; exact scope IDs are the selection contract when duplicate names exist.
-- Python compaction preserves indentation/newlines and string literal contents; symbol shortening provides savings without flattening Python blocks.
-- Non-Python compaction/restoration preserves string and template literal contents instead of formatting inside them.
-- Compact symbol restoration does not rewrite Python string literals/comments or attribute names.
-- Raw output references are validated and include unique append-only identity material to avoid overwriting prior evidence.
-- Evaluation reports token savings and a quality gate; savings alone is not a release gate.
+## Agent contract
+
+1. Start with registry/index/skeleton before requesting full context.
+2. Use selected compact views only with TFY-provided maps/refs.
+3. Expand related/full/raw context when diagnostics, ambiguity, or risk appears.
+4. Emit patch/edit-script outputs when possible; use restoration before human/project output.
+5. Preserve raw refs for command, CI, Git/GitHub, security, and review evidence.
+6. Treat provider adapters as optional optimizations; the neutral protocol remains sufficient.
+7. Do not claim token savings without evaluation-gate evidence.
+
+## Data contract
+
+Machine payloads may use compact schema dictionaries for token efficiency. Every compact schema must have:
+
+- schema version
+- human-readable debug form
+- stable field mapping
+- compatibility/fallback behavior
+
+## Hardened contracts
+
+- Scope IDs, not display names, are the durable selection contract.
+- Command raw refs are validated, append-only, opaque evidence handles; they are not a stable content-addressing contract.
+- Python layout/string literals are preserved when needed for correctness.
+- Non-Python compaction preserves strings/template literals.
+- Restoration rejects unmapped compact symbols.
+- Provider adapter usage must report hit/miss/usage evidence when available.

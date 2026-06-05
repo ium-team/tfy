@@ -1,41 +1,74 @@
 # TFY Production Stack
 
-TFY's Python implementation is the reference prototype. The production implementation is now prepared as a Rust-first workspace.
+## Purpose
 
-## Final stack
+This document maps the final token-saving architecture to the Rust-only implementation surface for the first releasable version.
+
+## Target stack
+
+The product/runtime target is **Rust-only**:
 
 - Core: Rust (`crates/tfy-core`)
-- Parser: Tree-sitter grammars
-- CLI: Rust binary (`crates/tfy-cli`, binary name `tfy`)
-- Python binding scaffold: PyO3/maturin (`bindings/tfy-python`)
-- Node/Wasm: deferred until Rust CLI/core parity is stable
+- CLI: Rust binary (`crates/tfy-cli`, `tfy`)
+- Parsers: Tree-sitter grammars where available
+- Tool feedback policy: Rust policy objects under the core crate
+- Evaluation and benchmarks: Rust tests plus `criterion`
+- Optional provider/model adapters: Rust adapter crates or external integrations, never correctness dependencies
+
+Python is **not** a product/runtime stack. The former Python product surfaces (`src/tfy`, root `pyproject.toml`, Python tests, `bindings/tfy-python`, `pyo3`, and `uv.lock`) have been removed from the release path. Python remains only a supported source-code language for analysis fixtures through tree-sitter.
+
+## Required architecture primitives
+
+The production core should support:
+
+- token-saving method registry
+- representation ladder and adaptive retrieval policy
+- artifact/ref store
+- parser-backed semantic skeletons
+- compact code and restoration contracts
+- raw command-output store and range expansion
+- incremental/delta state model
+- compact schema dictionaries
+- task/conversation ledger compaction
+- provider adapter interface
+- evaluation gate reporting
 
 ## Production invariants
 
-- CLI-first JSON protocol remains the canonical agent-neutral surface.
-- Parser-backed responses include `parser`, `confidence`, `fallback_action`, and `reason`.
-- First-wave production adapters are Python, JavaScript, JSX, TypeScript, TSX, Rust, and Go.
-- C-family remains experimental until corpus/confidence gates are met.
-- Python prototype fixtures under `oracle/fixtures/` are migration oracles, not a permanent runtime dependency.
-- Bindings call Rust core and do not duplicate transformation logic.
+- CLI-first JSON/text protocol remains canonical.
+- Core behavior remains agent-neutral.
+- Optional adapters cannot be required for correctness.
+- Parser-backed responses include confidence, parser identity, and fallback action.
+- Raw/full fallback is always available for high-risk artifacts.
+- Public summaries redact secrets; original command/output evidence remains local behind raw refs.
+- Current implementation status must be reported honestly.
 
-## Rust commands
+## Current Rust smoke commands
 
 ```sh
 cargo run -p tfy-cli -- languages
-cargo run -p tfy-cli -- index examples/sample.py
-cargo run -p tfy-cli -- expand examples/sample.py sample.py:calculate_total_price:1 --compactness symbol
+cargo run -p tfy-cli -- index corpus/rust/fixture_01.rs
+cargo run -p tfy-cli -- expand corpus/rust/fixture_01.rs fixture_01.rs:calculate_discount_1:5 --compactness symbol
 cargo run -p tfy-cli -- restore --payload payload.json
-cargo run -p tfy-cli -- run -- python3 -c 'print("ok")'
+cargo run -p tfy-cli -- run -- sh -c 'printf ok'
 cargo run -p tfy-cli -- raw <raw_ref>
-cargo run -p tfy-cli -- eval-code examples/sample.py sample.py:calculate_total_price:1
+cargo run -p tfy-cli -- eval-code corpus/rust/fixture_01.rs fixture_01.rs:calculate_discount_1:5
+cargo test --quiet
 ```
 
-## Verification
+## Retired Python product artifacts
 
-```sh
-cargo test --workspace
-cargo check --workspace
-cargo bench -p tfy-core --bench core_bench
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-```
+The Rust-only implementation removed the former Python product/runtime surfaces from the release path:
+
+- `src/tfy/*`
+- `tests/*.py`
+- root `pyproject.toml`
+- `uv.lock`
+- `bindings/tfy-python`
+- `pyo3` workspace dependency
+
+Do not reintroduce Python as a product/runtime dependency without a new explicit compatibility decision.
+
+## Release readiness
+
+A production surface is release-ready only when `EVALUATION_GATES.md` passes for its method families. Token savings without correctness/evidence gates are not sufficient.
