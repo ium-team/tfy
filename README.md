@@ -110,6 +110,9 @@ cd tfy
 cargo run -p tfy-cli -- languages
 cargo run -p tfy-cli -- index corpus/rust/fixture_01.rs
 cargo run -p tfy-cli -- tool-gateway -- sh -c 'printf ok'
+cargo run -p tfy-cli -- tool-gateway --json -- sh -c 'printf ok'
+cargo run -p tfy-cli -- shell --json -- sh -c 'printf ok'
+cargo run -p tfy-cli -- runtime-capabilities
 cargo test --quiet
 ```
 
@@ -128,7 +131,7 @@ AI agent/runtime
 
 Current implementation status:
 
-- Implemented: Rust core primitives, Rust CLI, Tool Gateway entrypoint over command execution, raw refs, redaction, code index/expand/full/restore, evaluation.
-- Planned adapters: automatic shell/MCP/Codex/provider integration for context injection, structured output restoration/apply, and event-fed state ledger.
+- Implemented: Rust core primitives, Rust CLI, `tfy-runtime` envelope/capability/event contract, Tool Gateway text/JSON/JSONL entrypoint, shell wrapper, Context Gateway CLI, Output Gateway preview/validate CLI, State Gateway append/project CLI, raw refs, redaction, code index/expand/full/restore, evaluation.
+- Planned adapters: Codex/MCP/editor/provider automatic hook integrations and Output Gateway workspace apply beyond preview/validate.
 
 TFY should not claim automatic model input/output interception for a runtime until that runtime adapter exists and passes the relevant gates.

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tfy-core", "crates/tfy-cli"]
+members = ["crates/tfy-core", "crates/tfy-runtime", "crates/tfy-cli"]
 resolver = "2"
 
 [workspace.package]

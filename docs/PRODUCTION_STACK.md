@@ -85,3 +85,20 @@ TFY's production integration model is AI-agent I/O middleware. The Rust core own
 - State Gateway ledger — event-fed compact task state from all gateways.
 
 Provider, Codex, MCP, shell, and editor integrations remain adapters around the Rust core.
+
+## Implemented runtime-interception foundation
+
+The production stack now includes `tfy-runtime`, a Rust runtime contract crate that defines versioned envelopes, adapter capabilities, negotiation, gateway events, provenance refs, validation status, and state projection primitives.
+
+Implemented binaries/surfaces:
+
+- `tfy runtime-capabilities`
+- `tfy runtime-negotiate`
+- `tfy tool-gateway --json|--jsonl`
+- `tfy shell --json|--jsonl`
+- `tfy context-gateway`
+- `tfy output-gateway` preview/validate
+- `tfy state-append`
+- `tfy state-project`
+
+Release boundary: local shell/tool/context/output/state gateway foundations are implemented. Codex, MCP, editor, and provider adapters are still separate integration packages to build and test before claiming automatic interception for those runtimes.

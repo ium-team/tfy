@@ -120,3 +120,24 @@ Tool Gateway gates:
 - Unicode and tiny summary caps do not panic and preserve raw_ref.
 
 Future Context/Output/State Gateway gates are defined in the ralplan handoff and should become executable tests when those adapters are implemented.
+
+## Runtime-interception foundation tests
+
+Implemented test coverage now includes:
+
+- `tfy-runtime` envelope round-trip and required field validation.
+- Capability negotiation acceptance and neutral-degrade/fail-closed cases.
+- State projection non-authoritative fallback when lineage/validation is missing.
+- `tfy tool-gateway --jsonl` structured event + response output.
+- `tfy shell --json` shell-adapter wrapper output.
+- `tfy state-project` compact ledger projection.
+- `tfy context-gateway` runtime envelope for compact context.
+- `tfy output-gateway` preview/validate envelope for structured compact code.
+
+Remaining adapter tests before stronger claims:
+
+- Codex hook interception e2e.
+- MCP proxy/resource e2e.
+- Editor file/context adapter e2e.
+- Provider cache/layout hit/miss/accounting e2e.
+- Output Gateway workspace apply with explicit authority/provenance gates.

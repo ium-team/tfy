@@ -63,8 +63,37 @@ Machine payloads may use compact schema dictionaries for token efficiency. Every
 The CLI is both a manual debug surface and the contract used by adapters. Production usage should prefer gateway names where available:
 
 - Tool Gateway: `tfy tool-gateway -- <ordinary command>` wraps command execution and returns compact summary plus raw_ref.
-- Context Gateway: planned runtime API over `index`, `expand`, `full`, and `decide-context`.
-- Output Gateway: planned structured restore/apply API over `restore`; first release is apply-ready payloads only.
-- State Gateway: planned ledger/ref API fed by Tool, Context, and Output gateway events.
+- Context Gateway: `tfy context-gateway` runtime envelope over `index`, `expand`, `full`, and `decide-context`; automatic external hooks remain adapter work.
+- Output Gateway: `tfy output-gateway` structured preview/validate API over `restore`; workspace apply remains behind future authority/provenance gates.
+- State Gateway: `tfy state-append` / `tfy state-project` ledger/ref API fed by gateway events.
 
-Do not overclaim automatic interception: today only the Rust CLI/core primitives and Tool Gateway CLI entrypoint exist. Runtime-specific automatic hooks are adapters.
+Do not overclaim automatic interception: today the Rust CLI/core primitives, `tfy-runtime`, local Tool/Shell/Context/Output-preview/State gateway surfaces exist. Runtime-specific Codex/MCP/editor/provider automatic hooks are adapters.
+
+## Runtime envelope protocol
+
+Full agent-runtime interception uses the `tfy-runtime` crate. Every runtime-facing request, response, and event is wrapped in `RuntimeEnvelope<T>` with:
+
+- `protocol_version`
+- `adapter_kind` and `adapter_version`
+- `supported_gateways`
+- `authority_mode`
+- `session_id`, `request_id`, `trace_id`, optional `turn_id`, optional `parent_event_id`
+- `provenance`
+- `policy`
+- gateway-specific `payload`
+
+Current runtime-facing CLI surfaces:
+
+```sh
+tfy runtime-capabilities
+tfy runtime-negotiate --gateway tool --output-mode json
+tfy tool-gateway --json -- <command...>
+tfy tool-gateway --jsonl -- <command...>
+tfy shell --json -- <command...>
+tfy context-gateway <path> <scope> [--diagnostics ...]
+tfy output-gateway --payload payload.json
+tfy state-append --payload event.json
+tfy state-project
+```
+
+`tfy shell` is the local shell-adapter wrapper. It does not magically modify a third-party runtime by itself; a runtime must configure its command execution path to call this wrapper. Codex/MCP/provider automatic hooks remain adapter-specific follow-up work until their integration tests exist.

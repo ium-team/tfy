@@ -31,9 +31,9 @@ The representation ladder and method registry remain TFY's internal architecture
 | Boundary | Uses registry methods to save tokens at | Primary primitives | Status |
 |---|---|---|---|
 | Tool Gateway | command/tool output returned to the agent | `tool-gateway`, `run`, `raw`, raw refs, tool policy | Tool Gateway CLI entrypoint implemented |
-| Context Gateway | model input context before reasoning | `index`, `expand`, `full`, `decide-context` | core primitives implemented; adapter planned |
-| Output Gateway | model output before file application/human display | `restore`, future patch/apply API | restore primitive implemented; structured gateway planned |
-| State Gateway | long-running task/conversation state between turns | future ledger/ref API, raw refs | schema-first planned |
+| Context Gateway | model input context before reasoning | `context-gateway`, `index`, `expand`, `full`, `decide-context` | runtime CLI implemented; external hooks planned |
+| Output Gateway | model output before file application/human display | `output-gateway`, `restore`, future explicit apply API | preview/validate CLI implemented; workspace apply planned |
+| State Gateway | long-running task/conversation state between turns | `state-append`, `state-project`, raw refs | event ledger/projection CLI implemented |
 
 Gateways must route back to registry methods and their validation gates; they are not a second product taxonomy.
 
@@ -133,3 +133,16 @@ A method is release-ready only when it reports:
 4. missed-needed-context and missed-evidence failures
 5. local performance overhead
 6. recovery path for low-confidence or high-risk cases
+
+## Automatic interception foundation methods
+
+The full-agent-runtime foundation adds method families that operate at runtime boundaries:
+
+| Method family | Boundary | Implemented surface | Savings mechanism | Fallback/correctness guard |
+|---|---|---|---|---|
+| Runtime envelope refs | all gateways | `tfy-runtime` | carry refs/provenance instead of repeated raw payloads | version/capability validation and fallback reasons |
+| Structured tool events | Tool/State | `tool-gateway --jsonl`, `state-project` | compact command summaries plus event ledger | raw_ref and source event ids |
+| Shell wrapper | Tool | `tfy shell` | command output compression without changing agent shell intent | exit code, raw_ref, redaction |
+| Context runtime envelope | Context | `context-gateway` | selected compact scope before full context | diagnostics-aware full/related fallback |
+| Output preview/validate | Output | `output-gateway` | compact code restored before model-visible/apply path | unmapped/stale/missing-provenance rejection |
+| Event-fed state projection | State | `state-append`, `state-project` | compact task state instead of raw transcript slices | non-authoritative state when lineage/validation is absent |
