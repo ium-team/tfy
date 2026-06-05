@@ -41,6 +41,15 @@ enum Cmd {
         #[arg(trailing_var_arg = true)]
         command: Vec<String>,
     },
+    /// Tool Gateway entrypoint for agent runtimes that proxy ordinary commands through TFY.
+    ToolGateway {
+        #[arg(long, default_value = ".tfy/raw")]
+        raw_dir: PathBuf,
+        #[arg(long, default_value_t = 1_000_000)]
+        max_output_bytes: usize,
+        #[arg(trailing_var_arg = true)]
+        command: Vec<String>,
+    },
     Raw {
         raw_ref: String,
         #[arg(long, default_value = ".tfy/raw")]
@@ -98,15 +107,13 @@ fn main() -> Result<()> {
         Cmd::Run {
             raw_dir,
             max_output_bytes,
-            mut command,
-        } => {
-            if command.first().map(|s| s == "--").unwrap_or(false) {
-                command.remove(0);
-            }
-            let s = run_command(&command, None, raw_dir, max_output_bytes)?;
-            print!("{}", s.summary);
-            std::process::exit(s.exit_code);
+            command,
         }
+        | Cmd::ToolGateway {
+            raw_dir,
+            max_output_bytes,
+            command,
+        } => execute_tool_gateway(command, raw_dir, max_output_bytes)?,
         Cmd::Raw {
             raw_ref,
             raw_dir,
@@ -131,6 +138,19 @@ fn main() -> Result<()> {
     }
     Ok(())
 }
+fn execute_tool_gateway(
+    mut command: Vec<String>,
+    raw_dir: PathBuf,
+    max_output_bytes: usize,
+) -> Result<()> {
+    if command.first().map(|s| s == "--").unwrap_or(false) {
+        command.remove(0);
+    }
+    let summary = run_command(&command, None, raw_dir, max_output_bytes)?;
+    print!("{}", summary.summary);
+    std::process::exit(summary.exit_code);
+}
+
 fn read_payload(path: Option<PathBuf>) -> Result<String> {
     Ok(if let Some(p) = path {
         std::fs::read_to_string(p)?

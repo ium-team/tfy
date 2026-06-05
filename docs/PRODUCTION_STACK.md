@@ -10,6 +10,7 @@ The product/runtime target is **Rust-only**:
 
 - Core: Rust (`crates/tfy-core`)
 - CLI: Rust binary (`crates/tfy-cli`, `tfy`)
+- Tool Gateway: Rust CLI entrypoint (`tfy tool-gateway -- <command>`) over the existing command-output core
 - Parsers: Tree-sitter grammars where available
 - Tool feedback policy: Rust policy objects under the core crate
 - Evaluation and benchmarks: Rust tests plus `criterion`
@@ -50,7 +51,7 @@ cargo run -p tfy-cli -- languages
 cargo run -p tfy-cli -- index corpus/rust/fixture_01.rs
 cargo run -p tfy-cli -- expand corpus/rust/fixture_01.rs fixture_01.rs:calculate_discount_1:5 --compactness symbol
 cargo run -p tfy-cli -- restore --payload payload.json
-cargo run -p tfy-cli -- run -- sh -c 'printf ok'
+cargo run -p tfy-cli -- tool-gateway -- sh -c 'printf ok'
 cargo run -p tfy-cli -- raw <raw_ref>
 cargo run -p tfy-cli -- eval-code corpus/rust/fixture_01.rs fixture_01.rs:calculate_discount_1:5
 cargo test --quiet
@@ -72,3 +73,15 @@ Do not reintroduce Python as a product/runtime dependency without a new explicit
 ## Release readiness
 
 A production surface is release-ready only when `EVALUATION_GATES.md` passes for its method families. Token savings without correctness/evidence gates are not sufficient.
+
+
+## Agent middleware stack direction
+
+TFY's production integration model is AI-agent I/O middleware. The Rust core owns correctness; adapters automate invocation for specific runtimes. Planned integration surfaces:
+
+- Tool Gateway shell/tool proxy — first implementation target and now exposed as `tfy tool-gateway`.
+- Context Gateway adapter — routes repo/file requests through index/expand/full/decide primitives.
+- Output Gateway adapter — restores and validates structured compact patches/code before apply.
+- State Gateway ledger — event-fed compact task state from all gateways.
+
+Provider, Codex, MCP, shell, and editor integrations remain adapters around the Rust core.

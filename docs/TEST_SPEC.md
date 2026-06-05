@@ -102,3 +102,21 @@ A release-ready method passes only when:
 - Provider/model cache behavior is optional adapter behavior.
 - No public doc frames TFY as only a code minifier, only an RTK-style command-output filter, or a phased MVP.
 - Specialized docs link back to canonical architecture.
+
+
+## Agent middleware tests
+
+Documentation gates:
+
+- Docs must not imply automatic model input/output interception is implemented before a runtime adapter exists.
+- Docs must include a gateway-to-registry crosswalk.
+- Docs must preserve the Rust-only runtime invariant.
+
+Tool Gateway gates:
+
+- `tfy tool-gateway -- sh -c 'printf ok'` emits a compact summary and raw_ref.
+- Non-zero exits preserve exit status and critical evidence.
+- Credential-bearing URLs are redacted publicly and preserved only behind raw_ref.
+- Unicode and tiny summary caps do not panic and preserve raw_ref.
+
+Future Context/Output/State Gateway gates are defined in the ralplan handoff and should become executable tests when those adapters are implemented.

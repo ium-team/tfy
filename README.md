@@ -1,6 +1,6 @@
 # TFY — Whole-Workflow Token-Saving Service for AI Coding
 
-TFY is a token-saving service for the full AI coding workflow. It reduces tokens across code context, project context, tool feedback, patches, conversation state, repeated provider prompts, and audit/fallback flows while preserving correctness and recoverability.
+TFY is a token-saving service for the full AI coding workflow. Its intended product use is as AI-agent I/O middleware: an agent runtime routes command execution, context injection, model outputs, and task state through TFY so the model sees compact, recoverable representations while raw/full evidence remains available.
 
 TFY is not a phased MVP, not a code minifier, and not an RTK clone. The first public shape is the final product architecture: an extensible method registry plus an agent-neutral protocol that can absorb new token-saving methods as they are discovered.
 
@@ -27,14 +27,15 @@ Core invariants:
 
 ## Final architecture
 
-TFY is organized around six release concepts:
+TFY is organized around seven release concepts:
 
 1. **Representation ladder** — raw/full, summary, semantic skeleton, selected compact detail, hash/ref, delta, and optional provider-adapter view.
 2. **Token-saving method registry** — each method declares target artifact, savings mechanism, performance cost, correctness risk, fallback trigger, and evaluation metric.
 3. **Artifact/ref store** — files, scopes, command outputs, summaries, task ledgers, and provider layouts can be referenced by stable IDs instead of repeated in full.
 4. **Adaptive retrieval and compactness policy** — choose skeleton, summary, compact body, related context, full file, or raw output based on task risk and budget.
-5. **Agent-neutral protocol** — any agent can use `tfy index`, `expand`, `run`, `raw`, `restore`, and future registry/ref/delta commands.
-6. **Evaluation gates** — every saving claim is measured as net token savings plus correctness, fallback frequency, missed-evidence risk, and performance overhead.
+5. **Agent I/O middleware boundaries** — Tool, Context, Output, and State Gateways define where TFY sits between an agent runtime, tools, model context, model output, and long-running task state.
+6. **Agent-neutral protocol** — CLI/JSON primitives remain the debug and adapter contract: `tfy tool-gateway`, `index`, `expand`, `run`, `raw`, `restore`, and future registry/ref/delta commands.
+7. **Evaluation gates** — every saving claim is measured as net token savings plus correctness, fallback frequency, missed-evidence risk, and performance overhead.
 
 ## Current method families
 
@@ -81,6 +82,7 @@ Canonical docs:
 - `docs/TOKEN_SAVING_ARCHITECTURE.md` — final architecture, representation ladder, and method registry schema.
 - `docs/PRD.md` — product requirements for the release-ready architecture.
 - `docs/PROTOCOL.md` — agent-neutral protocol contract.
+- `docs/AGENT_MIDDLEWARE.md` — Tool/Context/Output/State Gateway integration model for AI-agent runtimes.
 - `docs/EVALUATION_GATES.md` — net savings, correctness, fallback, and performance gates.
 - `docs/ADAPTERS.md` — optional provider/model adapter policy.
 
@@ -107,6 +109,26 @@ Rust smoke commands:
 cd tfy
 cargo run -p tfy-cli -- languages
 cargo run -p tfy-cli -- index corpus/rust/fixture_01.rs
-cargo run -p tfy-cli -- run -- sh -c 'printf ok'
+cargo run -p tfy-cli -- tool-gateway -- sh -c 'printf ok'
 cargo test --quiet
 ```
+
+
+## How TFY participates in an AI-agent loop
+
+Humans can run the CLI directly, but the intended path is automatic runtime use:
+
+```text
+AI agent/runtime
+  -> Tool Gateway: ordinary command -> tfy tool-gateway -- <command> -> summary + raw_ref
+  -> Context Gateway: repo/file request -> index/expand/full/decide -> compact context + fallback refs
+  -> Output Gateway: compact patch/code -> restore/validate -> apply-ready output or fallback request
+  -> State Gateway: turn history/tool evidence -> compact task ledger + refs
+```
+
+Current implementation status:
+
+- Implemented: Rust core primitives, Rust CLI, Tool Gateway entrypoint over command execution, raw refs, redaction, code index/expand/full/restore, evaluation.
+- Planned adapters: automatic shell/MCP/Codex/provider integration for context injection, structured output restoration/apply, and event-fed state ledger.
+
+TFY should not claim automatic model input/output interception for a runtime until that runtime adapter exists and passes the relevant gates.

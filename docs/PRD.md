@@ -117,3 +117,21 @@ Adopt the final whole-workflow token-saving architecture with an extensible meth
 - Docs and future code should organize around the registry schema.
 - Specialized docs stay useful but must not redefine TFY narrowly.
 - Future implementation planning can derive work from registry entries and evaluation gates.
+
+
+## Agent middleware requirements
+
+TFY is primarily consumed by AI-agent runtimes. Public docs and future implementation must distinguish:
+
+- implemented Rust CLI/core primitives,
+- implemented Tool Gateway CLI entrypoint,
+- planned automatic runtime adapters.
+
+Required gateway boundaries:
+
+1. Tool Gateway — ordinary command execution is proxied through TFY and returns compact summary plus raw_ref.
+2. Context Gateway — runtime context requests choose skeleton/compact/related/full representations.
+3. Output Gateway — structured compact code/patch outputs are restored and validated before apply.
+4. State Gateway — task/conversation state is compacted into an event-fed ledger.
+
+The representation ladder and method registry remain the internal source of truth; gateways are integration boundaries.

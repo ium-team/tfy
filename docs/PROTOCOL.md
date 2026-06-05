@@ -9,7 +9,8 @@ TFY exposes an agent-neutral protocol so any AI agent, editor, shell wrapper, or
 - `tfy full <path> <scope>` — full source fallback.
 - `tfy decide-context` — selected/related/full fallback decision from payload and diagnostics.
 - `tfy restore` — deterministic readable restoration from compact payload.
-- `tfy run -- <command...>` — risk-aware compact command feedback.
+- `tfy tool-gateway -- <command...>` — runtime-facing Tool Gateway entrypoint for command interception.
+- `tfy run -- <command...>` — compatibility/debug spelling for risk-aware compact command feedback.
 - `tfy raw <raw_ref>` — full or ranged raw command output.
 - `tfy eval-code <path> <scope>` — raw vs compact token estimate and quality gate placeholder.
 - `tfy languages` — language adapters.
@@ -55,3 +56,15 @@ Machine payloads may use compact schema dictionaries for token efficiency. Every
 - Non-Python compaction preserves strings/template literals.
 - Restoration rejects unmapped compact symbols.
 - Provider adapter usage must report hit/miss/usage evidence when available.
+
+
+## Middleware protocol boundary
+
+The CLI is both a manual debug surface and the contract used by adapters. Production usage should prefer gateway names where available:
+
+- Tool Gateway: `tfy tool-gateway -- <ordinary command>` wraps command execution and returns compact summary plus raw_ref.
+- Context Gateway: planned runtime API over `index`, `expand`, `full`, and `decide-context`.
+- Output Gateway: planned structured restore/apply API over `restore`; first release is apply-ready payloads only.
+- State Gateway: planned ledger/ref API fed by Tool, Context, and Output gateway events.
+
+Do not overclaim automatic interception: today only the Rust CLI/core primitives and Tool Gateway CLI entrypoint exist. Runtime-specific automatic hooks are adapters.

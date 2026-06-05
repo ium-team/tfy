@@ -23,6 +23,20 @@ Every artifact can move through a ladder of representations:
 
 Fallback can move upward toward raw/full at any time.
 
+
+## Agent I/O boundary model
+
+The representation ladder and method registry remain TFY's internal architecture. Agent gateways are external integration boundaries that decide where those methods run in an AI-agent loop.
+
+| Boundary | Uses registry methods to save tokens at | Primary primitives | Status |
+|---|---|---|---|
+| Tool Gateway | command/tool output returned to the agent | `tool-gateway`, `run`, `raw`, raw refs, tool policy | Tool Gateway CLI entrypoint implemented |
+| Context Gateway | model input context before reasoning | `index`, `expand`, `full`, `decide-context` | core primitives implemented; adapter planned |
+| Output Gateway | model output before file application/human display | `restore`, future patch/apply API | restore primitive implemented; structured gateway planned |
+| State Gateway | long-running task/conversation state between turns | future ledger/ref API, raw refs | schema-first planned |
+
+Gateways must route back to registry methods and their validation gates; they are not a second product taxonomy.
+
 ## Method registry schema
 
 Each token-saving method should be documented with this shape:
