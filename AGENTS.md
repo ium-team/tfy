@@ -50,6 +50,26 @@ Working branches:
 
 `codex/<slug>` is legacy/scratch-only. Do not open new long-lived review PRs from `codex/*`; convert real AI-authored work to a proper Git Flow branch before review.
 
+
+## Automatic work-unit Git/GitHub closeout
+
+For every coherent work unit, agents must perform Git/GitHub closeout automatically unless the user explicitly says not to commit, not to push, or not to touch GitHub. Do not wait for a separate “git/GitHub 작업” instruction after implementation is complete.
+
+Closeout steps:
+
+1. Confirm the current branch follows Git Flow. If it does not, create or switch to the correct branch class before committing.
+2. Run the required verification gate for the change size.
+3. Stage only files that belong to the completed work unit.
+4. Commit with the required Conventional+Lore format.
+5. Push the branch.
+6. Create or update the matching draft PR against the correct Git Flow target branch.
+7. Update the PR body with scope, validation, supported/unsupported claims, and risk notes.
+8. Wait for GitHub checks when available and report their status.
+
+Do not auto-merge PRs, change branch protection, change repository settings, delete remote branches, or force-push shared history unless explicitly requested or already required for an approved history-cleanup task.
+
+If a work unit is intentionally local-only, record that in the final response with the reason and the exact unpushed state.
+
 ## Commit policy
 
 Every non-trivial commit must use a **Conventional intent line + Lore trailers** format:

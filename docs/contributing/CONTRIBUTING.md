@@ -66,6 +66,11 @@ Every PR should describe:
 
 Prefer draft PRs while an adapter boundary or output contract is still being reviewed.
 
+
+## Automatic Git/GitHub closeout
+
+For agent-authored work, committing, pushing, and updating the draft PR are part of “done.” A separate user reminder is not required unless the user explicitly opted out of Git/GitHub actions.
+
 ## Verification gate
 
 Run before requesting review:

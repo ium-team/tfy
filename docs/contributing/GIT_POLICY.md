@@ -57,6 +57,27 @@ Hotfix flow:
 main -> hotfix/<story> -> PR to main -> tag -> back-merge/cherry-pick to develop
 ```
 
+
+## Automatic work-unit closeout for agents
+
+AI agents must treat Git/GitHub closeout as part of every completed work unit, not as a separate optional follow-up. Unless the user explicitly says not to commit, not to push, or not to touch GitHub, the agent must:
+
+1. Verify the branch class and PR target match Git Flow.
+2. Run the relevant local verification gate.
+3. Stage only the completed work-unit files.
+4. Commit with the required Conventional+Lore format.
+5. Push the branch.
+6. Create or update the draft PR.
+7. Update the PR body with Git Flow metadata, scope, validation, and risk notes.
+8. Check CI status and report whether it is passing, pending, or failing.
+
+Safety limits:
+
+- Do not merge PRs automatically.
+- Do not change branch protection or repository settings automatically.
+- Do not delete remote branches or force-push shared history unless the task is explicitly history cleanup or branch hygiene.
+- Do not include unrelated working-tree changes in a work-unit commit.
+
 ## Commit messages
 
 TFY commits use a strict **Conventional intent line + Lore trailers** format.
