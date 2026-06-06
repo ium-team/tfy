@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,6 +17,8 @@ pub struct CommandSummary {
     pub exit_code: i32,
     pub risk: String,
     pub summary: String,
+    pub model_text: String,
+    pub rendering_kind: String,
     pub raw_ref: String,
     pub raw_chars: usize,
     pub summary_chars: usize,
@@ -44,6 +47,9 @@ impl RawStore {
         Ok(Self { root })
     }
     pub fn put(&self, command: &str, raw: &str, exit_code: i32) -> Result<String> {
+        self.put_bytes(command, raw.as_bytes(), exit_code)
+    }
+    pub fn put_bytes(&self, command: &str, raw: &[u8], exit_code: i32) -> Result<String> {
         for attempt in 0..16u64 {
             let nonce = now_ns().wrapping_add(attempt);
             let mut hasher = Sha256::new();
@@ -56,7 +62,14 @@ impl RawStore {
             let hex = format!("{:x}", hasher.finalize());
             let rf = format!("cmdout_{}_{nonce:016x}", &hex[..12]);
             let path = self.path_for(&rf)?;
-            let payload = serde_json::json!({"command":command,"exit_code":exit_code,"raw":raw,"created_ns":nonce});
+            let raw_text = std::str::from_utf8(raw).ok();
+            let payload = serde_json::json!({
+                "command":command,
+                "exit_code":exit_code,
+                "raw":raw_text,
+                "raw_b64":BASE64_STANDARD.encode(raw),
+                "created_ns":nonce
+            });
             let mut options = OpenOptions::new();
             options.create_new(true).write(true);
             #[cfg(unix)]
@@ -92,12 +105,26 @@ impl RawStore {
         Ok(path)
     }
     pub fn raw(&self, raw_ref: &str, around: Option<&str>, context: usize) -> Result<String> {
+        let raw_bytes = self.raw_bytes(raw_ref, around, context)?;
+        Ok(String::from_utf8_lossy(&raw_bytes).to_string())
+    }
+    pub fn raw_bytes(
+        &self,
+        raw_ref: &str,
+        around: Option<&str>,
+        context: usize,
+    ) -> Result<Vec<u8>> {
         let path = self.path_for(raw_ref)?;
         let text = fs::read_to_string(path)?;
         let v: serde_json::Value = serde_json::from_str(&text)?;
-        let raw = v["raw"].as_str().unwrap_or("");
+        let raw = if let Some(raw_b64) = v["raw_b64"].as_str() {
+            BASE64_STANDARD.decode(raw_b64)?
+        } else {
+            v["raw"].as_str().unwrap_or("").as_bytes().to_vec()
+        };
         if let Some(needle) = around {
-            let lines: Vec<_> = raw.lines().collect();
+            let raw_text = std::str::from_utf8(&raw)?;
+            let lines: Vec<_> = raw_text.lines().collect();
             let mut out = Vec::new();
             for (i, _l) in lines
                 .iter()
@@ -110,10 +137,11 @@ impl RawStore {
                 out.extend_from_slice(&lines[start..end]);
             }
             if !out.is_empty() {
-                return Ok(out.join("\n") + "\n");
+                return Ok((out.join("\n") + "\n").into_bytes());
             }
+            bail!("raw range needle not found: {needle}");
         }
-        Ok(raw.to_string())
+        Ok(raw)
     }
 }
 
@@ -143,9 +171,9 @@ pub fn run_command(
     }
     match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output() {
         Ok(out) => {
-            let mut raw = String::from_utf8_lossy(&out.stdout).to_string();
-            raw.push_str(&String::from_utf8_lossy(&out.stderr));
-            compress(
+            let mut raw = out.stdout;
+            raw.extend_from_slice(&out.stderr);
+            compress_bytes(
                 &store,
                 &command.join(" "),
                 &raw,
@@ -178,6 +206,15 @@ pub fn raw_output(
     RawStore::new(raw_dir)?.raw(raw_ref, around, context)
 }
 
+pub fn raw_output_bytes(
+    raw_dir: impl AsRef<Path>,
+    raw_ref: &str,
+    around: Option<&str>,
+    context: usize,
+) -> Result<Vec<u8>> {
+    RawStore::new(raw_dir)?.raw_bytes(raw_ref, around, context)
+}
+
 pub fn summarize_command_output(
     command: &str,
     raw: &str,
@@ -206,7 +243,46 @@ fn compress(
     max_summary_bytes: Option<usize>,
     requested_policy: ToolPolicy,
 ) -> Result<CommandSummary> {
-    let raw_ref = store.put(command, raw, exit_code)?;
+    compress_bytes(
+        store,
+        command,
+        raw.as_bytes(),
+        exit_code,
+        max_summary_bytes,
+        requested_policy,
+    )
+}
+
+fn compress_bytes(
+    store: &RawStore,
+    command: &str,
+    raw_bytes: &[u8],
+    exit_code: i32,
+    max_summary_bytes: Option<usize>,
+    requested_policy: ToolPolicy,
+) -> Result<CommandSummary> {
+    let raw_ref = store.put_bytes(command, raw_bytes, exit_code)?;
+    let raw = String::from_utf8_lossy(raw_bytes);
+    compress_with_raw_ref(
+        command,
+        &raw,
+        raw_bytes.len(),
+        exit_code,
+        max_summary_bytes,
+        requested_policy,
+        raw_ref,
+    )
+}
+
+fn compress_with_raw_ref(
+    command: &str,
+    raw: &str,
+    raw_len: usize,
+    exit_code: i32,
+    max_summary_bytes: Option<usize>,
+    requested_policy: ToolPolicy,
+    raw_ref: String,
+) -> Result<CommandSummary> {
     let policy = GitGithubToolPolicy::new();
     let is_git_github = match requested_policy {
         ToolPolicy::Auto => policy.matches(command),
@@ -231,28 +307,85 @@ fn compress(
         "unknown".to_string()
     };
     let display_command = redact_public(command);
-    let summary = match risk.as_str() {
+    let summary_candidate = match risk.as_str() {
         "critical" => critical(&display_command, exit_code, &evidence, &raw_ref),
         "success" => success(&display_command, exit_code, raw, &raw_ref),
         _ => unknown(&display_command, exit_code, raw, &evidence, &raw_ref),
     };
-    let summary = cap_summary_preserving_raw_ref(summary, &raw_ref, max_summary_bytes);
-    let savings_pct = if raw.is_empty() {
+    let summary_candidate =
+        cap_summary_preserving_raw_ref(summary_candidate, &raw_ref, max_summary_bytes);
+    let public_raw = public_raw_candidate(raw, &raw_ref);
+    let decision = choose_model_visible_text(&summary_candidate, &public_raw);
+    let savings_pct = if raw_len == 0 {
         0.0
     } else {
-        ((raw.len() as f64 - summary.len() as f64) / raw.len() as f64 * 10000.0).round() / 100.0
+        ((raw_len as f64 - decision.text.len() as f64) / raw_len as f64 * 10000.0).round() / 100.0
     };
     Ok(CommandSummary {
         command: display_command,
         exit_code,
         risk,
-        summary_chars: summary.len(),
-        raw_chars: raw.len(),
+        summary_chars: decision.text.len(),
+        raw_chars: raw_len,
         savings_pct,
-        summary,
+        summary: decision.text.clone(),
+        model_text: decision.text,
+        rendering_kind: decision.kind,
         raw_ref,
         evidence,
     })
+}
+
+struct ModelOutputDecision {
+    text: String,
+    kind: String,
+}
+
+fn choose_model_visible_text(
+    summary_candidate: &str,
+    public_raw: &PublicRawCandidate,
+) -> ModelOutputDecision {
+    if summary_candidate.len() < public_raw.text.len() {
+        ModelOutputDecision {
+            text: summary_candidate.to_string(),
+            kind: "summary".to_string(),
+        }
+    } else if public_raw.suppressed {
+        ModelOutputDecision {
+            text: public_raw.text.clone(),
+            kind: "suppressed".to_string(),
+        }
+    } else {
+        ModelOutputDecision {
+            text: public_raw.text.clone(),
+            kind: "pass_through".to_string(),
+        }
+    }
+}
+
+struct PublicRawCandidate {
+    text: String,
+    suppressed: bool,
+}
+
+fn public_raw_candidate(raw: &str, raw_ref: &str) -> PublicRawCandidate {
+    if is_suppressed_public_raw(raw) {
+        return PublicRawCandidate {
+            text: format!(
+                "[tfy: output suppressed; unsafe or binary-ish content stored locally; raw_ref={raw_ref}]\n"
+            ),
+            suppressed: true,
+        };
+    }
+    PublicRawCandidate {
+        text: redact_public(raw),
+        suppressed: false,
+    }
+}
+
+fn is_suppressed_public_raw(raw: &str) -> bool {
+    raw.chars()
+        .any(|c| (c.is_control() && !matches!(c, '\n' | '\r' | '\t')) || c == '\u{fffd}')
 }
 
 struct GitGithubToolPolicy {
@@ -488,7 +621,18 @@ impl GitGithubToolPolicy {
 }
 
 fn redact_public(text: &str) -> String {
-    GitGithubToolPolicy::new().redact_for_summary(text)
+    redact_secret_like(&GitGithubToolPolicy::new().redact_for_summary(text))
+}
+
+fn redact_secret_like(text: &str) -> String {
+    let assignment = Regex::new(
+        r"(?i)\b([A-Z0-9_.-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token|secret|password))\s*([:=])\s*[A-Za-z0-9._~+/=-]{6,}",
+    )
+    .expect("valid secret assignment regex");
+    let bearer =
+        Regex::new(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}").expect("valid bearer secret regex");
+    let text = assignment.replace_all(text, "$1$2[REDACTED]");
+    bearer.replace_all(&text, "$1 [REDACTED]").to_string()
 }
 
 fn redact_url(url: &str) -> String {

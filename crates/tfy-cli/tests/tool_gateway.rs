@@ -1,7 +1,7 @@
 use std::process::Command;
 
 #[test]
-fn tool_gateway_summarizes_success_with_raw_ref() {
+fn tool_gateway_passes_through_tiny_success_without_json_or_ref_overhead() {
     let raw_dir = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args([
@@ -16,9 +16,10 @@ fn tool_gateway_summarizes_success_with_raw_ref() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    let summary = String::from_utf8_lossy(&output.stdout);
-    assert!(summary.contains("SUCCESS"), "{summary}");
-    assert!(summary.contains("raw_ref="), "{summary}");
+    let model_text = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(model_text, "ok");
+    assert!(!model_text.trim_start().starts_with('{'), "{model_text}");
+    assert!(!model_text.contains("raw_ref="), "{model_text}");
 }
 
 #[test]
@@ -37,11 +38,15 @@ fn tool_gateway_redacts_public_credential_urls() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    let summary = String::from_utf8_lossy(&output.stdout);
-    assert!(summary.contains("https://github.com/org/repo"), "{summary}");
-    assert!(!summary.contains("user:secret"), "{summary}");
-    assert!(!summary.contains("token=secret"), "{summary}");
-    assert!(summary.contains("raw_ref="), "{summary}");
+    let model_text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        model_text.contains("https://github.com/org/repo"),
+        "{model_text}"
+    );
+    assert!(!model_text.contains("user:secret"), "{model_text}");
+    assert!(!model_text.contains("token=secret"), "{model_text}");
+    assert!(!model_text.trim_start().starts_with('{'), "{model_text}");
+    assert!(!model_text.contains("raw_ref="), "{model_text}");
 }
 
 #[test]
@@ -60,8 +65,199 @@ fn tool_gateway_preserves_failure_exit_code() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(7));
-    let summary = String::from_utf8_lossy(&output.stdout);
-    assert!(summary.contains("CRITICAL"), "{summary}");
-    assert!(summary.contains("src/main.rs:1"), "{summary}");
-    assert!(summary.contains("raw_ref="), "{summary}");
+    let model_text = String::from_utf8_lossy(&output.stdout);
+    assert!(model_text.contains("src/main.rs:1"), "{model_text}");
+    assert!(model_text.contains("error: broken"), "{model_text}");
+    assert!(!model_text.trim_start().starts_with('{'), "{model_text}");
+    assert!(!model_text.contains("raw_ref="), "{model_text}");
+}
+
+#[test]
+fn tool_gateway_summarizes_long_output_only_when_shorter() {
+    let raw_dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "tool-gateway",
+            "--raw-dir",
+            raw_dir.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "for i in $(seq 1 200); do echo \"line $i repeated build noise\"; done",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let model_text = String::from_utf8_lossy(&output.stdout);
+    assert!(model_text.contains("TFY command summary"), "{model_text}");
+    assert!(model_text.contains("raw_ref="), "{model_text}");
+    assert!(model_text.len() < 200 * "line 000 repeated build noise\n".len());
+}
+
+#[test]
+fn tool_gateway_suppresses_binary_with_recoverable_ref() {
+    let raw_dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "tool-gateway",
+            "--raw-dir",
+            raw_dir.path().to_str().unwrap(),
+            "--",
+            "python3",
+            "-c",
+            "import sys; sys.stdout.buffer.write(b'abc\\x00def')",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let model_text = String::from_utf8_lossy(&output.stdout);
+    assert!(model_text.contains("output suppressed"), "{model_text}");
+    assert!(model_text.contains("raw_ref="), "{model_text}");
+}
+
+#[test]
+fn tool_gateway_raw_ref_recovers_invalid_utf8_bytes_losslessly() {
+    let raw_dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "tool-gateway",
+            "--raw-dir",
+            raw_dir.path().to_str().unwrap(),
+            "--",
+            "python3",
+            "-c",
+            "import sys; sys.stdout.buffer.write(b'abc\\xffdef')",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let model_text = String::from_utf8_lossy(&output.stdout);
+    assert!(model_text.contains("output suppressed"), "{model_text}");
+    let raw_ref = model_text
+        .split("raw_ref=")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .trim_end_matches(']')
+        .to_string();
+    let raw = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "raw",
+            "--raw-dir",
+            raw_dir.path().to_str().unwrap(),
+            &raw_ref,
+        ])
+        .output()
+        .unwrap();
+    assert!(raw.status.success());
+    assert_eq!(raw.stdout, b"abc\xffdef");
+}
+
+#[test]
+fn raw_around_returns_only_requested_text_range() {
+    let raw_dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "tool-gateway",
+            "--json",
+            "--raw-dir",
+            raw_dir.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "printf 'a\\nneedle\\nc\\nd\\n'",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let raw_ref = json["payload"]["raw_ref"].as_str().unwrap().to_string();
+    let raw = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "raw",
+            "--raw-dir",
+            raw_dir.path().to_str().unwrap(),
+            "--around",
+            "needle",
+            "--context",
+            "0",
+            &raw_ref,
+        ])
+        .output()
+        .unwrap();
+    assert!(raw.status.success());
+    assert_eq!(raw.stdout, b"needle\n");
+}
+
+#[test]
+fn raw_around_invalid_utf8_fails_closed_without_lossy_output() {
+    let raw_dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "tool-gateway",
+            "--raw-dir",
+            raw_dir.path().to_str().unwrap(),
+            "--",
+            "python3",
+            "-c",
+            "import sys; sys.stdout.buffer.write(b'abc\\xffdef')",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let model_text = String::from_utf8_lossy(&output.stdout);
+    let raw_ref = model_text
+        .split("raw_ref=")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .trim_end_matches(']')
+        .to_string();
+    let raw = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "raw",
+            "--raw-dir",
+            raw_dir.path().to_str().unwrap(),
+            "--around",
+            "abc",
+            &raw_ref,
+        ])
+        .output()
+        .unwrap();
+    assert!(!raw.status.success());
+    assert!(raw.stdout.is_empty());
+}
+
+#[test]
+fn raw_around_missing_needle_fails_closed_without_full_output() {
+    let raw_dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "tool-gateway",
+            "--json",
+            "--raw-dir",
+            raw_dir.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "printf 'a\\nneedle\\nc\\nd\\n'",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let raw_ref = json["payload"]["raw_ref"].as_str().unwrap().to_string();
+    let raw = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "raw",
+            "--raw-dir",
+            raw_dir.path().to_str().unwrap(),
+            "--around",
+            "absent",
+            &raw_ref,
+        ])
+        .output()
+        .unwrap();
+    assert!(!raw.status.success());
+    assert!(raw.stdout.is_empty());
 }

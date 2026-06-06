@@ -85,10 +85,9 @@ fn tool_gateway_jsonl_emits_event_response_and_state_projection() {
     assert!(shell.status.success());
     let shell_json: serde_json::Value = serde_json::from_slice(&shell.stdout).unwrap();
     assert_eq!(shell_json["payload"]["kind"], "tool_command");
-    assert!(shell_json["payload"]["summary"]
-        .as_str()
-        .unwrap()
-        .contains("shell-ok"));
+    assert_eq!(shell_json["payload"]["summary"], "shell-ok");
+    assert_eq!(shell_json["payload"]["model_text"], "shell-ok");
+    assert_eq!(shell_json["payload"]["rendering_kind"], "pass_through");
 
     let projection = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args(["state-project", "--ledger", ledger.to_str().unwrap()])

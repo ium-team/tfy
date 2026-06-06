@@ -132,7 +132,8 @@ fn command_feedback_prioritizes_tail_error_after_file_refs() {
         64,
     )
     .unwrap();
-    assert!(summary.summary.contains("raw_ref="));
+    assert_eq!(summary.summary, "ok\n");
+    assert!(!summary.summary.contains("raw_ref="));
 }
 
 #[test]
@@ -540,7 +541,7 @@ fn rust_git_checks_not_successful_is_critical() {
     .unwrap();
     assert_eq!(summary.risk, "critical");
     assert!(summary.summary.contains("not successful"));
-    assert!(summary.summary.contains("raw_ref="));
+    assert!(!summary.summary.contains("raw_ref="));
 }
 
 #[test]
@@ -616,9 +617,7 @@ fn rust_git_status_and_data_commands_are_conservative() {
     )
     .unwrap();
     assert_eq!(dirty.risk, "unknown");
-    assert!(dirty
-        .summary
-        .contains("status= M path=docs/failed_checks.md"));
+    assert!(dirty.summary.contains(" M docs/failed_checks.md"));
 
     let conflict =
         summarize_command_output("git status --short", "UU src/app.rs\n", 0, dir.path()).unwrap();
@@ -645,6 +644,19 @@ fn public_summaries_redact_urls_for_generic_commands() {
     assert!(summary.summary.contains("https://github.com/org/repo"));
     assert!(!summary.summary.contains("user:secret"));
     assert!(!summary.summary.contains("?token=secret"));
+    assert_eq!(
+        raw_output(dir.path(), &summary.raw_ref, None, 1).unwrap(),
+        raw
+    );
+}
+
+#[test]
+fn public_pass_through_redacts_secret_like_assignments() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = "API_KEY=sk_test_123456789\n";
+    let summary = summarize_command_output("env-check", raw, 0, dir.path()).unwrap();
+    assert!(summary.summary.contains("API_KEY=[REDACTED]"));
+    assert!(!summary.summary.contains("sk_test_123456789"));
     assert_eq!(
         raw_output(dir.path(), &summary.raw_ref, None, 1).unwrap(),
         raw
@@ -815,4 +827,41 @@ fn generic_success_words_do_not_hide_later_failure_evidence() {
     .unwrap();
     assert_eq!(checks.risk, "critical");
     assert!(checks.summary.contains("not successful"));
+}
+
+#[test]
+fn public_pass_through_redacts_prefixed_secret_like_assignments() {
+    let dir = tempfile::tempdir().unwrap();
+    let summary = run_command(
+        &[
+            "sh".into(),
+            "-c".into(),
+            "printf 'OPENAI_API_KEY=sk_test_123456789\nDATABASE_PASSWORD=supersecret123\n'".into(),
+        ],
+        None,
+        dir.path(),
+        1_000_000,
+    )
+    .unwrap();
+    assert_eq!(summary.rendering_kind, "pass_through");
+    assert!(
+        summary.model_text.contains("OPENAI_API_KEY=[REDACTED]"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("DATABASE_PASSWORD=[REDACTED]"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        !summary.model_text.contains("sk_test_123456789"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        !summary.model_text.contains("supersecret123"),
+        "{}",
+        summary.model_text
+    );
 }

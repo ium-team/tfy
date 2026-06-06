@@ -27,7 +27,7 @@ The production core should support:
 - artifact/ref store
 - parser-backed semantic skeletons
 - compact code and restoration contracts
-- raw command-output store and range expansion
+- byte-preserving raw command-output store and range expansion
 - incremental/delta state model
 - compact schema dictionaries
 - task/conversation ledger compaction
@@ -36,12 +36,12 @@ The production core should support:
 
 ## Production invariants
 
-- CLI-first JSON/text protocol remains canonical.
+- CLI-first text protocol remains canonical for model-visible output; JSON/envelopes remain explicit debug/adapter/internal surfaces.
 - Core behavior remains agent-neutral.
 - Optional adapters cannot be required for correctness.
 - Parser-backed responses include confidence, parser identity, and fallback action.
 - Raw/full fallback is always available for high-risk artifacts.
-- Public summaries redact secrets; original command/output evidence remains local behind raw refs.
+- Public model-visible output redacts secrets before pass-through or summary; original command/output bytes remain local behind raw refs.
 - Current implementation status must be reported honestly.
 
 ## Current Rust smoke commands
@@ -52,6 +52,7 @@ cargo run -p tfy-cli -- index corpus/rust/fixture_01.rs
 cargo run -p tfy-cli -- expand corpus/rust/fixture_01.rs fixture_01.rs:calculate_discount_1:5 --compactness symbol
 cargo run -p tfy-cli -- restore --payload payload.json
 cargo run -p tfy-cli -- tool-gateway -- sh -c 'printf ok'
+cargo run -p tfy-cli -- tool-gateway -- sh -c 'for i in $(seq 1 200); do echo "line $i"; done'
 cargo run -p tfy-cli -- raw <raw_ref>
 cargo run -p tfy-cli -- eval-code corpus/rust/fixture_01.rs fixture_01.rs:calculate_discount_1:5
 cargo test --quiet
@@ -94,11 +95,25 @@ Implemented binaries/surfaces:
 
 - `tfy runtime-capabilities`
 - `tfy runtime-negotiate`
-- `tfy tool-gateway --json|--jsonl`
-- `tfy shell --json|--jsonl`
+- `tfy tool-gateway -- <command>` and `tfy shell -- <command>` as text-first model-visible wrappers
+- `tfy tool-gateway --json|--jsonl` and `tfy shell --json|--jsonl` as debug/adapter/internal wrappers
 - `tfy context-gateway`
 - `tfy output-gateway` preview/validate
 - `tfy state-append`
 - `tfy state-project`
 
-Release boundary: local shell/tool/context/output/state gateway foundations are implemented. Codex, MCP, editor, and provider adapters are still separate integration packages to build and test before claiming automatic interception for those runtimes.
+Release boundary: local shell/tool/context/output/state gateway foundations, generic-shell adapter, and MCP stdio tool/resource server are implemented. Codex private hooks, editor, and provider adapters are still separate integration packages to build and test before claiming automatic interception for those runtimes. The Codex-facing MCP support is a setup snippet for Codex MCP configuration, not private Codex hook interception.
+
+## MCP/Codex adapter foundation v2
+
+The production stack now includes `tfy mcp serve`, a stdio MCP server that exposes existing TFY gateway capabilities as tools/resources. It is intentionally bounded:
+
+- stdout is JSON-RPC only;
+- logs and warnings use stderr/files;
+- `initialize` declares tools and resources;
+- `resources/list` returns concrete session resources;
+- `resources/templates/list` returns `tfy://raw/{raw_ref}`, `tfy://report/{session}`, and `tfy://state/{session}` templates;
+- child command failures are tool results and do not terminate the MCP process;
+- `tfy mcp install --target codex --dry-run` prints a concrete `codex mcp add` command and TOML snippet without writing config.
+
+This is the first supported agent-native integration boundary after the generic-shell adapter. It does not replace future Codex private hook/provider/editor adapters.

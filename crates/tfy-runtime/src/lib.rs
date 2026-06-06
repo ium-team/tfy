@@ -321,6 +321,8 @@ pub enum GatewayResponse {
         exit_code: i32,
         risk: String,
         summary: String,
+        model_text: String,
+        rendering_kind: String,
         raw_ref: String,
         evidence: Vec<String>,
     },
@@ -355,7 +357,22 @@ pub enum GatewayEvent {
         exit_code: i32,
         risk: String,
         raw_ref: String,
+        #[serde(default)]
+        raw_bytes: usize,
+        #[serde(default)]
+        model_bytes: usize,
+        #[serde(default)]
+        raw_chars: usize,
+        #[serde(default)]
         summary_chars: usize,
+        #[serde(default)]
+        model_chars: usize,
+        #[serde(default)]
+        savings_pct: f64,
+        #[serde(default)]
+        negative_savings_avoided: bool,
+        #[serde(default)]
+        rendering_kind: String,
     },
     ContextSelected {
         context_ref: String,
@@ -458,11 +475,27 @@ pub fn project_state(events: &[RuntimeEnvelope<GatewayEvent>]) -> StateProjectio
                 exit_code,
                 risk,
                 raw_ref,
+                raw_bytes,
+                model_bytes,
+                raw_chars,
+                model_chars,
+                savings_pct,
+                rendering_kind,
                 ..
             } => {
+                let raw_size = if *raw_bytes == 0 {
+                    *raw_chars
+                } else {
+                    *raw_bytes
+                };
+                let model_size = if *model_bytes == 0 {
+                    *model_chars
+                } else {
+                    *model_bytes
+                };
                 projection.tool_evidence.push(format!(
-                    "{} exit={} risk={} raw_ref={}",
-                    command, exit_code, risk, raw_ref
+                    "{} exit={} risk={} raw_ref={} rendering={} raw_bytes={} model_bytes={} savings_pct={:.2}",
+                    command, exit_code, risk, raw_ref, rendering_kind, raw_size, model_size, savings_pct
                 ));
                 if *exit_code == 0 {
                     projection.verification.push(format!("passed: {command}"));

@@ -22,7 +22,7 @@ Core invariants:
 - **Save tokens everywhere:** code, docs, command output, CI, Git/GitHub work, task state, patches, schemas, repeated context, and provider adapters.
 - **Preserve evidence:** errors, failing tests, security/permission issues, dirty repo state, review comments, and other decision-critical facts keep raw or directly recoverable evidence.
 - **Prefer correctness over savings:** compact context is allowed only while work quality holds; uncertainty triggers related/full/raw fallback.
-- **Stay agent-neutral:** the core protocol is CLI/JSON/ref based. Provider/model-specific caching is optional adapter behavior, never a core dependency.
+- **Stay agent-neutral:** the model-facing protocol is plain text plus local refs; JSON/envelopes are explicit debug/adapter/internal surfaces, never the default model payload.
 - **Expect future methods:** token-saving methods are registry entries with metrics, risks, fallback triggers, and evaluation gates.
 
 ## Final architecture
@@ -34,7 +34,7 @@ TFY is organized around seven release concepts:
 3. **Artifact/ref store** — files, scopes, command outputs, summaries, task ledgers, and provider layouts can be referenced by stable IDs instead of repeated in full.
 4. **Adaptive retrieval and compactness policy** — choose skeleton, summary, compact body, related context, full file, or raw output based on task risk and budget.
 5. **Agent I/O middleware boundaries** — Tool, Context, Output, and State Gateways define where TFY sits between an agent runtime, tools, model context, model output, and long-running task state.
-6. **Agent-neutral protocol** — CLI/JSON primitives remain the debug and adapter contract: `tfy tool-gateway`, `index`, `expand`, `run`, `raw`, `restore`, and future registry/ref/delta commands.
+6. **Agent-neutral protocol** — default CLI gateway output is model-visible text selected by a net-savings gate; JSON primitives remain explicit debug/adapter/internal contracts for `tfy tool-gateway`, `index`, `expand`, `run`, `raw`, `restore`, and future registry/ref/delta commands.
 7. **Evaluation gates** — every saving claim is measured as net token savings plus correctness, fallback frequency, missed-evidence risk, and performance overhead.
 
 ## Current method families
@@ -110,9 +110,16 @@ cd tfy
 cargo run -p tfy-cli -- languages
 cargo run -p tfy-cli -- index corpus/rust/fixture_01.rs
 cargo run -p tfy-cli -- tool-gateway -- sh -c 'printf ok'
-cargo run -p tfy-cli -- tool-gateway --json -- sh -c 'printf ok'
-cargo run -p tfy-cli -- shell --json -- sh -c 'printf ok'
+cargo run -p tfy-cli -- tool-gateway -- sh -c 'for i in $(seq 1 200); do echo "line $i"; done'
+cargo run -p tfy-cli -- shell -- sh -c 'printf ok'
+cargo run -p tfy-cli -- tool-gateway --json -- sh -c 'printf ok' # debug/adapter/internal only
 cargo run -p tfy-cli -- runtime-capabilities
+cargo run -p tfy-cli -- adapter capabilities
+cargo run -p tfy-cli -- adapter install --target generic-shell --dry-run
+cargo run -p tfy-cli -- adapter run --session smoke -- sh -c 'printf ok'
+cargo run -p tfy-cli -- adapter report --session smoke
+cargo run -p tfy-cli -- mcp capabilities
+cargo run -p tfy-cli -- mcp install --target codex --dry-run
 cargo test --quiet
 ```
 
@@ -123,15 +130,33 @@ Humans can run the CLI directly, but the intended path is automatic runtime use:
 
 ```text
 AI agent/runtime
-  -> Tool Gateway: ordinary command -> tfy tool-gateway -- <command> -> summary + raw_ref
+  -> Tool Gateway: ordinary command -> tfy tool-gateway -- <command> -> model-visible text
   -> Context Gateway: repo/file request -> index/expand/full/decide -> compact context + fallback refs
   -> Output Gateway: compact patch/code -> restore/validate -> apply-ready output or fallback request
   -> State Gateway: turn history/tool evidence -> compact task ledger + refs
 ```
 
+Tool Gateway always stores exact raw stdout/stderr bytes locally first. The model sees a compact summary only when that summary is strictly smaller than the redacted public raw output; otherwise TFY passes through the redacted raw text. This prevents negative token savings for tiny outputs such as `ok`. Raw refs remain available internally/debug-side and are included in model text when output is summarized, truncated, or suppressed.
+
 Current implementation status:
 
-- Implemented: Rust core primitives, Rust CLI, `tfy-runtime` envelope/capability/event contract, Tool Gateway text/JSON/JSONL entrypoint, shell wrapper, Context Gateway CLI, Output Gateway preview/validate CLI, State Gateway append/project CLI, raw refs, redaction, code index/expand/full/restore, evaluation.
-- Planned adapters: Codex/MCP/editor/provider automatic hook integrations and Output Gateway workspace apply beyond preview/validate.
+- Implemented: Rust core primitives, Rust CLI, `tfy-runtime` envelope/capability/event contract, Tool Gateway text-first net-savings entrypoint, explicit debug/adapter JSON/JSONL entrypoints, shell wrapper, Context Gateway CLI, Output Gateway preview/validate CLI, State Gateway append/project CLI, raw refs, redaction, code index/expand/full/restore, evaluation.
+- Implemented adapter v1: `tfy adapter` generic-shell command-boundary shim, dry-run installer, session ledger, and savings report.
+- Implemented MCP foundation v2: `tfy mcp serve` stdio JSON-RPC server, MCP tool/resource discovery, raw/report/state resources, and Codex MCP dry-run/setup snippet generation.
+- Planned adapters: Codex private hooks/editor/provider automatic hook integrations and Output Gateway workspace apply beyond preview/validate.
 
-TFY should not claim automatic model input/output interception for a runtime until that runtime adapter exists and passes the relevant gates.
+TFY should not claim automatic model input/output interception for a runtime until that runtime adapter exists and passes the relevant gates. The MCP foundation is a supported MCP tool/resource integration point; it still requires the host agent to route through MCP and is not a private Codex hook or universal shell interception layer.
+
+## MCP/Codex adapter foundation
+
+TFY can run as an MCP stdio server for agent hosts that support MCP:
+
+```bash
+tfy mcp capabilities
+tfy mcp serve --session local-session --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw
+tfy mcp install --target codex --dry-run
+```
+
+The server exposes `tfy_tool_run`, `tfy_raw_get`, `tfy_context_get`, `tfy_output_validate`, `tfy_state_project`, and `tfy_adapter_report`, plus `tfy://raw/{raw_ref}`, `tfy://report/{session}`, and `tfy://state/{session}` resources. MCP stdout is JSON-RPC only; logs and warnings go to stderr or files. Non-zero child commands are returned as tool results and do not terminate the MCP server.
+
+This is MCP tool/resource integration. It does not claim private Codex hook interception, provider prompt mutation, or universal shell interception without host MCP routing.

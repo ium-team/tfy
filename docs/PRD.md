@@ -37,7 +37,7 @@ Every method must declare:
 
 ### Agent-neutral protocol
 
-TFY core must work through CLI/JSON/text surfaces that any agent can call. Provider-specific features must not be required for correctness.
+TFY core must work through CLI/text surfaces that any agent can call. The default model-facing surface is plain text chosen by net-savings policy; JSON/envelopes are explicit debug/adapter/internal surfaces and must not be required for correctness.
 
 ### Safety and recovery
 
@@ -64,7 +64,7 @@ This is not a loose feature list. It is the first compact registry view; the ful
 | patch/edit-script outputs | AI output | core | structured edits instead of full files | patch restore/diff test |
 | boilerplate/generated suppression | repo artifacts | core | metadata/fingerprint for repeated regions | classifier + expansion eval |
 | task-state compaction | conversation/workflow | core | ledger instead of raw transcript | transcript-vs-ledger audit |
-| risk-aware tool feedback | command output | core | summary + raw ref by risk | fixture + raw recovery |
+| risk-aware tool feedback | command output | core | raw local store + redacted pass-through or shorter summary | fixture + raw recovery |
 | output fingerprinting | repeated commands | core | status/hash/ref for unchanged output | repeat-output replay |
 | error clustering | diagnostics | core | group duplicate failures | representative + raw refs |
 | retrieval budget planner | context selection | core | cheapest safe ladder level | full-context comparison |
@@ -129,7 +129,7 @@ TFY is primarily consumed by AI-agent runtimes. Public docs and future implement
 
 Required gateway boundaries:
 
-1. Tool Gateway — ordinary command execution is proxied through TFY and returns compact summary plus raw_ref.
+1. Tool Gateway — ordinary command execution is proxied through TFY and returns plain model-visible text: redacted raw pass-through for tiny/no-savings cases, or compact summary plus recovery ref only when shorter.
 2. Context Gateway — runtime context requests choose skeleton/compact/related/full representations.
 3. Output Gateway — structured compact code/patch outputs are restored and validated before apply.
 4. State Gateway — task/conversation state is compacted into an event-fed ledger.

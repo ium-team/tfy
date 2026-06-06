@@ -114,7 +114,9 @@ Documentation gates:
 
 Tool Gateway gates:
 
-- `tfy tool-gateway -- sh -c 'printf ok'` emits a compact summary and raw_ref.
+- `tfy tool-gateway -- sh -c 'printf ok'` emits plain `ok` with no JSON/raw_ref overhead.
+- Long/noisy or suppressed output emits shorter model-visible text with a recoverable raw_ref.
+- `tfy raw --around <needle> --context <n>` returns only the requested text range for valid UTF-8 output and fails closed for invalid UTF-8 ranged requests.
 - Non-zero exits preserve exit status and critical evidence.
 - Credential-bearing URLs are redacted publicly and preserved only behind raw_ref.
 - Unicode and tiny summary caps do not panic and preserve raw_ref.
@@ -137,7 +139,49 @@ Implemented test coverage now includes:
 Remaining adapter tests before stronger claims:
 
 - Codex hook interception e2e.
-- MCP proxy/resource e2e.
+- MCP stdio server e2e: implemented in `crates/tfy-cli/tests/mcp_server.rs` for tools/resources; broader host-specific proxy routing remains follow-up.
 - Editor file/context adapter e2e.
 - Provider cache/layout hit/miss/accounting e2e.
 - Output Gateway workspace apply with explicit authority/provenance gates.
+
+
+## Adapter v1 verification
+
+Adapter v1 is verified by `crates/tfy-cli/tests/adapter_gateway.rs` and these smoke commands:
+
+```sh
+cargo run -p tfy-cli -- adapter capabilities
+cargo run -p tfy-cli -- adapter install --target generic-shell --dry-run
+cargo run -p tfy-cli -- adapter run --session smoke -- sh -c 'printf ok'
+cargo run -p tfy-cli -- adapter run --session smoke -- sh -c 'for i in $(seq 1 200); do echo "line $i"; done'
+cargo run -p tfy-cli -- adapter report --session smoke
+```
+
+Required evidence:
+
+- tiny output remains plain text with no JSON leakage;
+- long output summarizes only when shorter and includes raw recovery;
+- failures preserve original exit code;
+- session report shows raw/model-visible byte size, estimated token savings, rendering counts, and raw refs;
+- dry-run install does not write files;
+- docs do not claim Codex/MCP/editor/provider automatic interception without matching adapter e2e tests.
+
+Adapter reports use `raw_bytes` and `model_bytes` as the public size contract. Legacy runtime ledger fields such as `raw_chars` / `model_chars` are compatibility-only and are not emitted by `tfy adapter report`.
+
+## MCP/Codex adapter foundation tests
+
+`crates/tfy-cli/tests/mcp_server.rs` verifies:
+
+- `tfy mcp capabilities` reports stdio support and does not claim private hooks/provider gateway/universal interception.
+- `tfy mcp install --target codex --dry-run` writes nothing and prints both a concrete `codex mcp add tfy -- tfy mcp serve ...` command and TOML snippet.
+- MCP `initialize` declares both `capabilities.tools` and `capabilities.resources`.
+- `tools/list` exposes TFY tool names.
+- `resources/list` returns concrete session resources, while `resources/templates/list` returns URI templates.
+- `tfy_tool_run` preserves failing command exit metadata without terminating the MCP server.
+- `resources/read` recovers raw output and reports byte-only adapter metrics.
+
+Additional MCP hardening tests verify:
+
+- JSON-RPC notifications do not emit response objects on stdout.
+- `tfy://state/{session}` and `tfy_state_project` are scoped to the requested session and do not leak evidence from other sessions sharing the same ledger file.
+- Adapter reports expose the byte contract fields `raw_bytes`, `model_bytes`, `saved_bytes`, and `net_savings_ratio` while still omitting public `raw_chars` / `model_chars` fields.
