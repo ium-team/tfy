@@ -101,8 +101,10 @@ Reference/status docs:
 
 Repository/development harness:
 
-- `.codex/AGENT_HARNESS.md` — AI-agent project map, invariants, safe edit rules, and focused checks.
-- `docs/contributing/CONTRIBUTING.md` — branch, commit, PR, and verification expectations.
+- `AGENTS.md` — repo-root Codex/AI-agent instructions, branch policy, commit policy, and verification rules.
+- `docs/AGENT_HARNESS.md` — long-form AI-agent project map, invariants, safe edit rules, and focused checks.
+- `docs/contributing/CONTRIBUTING.md` — contributor workflow expectations.
+- `docs/contributing/GIT_POLICY.md` — concrete branch naming, Lore commit, and PR policy.
 - `docs/contributing/REPOSITORY_HARNESS.md` — module boundaries, adapter workflow, and release-readiness harness.
 - `.github/` — PR template, issue templates, and Rust CI workflow.
 - `scripts/verify.sh` — local full verification gate.

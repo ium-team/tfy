@@ -1,3 +1,5 @@
+<!-- Follow AGENTS.md and docs/contributing/GIT_POLICY.md. -->
+
 ## Summary
 
 <!-- What changed and why? -->

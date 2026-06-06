@@ -1,5 +1,7 @@
 # Contributing to TFY
 
+See `docs/contributing/GIT_POLICY.md` for the concrete branch, commit, and PR policy.
+
 TFY is a Rust-first agent middleware project. Contributions should keep the runtime small, explicit, and honest about integration boundaries.
 
 ## Branches

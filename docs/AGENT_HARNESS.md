@@ -1,6 +1,6 @@
 # TFY AI Agent Harness
 
-This repository is built for AI-agent-assisted development. Use this file as the first local harness after `AGENTS.md`.
+This document expands the repo-root `AGENTS.md` for AI-agent-assisted development. `AGENTS.md` is the authoritative instruction surface; this file is the long-form reference.
 
 ## Product invariant
 
@@ -23,18 +23,14 @@ Never weaken these invariants:
 - `crates/tfy-cli/src/adapter.rs` — generic-shell adapter install/run/report surface.
 - `crates/tfy-cli/src/mcp.rs` — stdio MCP JSON-RPC server and Codex MCP setup snippet.
 - `crates/tfy-cli/src/util.rs` — small CLI utility helpers.
-- `docs/` — product/protocol/architecture documentation.
-- `docs/contributing/` — contributor and release workflow harness.
+- `docs/contributing/` — contributor, git, and release workflow harness.
 
 ## Command routing for agents
 
 Use targeted checks while editing, then run the full gate before claiming done:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-git diff --check
+./scripts/verify.sh
 ```
 
 Useful focused checks:
@@ -47,14 +43,6 @@ cargo run -q -p tfy-cli -- tool-gateway -- sh -c 'printf ok'
 cargo run -q -p tfy-cli -- adapter capabilities
 cargo run -q -p tfy-cli -- mcp capabilities
 ```
-
-## Safe edit rules
-
-- Add new command-boundary logic in `tfy-core` first when it is reusable.
-- Keep `tfy-cli` modules thin: parse, dispatch, envelope, transport.
-- Add regression tests before changing output contracts.
-- If output text changes, test both model-visible text and debug JSON behavior.
-- If a feature needs host/runtime integration, document the support boundary before implementation.
 
 ## Review checklist
 
