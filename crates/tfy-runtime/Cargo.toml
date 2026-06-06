@@ -1,17 +1,16 @@
 [package]
-name = "tfy-python"
+name = "tfy-runtime"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[lib]
-name = "tfy_rust"
-crate-type = ["cdylib"]
-
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
-pyo3.workspace = true
 serde_json.workspace = true
-tfy-core = { path = "../../crates/tfy-core" }
+thiserror.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

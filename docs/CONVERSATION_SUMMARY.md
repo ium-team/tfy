@@ -1,97 +1,39 @@
 # TFY Conversation Summary
 
-## 1. Original Idea
+## Supersession note
 
-The user proposed reducing AI token usage by having AI operate on compact code:
+This document preserves discussion history. The final product definition is now the whole-workflow token-saving architecture in `TOKEN_SAVING_ARCHITECTURE.md`, `PRD.md`, and `../README.md`.
 
-- no indentation
-- minimal newlines
-- short variable/function names like `f1`, `a`, `b`
-- deterministic mapping back to original semantic names
-- human-readable output restored after AI work
+## Original idea
 
-## 2. Semantic Name Mapping
+The starting idea was to reduce AI token usage by letting AI operate on compact code:
 
-Concern: short names may reduce AI understanding.
+- fewer newlines/indentation where safe
+- short symbols such as `f1`, `a`, `b`
+- deterministic maps back to semantic names
+- readable restoration before human/project output
 
-Resolution:
+## Key evolution
 
-- AI first sees original semantic names.
-- Compact symbols have 1:1 maps to original names.
-- Maps are provided only when needed and scoped to selected code.
+The concept expanded beyond code:
 
-## 3. Names-First Context
+1. AI should see semantic names before compact bodies.
+2. Missing context should trigger related/full fallback.
+3. Command/tool output also wastes tokens and needs risk-aware compression.
+4. Git/GitHub and CI need explicit evidence contracts.
+5. Provider/model prompt caching can help but belongs in optional adapters.
+6. TFY should save tokens in every part of the AI coding workflow.
+7. Future methods should be expected and added through a method registry.
 
-Instead of sending all code:
+## Final decision
 
-1. show original function/scope names
-2. AI requests relevant scopes
-3. TFY sends compact bodies for requested scopes
-4. if ambiguous, expand related context or full context
+TFY is a whole-workflow token-saving service with:
 
-## 4. Missing Needed Code Problem
+- representation ladder
+- method registry
+- agent-neutral protocol
+- deterministic restoration and raw/full fallback
+- optional provider adapters
+- net savings and correctness evaluation gates
 
-The main risk is hiding code the AI actually needs.
-
-Resolution:
-
-```text
-names first -> selected body -> related neighborhood -> full context fallback
-```
-
-## 5. Restoration Clarification
-
-Restoration means:
-
-```text
-AI compact output -> original names -> readable formatting -> project-ready code
-```
-
-This is deterministic and handled by TFY, not guessed by AI.
-
-## 6. Command Output Compression
-
-The user added that command outputs like `git status`, test logs, build logs, and shell outputs also waste tokens.
-
-Resolution:
-
-- compress all command/tool output by risk tier
-- preserve errors/important evidence
-- compress success/no-action output aggressively
-- always keep raw output available by reference
-
-## 7. RTK Relationship
-
-RTK should be referenced heavily for command-output compression, but TFY should stay independent.
-
-RTK reference areas:
-
-- command filters
-- raw output recovery
-- token tracking
-- hooks/proxying
-
-TFY independent identity:
-
-- code context protocol
-- compact AI code
-- semantic index
-- symbol maps
-- restoration
-- tool feedback compression
-- full AI work-context management
-
-## 8. Product Constraints Added Later
-
-The user clarified that TFY should not be treated as a small MVP-only experiment. The first planned product shape should include the full product direction:
-
-- as many programming languages as practical
-- compatibility with many AI agent tools
-- measurable token savings
-- measurable accuracy/correctness impact
-- fallback paths when compact context is not enough
-- raw/full outputs available after command-output summarization
-
-## 9. Folder/Documentation Organization Request
-
-The user asked to create a new standalone `tfy` folder, separate from the already-cloned RTK reference, move/copy earlier documents into it, and document the conversation so far. The safe interpretation used here is to copy prior OMX artifacts into `tfy/archive/` for traceability while leaving `.omx/tmp/rtk` and previous workflow artifacts intact.
+Older narrow framings such as “code minifier,” “command-output compressor,” or “RTK clone” are superseded.

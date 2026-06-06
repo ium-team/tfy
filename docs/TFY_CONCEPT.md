@@ -2,64 +2,55 @@
 
 ## Definition
 
-TFY is a **token-efficient AI work interface** for coding agents.
+TFY is a **whole-workflow token-saving service for AI coding**. It controls what an AI agent sees, how compactly it sees it, how it asks for more, how compact output is restored, and how raw/full evidence remains recoverable.
 
-It is not only a code minifier and not only a command-output filter. It is a protocol and transformation layer that controls what the AI sees, how compactly it sees it, how it requests more context, and how compact outputs are restored into human/project-readable form.
-
-## Product Identity
-
-TFY should be independent from RTK.
-
-- RTK is a reference for command-output compression.
-- TFY owns the broader AI context loop.
-- TFY should not be described as "RTK but renamed."
-- TFY should be planned as a release-grade product from the start, not as a minimal-only MVP.
-- TFY should support many languages through adapters and should be usable with many AI agent tools rather than being locked to one agent.
-
-TFY's unique identity:
+TFY's final product identity is broader than any single method:
 
 ```text
-semantic index
-+ compact code
-+ 1:1 symbol maps
-+ on-demand expansion
-+ compact tool feedback
-+ raw/full fallback
-+ readable restoration
+semantic code + project docs + commands + CI + Git/GitHub + task state + patches + provider context
+-> representation ladder
+-> method registry
+-> agent-neutral compact protocol
+-> deterministic restoration / raw fallback / evaluation gates
 ```
 
-## AI Context Flow
+## What TFY is not
+
+- not only a code minifier
+- not only command-output compression
+- not an RTK fork
+- not a provider-specific prompt-cache wrapper
+- not a lossy summarizer that hides evidence
+- not a phased MVP narrative
+
+## Final product principles
+
+1. **All token surfaces are in scope.** Code, docs, logs, tool calls, patches, task state, and repeated provider prompts can all be optimized.
+2. **Meaning is recoverable.** Compact symbols, refs, redactions, and summaries must have deterministic recovery or raw fallback where correctness/audit matters.
+3. **Safety beats compression.** TFY expands when uncertainty, risk, or diagnostics rise.
+4. **Agent-neutral core.** Any AI tool can use the core protocol; provider-specific features are optional adapters.
+5. **Future methods are expected.** New techniques enter through the method registry and evaluation gates.
+
+## Main flow
 
 ```text
-1. TFY indexes project code into scopes.
-2. AI first receives original semantic names of functions/scopes.
-3. AI requests the scopes it wants to inspect.
-4. TFY returns compact bodies and a local map.
-5. AI writes compact code/patches.
-6. TFY restores output into readable source code.
-7. If uncertain, AI can request more code or full context.
+1. Index project artifacts and task state.
+2. Represent each artifact through the cheapest safe ladder level.
+3. Give the agent semantic orientation before selected compact detail.
+4. Preserve refs to raw/full source and command evidence.
+5. Let the agent emit compact patches or edit scripts.
+6. Restore, validate, and format human/project-ready output.
+7. Evaluate net savings, correctness, fallback, and overhead.
 ```
 
-## Tool Feedback Flow
+## Canonical architecture spine
 
-```text
-1. AI/agent runs a command.
-2. TFY stores raw output.
-3. TFY sends a risk-aware compressed view.
-4. AI can request raw output by reference.
-5. Errors stay evidence-rich; success/no-action output is compressed heavily.
-```
+See `TOKEN_SAVING_ARCHITECTURE.md` for:
 
-## Design Principle
+- representation ladder
+- method registry schema
+- core vs optional adapter boundary
+- method families
+- safety and performance model
 
-> Reduce tokens only while preserving decision quality. When uncertainty or risk rises, expand context or raw output instead of pretending compression is enough.
-
-## Interface Principle
-
-TFY should present a compact, agent-neutral work protocol:
-
-```text
-index/list -> request scope/raw -> compact body/summary + ref -> patch/action -> deterministic restoration or raw expansion
-```
-
-This lets different AI tools use TFY even if they have different prompt formats, shell integrations, or editor integrations.
+Focused docs should specialize this spine, not redefine TFY.

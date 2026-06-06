@@ -15,3 +15,7 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tfy-core = { path = "../tfy-core" }
+tfy-runtime = { path = "../tfy-runtime" }
+
+[dev-dependencies]
+tempfile.workspace = true

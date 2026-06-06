@@ -1,41 +1,119 @@
 # TFY Production Stack
 
-TFY's Python implementation is the reference prototype. The production implementation is now prepared as a Rust-first workspace.
+## Purpose
 
-## Final stack
+This document maps the final token-saving architecture to the Rust-only implementation surface for the first releasable version.
+
+## Target stack
+
+The product/runtime target is **Rust-only**:
 
 - Core: Rust (`crates/tfy-core`)
-- Parser: Tree-sitter grammars
-- CLI: Rust binary (`crates/tfy-cli`, binary name `tfy`)
-- Python binding scaffold: PyO3/maturin (`bindings/tfy-python`)
-- Node/Wasm: deferred until Rust CLI/core parity is stable
+- CLI: Rust binary (`crates/tfy-cli`, `tfy`)
+- Tool Gateway: Rust CLI entrypoint (`tfy tool-gateway -- <command>`) over the existing command-output core
+- Parsers: Tree-sitter grammars where available
+- Tool feedback policy: Rust policy objects under the core crate
+- Evaluation and benchmarks: Rust tests plus `criterion`
+- Optional provider/model adapters: Rust adapter crates or external integrations, never correctness dependencies
+
+Python is **not** a product/runtime stack. The former Python product surfaces (`src/tfy`, root `pyproject.toml`, Python tests, `bindings/tfy-python`, `pyo3`, and `uv.lock`) have been removed from the release path. Python remains only a supported source-code language for analysis fixtures through tree-sitter.
+
+## Required architecture primitives
+
+The production core should support:
+
+- token-saving method registry
+- representation ladder and adaptive retrieval policy
+- artifact/ref store
+- parser-backed semantic skeletons
+- compact code and restoration contracts
+- byte-preserving raw command-output store and range expansion
+- incremental/delta state model
+- compact schema dictionaries
+- task/conversation ledger compaction
+- provider adapter interface
+- evaluation gate reporting
 
 ## Production invariants
 
-- CLI-first JSON protocol remains the canonical agent-neutral surface.
-- Parser-backed responses include `parser`, `confidence`, `fallback_action`, and `reason`.
-- First-wave production adapters are Python, JavaScript, JSX, TypeScript, TSX, Rust, and Go.
-- C-family remains experimental until corpus/confidence gates are met.
-- Python prototype fixtures under `oracle/fixtures/` are migration oracles, not a permanent runtime dependency.
-- Bindings call Rust core and do not duplicate transformation logic.
+- CLI-first text protocol remains canonical for model-visible output; JSON/envelopes remain explicit debug/adapter/internal surfaces.
+- Core behavior remains agent-neutral.
+- Optional adapters cannot be required for correctness.
+- Parser-backed responses include confidence, parser identity, and fallback action.
+- Raw/full fallback is always available for high-risk artifacts.
+- Public model-visible output redacts secrets before pass-through or summary; original command/output bytes remain local behind raw refs.
+- Current implementation status must be reported honestly.
 
-## Rust commands
+## Current Rust smoke commands
 
 ```sh
 cargo run -p tfy-cli -- languages
-cargo run -p tfy-cli -- index examples/sample.py
-cargo run -p tfy-cli -- expand examples/sample.py sample.py:calculate_total_price:1 --compactness symbol
+cargo run -p tfy-cli -- index corpus/rust/fixture_01.rs
+cargo run -p tfy-cli -- expand corpus/rust/fixture_01.rs fixture_01.rs:calculate_discount_1:5 --compactness symbol
 cargo run -p tfy-cli -- restore --payload payload.json
-cargo run -p tfy-cli -- run -- python3 -c 'print("ok")'
+cargo run -p tfy-cli -- tool-gateway -- sh -c 'printf ok'
+cargo run -p tfy-cli -- tool-gateway -- sh -c 'for i in $(seq 1 200); do echo "line $i"; done'
 cargo run -p tfy-cli -- raw <raw_ref>
-cargo run -p tfy-cli -- eval-code examples/sample.py sample.py:calculate_total_price:1
+cargo run -p tfy-cli -- eval-code corpus/rust/fixture_01.rs fixture_01.rs:calculate_discount_1:5
+cargo test --quiet
 ```
 
-## Verification
+## Retired Python product artifacts
 
-```sh
-cargo test --workspace
-cargo check --workspace
-cargo bench -p tfy-core --bench core_bench
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-```
+The Rust-only implementation removed the former Python product/runtime surfaces from the release path:
+
+- `src/tfy/*`
+- `tests/*.py`
+- root `pyproject.toml`
+- `uv.lock`
+- `bindings/tfy-python`
+- `pyo3` workspace dependency
+
+Do not reintroduce Python as a product/runtime dependency without a new explicit compatibility decision.
+
+## Release readiness
+
+A production surface is release-ready only when `EVALUATION_GATES.md` passes for its method families. Token savings without correctness/evidence gates are not sufficient.
+
+
+## Agent middleware stack direction
+
+TFY's production integration model is AI-agent I/O middleware. The Rust core owns correctness; adapters automate invocation for specific runtimes. Planned integration surfaces:
+
+- Tool Gateway shell/tool proxy — first implementation target and now exposed as `tfy tool-gateway`.
+- Context Gateway adapter — routes repo/file requests through index/expand/full/decide primitives.
+- Output Gateway adapter — restores and validates structured compact patches/code before apply.
+- State Gateway ledger — event-fed compact task state from all gateways.
+
+Provider, Codex, MCP, shell, and editor integrations remain adapters around the Rust core.
+
+## Implemented runtime-interception foundation
+
+The production stack now includes `tfy-runtime`, a Rust runtime contract crate that defines versioned envelopes, adapter capabilities, negotiation, gateway events, provenance refs, validation status, and state projection primitives.
+
+Implemented binaries/surfaces:
+
+- `tfy runtime-capabilities`
+- `tfy runtime-negotiate`
+- `tfy tool-gateway -- <command>` and `tfy shell -- <command>` as text-first model-visible wrappers
+- `tfy tool-gateway --json|--jsonl` and `tfy shell --json|--jsonl` as debug/adapter/internal wrappers
+- `tfy context-gateway`
+- `tfy output-gateway` preview/validate
+- `tfy state-append`
+- `tfy state-project`
+
+Release boundary: local shell/tool/context/output/state gateway foundations, generic-shell adapter, and MCP stdio tool/resource server are implemented. Codex private hooks, editor, and provider adapters are still separate integration packages to build and test before claiming automatic interception for those runtimes. The Codex-facing MCP support is a setup snippet for Codex MCP configuration, not private Codex hook interception.
+
+## MCP/Codex adapter foundation v2
+
+The production stack now includes `tfy mcp serve`, a stdio MCP server that exposes existing TFY gateway capabilities as tools/resources. It is intentionally bounded:
+
+- stdout is JSON-RPC only;
+- logs and warnings use stderr/files;
+- `initialize` declares tools and resources;
+- `resources/list` returns concrete session resources;
+- `resources/templates/list` returns `tfy://raw/{raw_ref}`, `tfy://report/{session}`, and `tfy://state/{session}` templates;
+- child command failures are tool results and do not terminate the MCP process;
+- `tfy mcp install --target codex --dry-run` prints a concrete `codex mcp add` command and TOML snippet without writing config.
+
+This is the first supported agent-native integration boundary after the generic-shell adapter. It does not replace future Codex private hook/provider/editor adapters.
