@@ -1,0 +1,26 @@
+name: Adapter request
+description: Request support for a specific AI agent/runtime/editor/provider
+title: "adapter: "
+labels: [adapter]
+body:
+  - type: input
+    id: host
+    attributes:
+      label: Agent host/runtime
+      placeholder: Codex, Claude Code, OpenCode, Cursor, VS Code, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: hook
+    attributes:
+      label: Available integration point
+      description: Shell hook, MCP, plugin API, editor extension, provider gateway, or other documented API.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected TFY behavior
+      description: Which gateway should be routed through TFY and how should raw recovery work?
+    validations:
+      required: true

@@ -99,6 +99,14 @@ Reference/status docs:
 - `docs/RTK_REFERENCE.md` — RTK lessons without inheriting RTK's product boundary.
 - `docs/CONVERSATION_SUMMARY.md` — superseded discussion history and final decision summary.
 
+Repository/development harness:
+
+- `.codex/AGENT_HARNESS.md` — AI-agent project map, invariants, safe edit rules, and focused checks.
+- `docs/contributing/CONTRIBUTING.md` — branch, commit, PR, and verification expectations.
+- `docs/contributing/REPOSITORY_HARNESS.md` — module boundaries, adapter workflow, and release-readiness harness.
+- `.github/` — PR template, issue templates, and Rust CI workflow.
+- `scripts/verify.sh` — local full verification gate.
+
 ## Implementation status
 
 The product/runtime stack is **Rust core + Rust CLI**. Python product/runtime surfaces have been retired: there is no root Python package, PyO3 binding crate, Python lockfile, or Python test suite in the release path. Python remains only a supported input language for code analysis through tree-sitter fixtures.

@@ -1,0 +1,37 @@
+name: Bug report
+description: Report incorrect TFY behavior or a regression
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include the command, expected output, actual output, and whether raw recovery worked.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Paste redacted output, raw_ref, logs, or test failures. Do not paste secrets.
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Boundary
+      options:
+        - tool-gateway
+        - generic-shell adapter
+        - MCP server
+        - context gateway
+        - output gateway
+        - state gateway
+        - documentation
+        - other
