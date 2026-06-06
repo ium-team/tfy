@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose a token-saving method, gateway, or developer-harness improvement
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What token cost, workflow cost, or correctness gap should TFY address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the desired behavior and where TFY should sit in the agent flow.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Correctness and fallback requirements
+      description: What evidence must be preserved? When should TFY fall back to raw/full output?

@@ -1,153 +1,172 @@
-# TFY — Token-Efficient AI Work Interface
+# TFY — Whole-Workflow Token-Saving Service for AI Coding
 
-TFY is a standalone product concept. RTK is a reference for command-output compression, but TFY is not RTK and should not become an RTK clone.
+TFY is a token-saving service for the full AI coding workflow. Its intended product use is as AI-agent I/O middleware: an agent runtime routes command execution, context injection, model outputs, and task state through TFY so the model sees compact, recoverable representations while raw/full evidence remains available.
 
-TFY's goal is broader:
+TFY is not a phased MVP, not a code minifier, and not an RTK clone. The first public shape is the final product architecture: an extensible method registry plus an agent-neutral protocol that can absorb new token-saving methods as they are discovered.
 
-> Rebuild the whole AI coding work interface around token-efficient representations: compact code, semantic name indexes, deterministic symbol maps, on-demand context expansion, compact tool feedback, raw-output fallback, and human-readable restoration.
+## Product contract
 
-## Core Idea
-
-AI does not always need human-friendly source code or full command logs. TFY gives AI the smallest representation that can still support correct work, while keeping deterministic escape hatches back to full meaning and raw evidence.
+TFY gives agents the smallest representation that can still support correct work, and it keeps a deterministic path back to meaning:
 
 ```text
-Human code / tool output
--> TFY compact representation
--> AI reads and writes compact context
--> TFY expands or restores when needed
--> Human receives readable code / full evidence when needed
+project artifacts / commands / task state
+-> TFY representation ladder
+-> compact agent-facing context
+-> agent actions / compact patches
+-> TFY restoration, expansion, and evidence recovery
+-> human/project-ready output
 ```
 
-## Main Subsystems
+Core invariants:
 
-1. **Semantic Code Index**
-   - Shows original long function/scope names first.
-   - AI chooses what it wants to inspect.
+- **Save tokens everywhere:** code, docs, command output, CI, Git/GitHub work, task state, patches, schemas, repeated context, and provider adapters.
+- **Preserve evidence:** errors, failing tests, security/permission issues, dirty repo state, review comments, and other decision-critical facts keep raw or directly recoverable evidence.
+- **Prefer correctness over savings:** compact context is allowed only while work quality holds; uncertainty triggers related/full/raw fallback.
+- **Stay agent-neutral:** the model-facing protocol is plain text plus local refs; JSON/envelopes are explicit debug/adapter/internal surfaces, never the default model payload.
+- **Expect future methods:** token-saving methods are registry entries with metrics, risks, fallback triggers, and evaluation gates.
 
-2. **Compact Code Representation**
-   - AI-facing code is shortened where safe; brace-style languages can collapse whitespace more aggressively.
-   - Python keeps indentation/newlines and string contents intact because correctness beats extra compression.
-   - Non-Python compaction preserves string/template literal contents while safely compacting surrounding whitespace.
-   - Variables/functions can become short symbols like `f1`, `a`, `b`.
+## Final architecture
 
-3. **1:1 Symbol Map**
-   - Compact symbols map deterministically to original semantic names.
-   - Mapping is scope-aware and provided only when needed.
+TFY is organized around seven release concepts:
 
-4. **On-Demand Code Expansion**
-   - names -> signatures/structure -> selected compact bodies -> related context -> full context fallback.
+1. **Representation ladder** — raw/full, summary, semantic skeleton, selected compact detail, hash/ref, delta, and optional provider-adapter view.
+2. **Token-saving method registry** — each method declares target artifact, savings mechanism, performance cost, correctness risk, fallback trigger, and evaluation metric.
+3. **Artifact/ref store** — files, scopes, command outputs, summaries, task ledgers, and provider layouts can be referenced by stable IDs instead of repeated in full.
+4. **Adaptive retrieval and compactness policy** — choose skeleton, summary, compact body, related context, full file, or raw output based on task risk and budget.
+5. **Agent I/O middleware boundaries** — Tool, Context, Output, and State Gateways define where TFY sits between an agent runtime, tools, model context, model output, and long-running task state.
+6. **Agent-neutral protocol** — default CLI gateway output is model-visible text selected by a net-savings gate; JSON primitives remain explicit debug/adapter/internal contracts for `tfy tool-gateway`, `index`, `expand`, `run`, `raw`, `restore`, and future registry/ref/delta commands.
+7. **Evaluation gates** — every saving claim is measured as net token savings plus correctness, fallback frequency, missed-evidence risk, and performance overhead.
 
-5. **Readable Restoration**
-   - AI outputs compact patches/code.
-   - TFY maps symbols back to original names and formats output for humans/projects.
+## Current method families
 
-6. **Tool Feedback Layer**
-   - Command/tool output is compressed by risk tier.
-   - Errors/important evidence are preserved.
-   - Success/no-action logs are compressed aggressively.
-   - Raw output remains requestable.
+TFY's initial registry includes:
 
-## RTK Relationship
+- semantic code indexing and skeletons
+- compact code and deterministic symbol maps
+- content-addressed context refs
+- incremental delta protocol
+- token-aware schema dictionaries
+- dependency-neighborhood slicing
+- patch-only / edit-script outputs
+- boilerplate and generated-artifact suppression
+- conversation/task-state compaction
+- risk-aware tool feedback compression
+- tool-output fingerprinting
+- error clustering and diagnostic normalization
+- retrieval budget planning
+- adaptive compactness policy
+- local memoization
+- Test/CI selective evidence mode
+- privacy/security redaction with local refs
+- optional provider/model cache adapters
 
-RTK is a strong reference for command-output filtering:
+The list is intentionally open. New methods should be added through the method registry, not by rewriting TFY's identity.
 
-- command proxying
-- per-command filters
-- raw output tee/recovery
-- token savings tracking
-- hooks that rewrite shell commands
+## Safety model
 
-But TFY's identity is different:
+Full context fallback is not a failure. It is the mechanism that keeps TFY honest.
 
-| RTK | TFY |
-|---|---|
-| command-output token killer | AI work-context interface |
-| filters command output | manages code, symbols, context, tool feedback, and restoration |
-| command proxy/filter | context protocol + representation layer |
-| mostly output compression | input/output/code/tool feedback loop |
+TFY must expand or recover raw evidence when:
 
-## Documents
+- compact symbols are unmapped or ambiguous
+- diagnostics mention unresolved names or missing code
+- a command emits errors, warnings, stack traces, failed checks, or review blockers
+- a summary confidence is low
+- a patch touches unsafe/public/dynamic behavior
+- provider cache/adapters cannot guarantee equivalent model behavior
 
-- `docs/TFY_CONCEPT.md` — product definition and architecture.
-- `docs/CODE_COMPRESSION.md` — compact code, name maps, and restoration.
-- `docs/TOOL_FEEDBACK.md` — command-output compression and raw-output fallback.
-- `docs/RTK_REFERENCE.md` — what TFY should learn from RTK without copying its identity.
-- `docs/PRD.md` — consolidated product requirements.
-- `docs/TEST_SPEC.md` — test and evaluation specification.
-- `docs/CONVERSATION_SUMMARY.md` — summary of the discussion so far.
-- `archive/` — copied source artifacts from prior OMX interview/planning runs.
+## Documentation map
 
-## Implementation Status
+Canonical docs:
 
-The standalone TFY implementation lives in this folder and is independent from the RTK clone under `.omx/tmp/rtk`.
+- `docs/TOKEN_SAVING_ARCHITECTURE.md` — final architecture, representation ladder, and method registry schema.
+- `docs/PRD.md` — product requirements for the release-ready architecture.
+- `docs/PROTOCOL.md` — agent-neutral protocol contract.
+- `docs/AGENT_MIDDLEWARE.md` — Tool/Context/Output/State Gateway integration model for AI-agent runtimes.
+- `docs/EVALUATION_GATES.md` — net savings, correctness, fallback, and performance gates.
+- `docs/ADAPTERS.md` — optional provider/model adapter policy.
 
-### Install / Run Locally
+Focused method-family docs:
+
+- `docs/CODE_COMPRESSION.md` — code/context representations, maps, restoration, and skeletons.
+- `docs/TOOL_FEEDBACK.md` — command/tool feedback, raw refs, fingerprinting, and error clustering.
+- `docs/GIT_GITHUB_HARNESS.md` — Git/GitHub evidence specialization.
+
+Reference/status docs:
+
+- `docs/PRODUCTION_STACK.md` — production stack expectations and current implementation status.
+- `docs/RUST_ONLY_MIGRATION.md` — Rust-only runtime target and completed Python retirement record.
+- `docs/RTK_REFERENCE.md` — RTK lessons without inheriting RTK's product boundary.
+- `docs/CONVERSATION_SUMMARY.md` — superseded discussion history and final decision summary.
+
+Repository/development harness:
+
+- `AGENTS.md` — repo-root Codex/AI-agent instructions, branch policy, commit policy, and verification rules.
+- `docs/AGENT_HARNESS.md` — long-form AI-agent project map, invariants, safe edit rules, and focused checks.
+- `docs/contributing/CONTRIBUTING.md` — contributor workflow expectations.
+- `docs/contributing/GIT_POLICY.md` — Git Flow branch model, Conventional+Lore commit format, and PR policy.
+- `docs/contributing/REPOSITORY_HARNESS.md` — module boundaries, adapter workflow, and release-readiness harness.
+- `.github/` — PR template, issue templates, and Rust CI workflow.
+- `scripts/verify.sh` — local full verification gate.
+
+## Implementation status
+
+The product/runtime stack is **Rust core + Rust CLI**. Python product/runtime surfaces have been retired: there is no root Python package, PyO3 binding crate, Python lockfile, or Python test suite in the release path. Python remains only a supported input language for code analysis through tree-sitter fixtures.
+
+Rust smoke commands:
 
 ```sh
 cd tfy
-PYTHONPATH=src python3 -m tfy.cli languages
+cargo run -p tfy-cli -- languages
+cargo run -p tfy-cli -- index corpus/rust/fixture_01.rs
+cargo run -p tfy-cli -- tool-gateway -- sh -c 'printf ok'
+cargo run -p tfy-cli -- tool-gateway -- sh -c 'for i in $(seq 1 200); do echo "line $i"; done'
+cargo run -p tfy-cli -- shell -- sh -c 'printf ok'
+cargo run -p tfy-cli -- tool-gateway --json -- sh -c 'printf ok' # debug/adapter/internal only
+cargo run -p tfy-cli -- runtime-capabilities
+cargo run -p tfy-cli -- adapter capabilities
+cargo run -p tfy-cli -- adapter install --target generic-shell --dry-run
+cargo run -p tfy-cli -- adapter run --session smoke -- sh -c 'printf ok'
+cargo run -p tfy-cli -- adapter report --session smoke
+cargo run -p tfy-cli -- mcp capabilities
+cargo run -p tfy-cli -- mcp install --target codex --dry-run
+cargo test --quiet
 ```
 
-### Agent-Neutral CLI
 
-TFY exposes a CLI protocol any AI agent/tool can call:
+## How TFY participates in an AI-agent loop
 
-```sh
-# 1. names-first semantic index
-PYTHONPATH=src python3 -m tfy.cli index examples/sample.py
+Humans can run the CLI directly, but the intended path is automatic runtime use:
 
-# 2. selected compact body + local 1:1 map; payload includes compactness metadata
-PYTHONPATH=src python3 -m tfy.cli expand examples/sample.py sample.py:calculate_total_price:1 --compactness symbol
-
-# 3. full fallback when needed
-PYTHONPATH=src python3 -m tfy.cli full examples/sample.py sample.py:calculate_total_price:1
-
-# 4. decide selected/related/full fallback from compact payload + diagnostics
-PYTHONPATH=src python3 -m tfy.cli decide-context --payload payload.json
-
-# 5. restore compact output deterministically
-PYTHONPATH=src python3 -m tfy.cli restore --payload compact-payload.json
-
-# 6. run commands through risk-aware compact feedback, with raw refs
-PYTHONPATH=src python3 -m tfy.cli run -- python3 -c 'print("ok")'
-PYTHONPATH=src python3 -m tfy.cli raw cmdout_xxxxxxxxxxxx
-
-# 7. measure raw vs compact token savings
-PYTHONPATH=src python3 -m tfy.cli eval-code examples/sample.py sample.py:calculate_total_price:1
+```text
+AI agent/runtime
+  -> Tool Gateway: ordinary command -> tfy tool-gateway -- <command> -> model-visible text
+  -> Context Gateway: repo/file request -> index/expand/full/decide -> compact context + fallback refs
+  -> Output Gateway: compact patch/code -> restore/validate -> apply-ready output or fallback request
+  -> State Gateway: turn history/tool evidence -> compact task ledger + refs
 ```
 
-### Implemented Modules
+Tool Gateway always stores exact raw stdout/stderr bytes locally first. The model sees a compact summary only when that summary is strictly smaller than the redacted public raw output; otherwise TFY passes through the redacted raw text. This prevents negative token savings for tiny outputs such as `ok`. Raw refs remain available internally/debug-side and are included in model text when output is summarized, truncated, or suppressed.
 
-- `src/tfy/code.py` — scope index, compact code, symbol maps, full expansion, restoration.
-- `src/tfy/context.py` — missing-needed-code fallback decision policy.
-- `src/tfy/tool_feedback.py` — RTK-inspired command capture/compression/raw refs.
-- `src/tfy/languages.py` — extensible adapters for Python, JS/TS, Rust, Go, and C-family.
-- `src/tfy/eval.py` — token estimate and savings measurement.
-- `src/tfy/cli.py` — agent-neutral command surface.
+Current implementation status:
 
-### Verification
+- Implemented: Rust core primitives, Rust CLI, `tfy-runtime` envelope/capability/event contract, Tool Gateway text-first net-savings entrypoint, explicit debug/adapter JSON/JSONL entrypoints, shell wrapper, Context Gateway CLI, Output Gateway preview/validate CLI, State Gateway append/project CLI, raw refs, redaction, code index/expand/full/restore, evaluation.
+- Implemented adapter v1: `tfy adapter` generic-shell command-boundary shim, dry-run installer, session ledger, and savings report.
+- Implemented MCP foundation v2: `tfy mcp serve` stdio JSON-RPC server, MCP tool/resource discovery, raw/report/state resources, and Codex MCP dry-run/setup snippet generation.
+- Planned adapters: Codex private hooks/editor/provider automatic hook integrations and Output Gateway workspace apply beyond preview/validate.
 
-```sh
-cd tfy
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+TFY should not claim automatic model input/output interception for a runtime until that runtime adapter exists and passes the relevant gates. The MCP foundation is a supported MCP tool/resource integration point; it still requires the host agent to route through MCP and is not a private Codex hook or universal shell interception layer.
+
+## MCP/Codex adapter foundation
+
+TFY can run as an MCP stdio server for agent hosts that support MCP:
+
+```bash
+tfy mcp capabilities
+tfy mcp serve --session local-session --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw
+tfy mcp install --target codex --dry-run
 ```
 
-Current suite covers compact code, deterministic restoration, scope-aware maps, fallback decisions, command-output compression/raw refs, multi-language adapters, CLI protocol, and savings evaluation.
+The server exposes `tfy_tool_run`, `tfy_raw_get`, `tfy_context_get`, `tfy_output_validate`, `tfy_state_project`, and `tfy_adapter_report`, plus `tfy://raw/{raw_ref}`, `tfy://report/{session}`, and `tfy://state/{session}` resources. MCP stdout is JSON-RPC only; logs and warnings go to stderr or files. Non-zero child commands are returned as tool results and do not terminate the MCP server.
 
-### Safety Hardening
-
-The implementation rejects ambiguous bare scope names, uses scope IDs for deterministic selection, preserves Python layout/string literals for syntactic safety, avoids rewriting Python string literals/comments/attribute names during symbol restoration, validates raw refs, uses append-only raw records, and reports a composite evaluation gate rather than treating token savings alone as success.
-
-
-## Production Rust Stack
-
-The Python implementation remains the reference prototype. The production stack is now prepared as a Rust workspace using Tree-sitter and a CLI-first JSON protocol. See `docs/PRODUCTION_STACK.md`.
-
-Key production paths:
-
-- `Cargo.toml` — Rust workspace root.
-- `crates/tfy-core` — Rust production core.
-- `crates/tfy-cli` — agent-neutral Rust CLI.
-- `bindings/tfy-python` — PyO3/maturin binding scaffold.
-- `oracle/fixtures` — frozen Python prototype oracle fixtures.
-- `corpus/` — first-wave language fixtures.
+This is MCP tool/resource integration. It does not claim private Codex hook interception, provider prompt mutation, or universal shell interception without host MCP routing.
