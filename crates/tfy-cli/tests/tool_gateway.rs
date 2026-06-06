@@ -26,6 +26,7 @@ fn tool_gateway_passes_through_tiny_success_without_json_or_ref_overhead() {
 fn tool_gateway_redacts_public_credential_urls() {
     let raw_dir = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("CARGO_TERM_COLOR", "never")
         .args([
             "tool-gateway",
             "--raw-dir",
@@ -260,4 +261,35 @@ fn raw_around_missing_needle_fails_closed_without_full_output() {
         .unwrap();
     assert!(!raw.status.success());
     assert!(raw.stdout.is_empty());
+}
+
+#[test]
+fn tool_gateway_json_includes_command_family_for_p0_wrapped_command() {
+    let raw_dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("CARGO_TERM_COLOR", "never")
+        .args([
+            "tool-gateway",
+            "--json",
+            "--raw-dir",
+            raw_dir.path().to_str().unwrap(),
+            "--",
+            "cargo",
+            "test",
+            "--help",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["payload"]["command_family"], "cargo_test");
+    assert_eq!(json["payload"]["rendering_kind"], "summary");
+    assert!(json["payload"]["model_text"]
+        .as_str()
+        .unwrap()
+        .contains("family=cargo_test"));
 }

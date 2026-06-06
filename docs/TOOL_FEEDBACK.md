@@ -36,6 +36,17 @@ This document specializes the final architecture for command, shell, test, CI, G
 - **Risk:** hiding flaky/slow signals.
 - **Fallback:** raw/ranged expansion.
 
+## Implemented P0 command-family filters
+
+The Tool Gateway now assigns a stable `command_family` in the shared command-output path and uses fixture-driven summaries for the RTK-overlapping P0 families:
+
+- `git_status`, `git_diff`, `git_log`
+- `gh_pr_checks`
+- `cargo_test`, `cargo_clippy`, `cargo_build`, `cargo_check`
+- `pytest`, `npm_test`, `pnpm_test`, `yarn_test`, `go_test`
+
+Every family summary still passes through the no-negative-savings selector: TFY emits the family summary only when it is smaller than redacted public raw output, or emits a recoverable suppression notice for unsafe/binary-ish output. Raw bytes are stored first in all cases. Unsupported or low-confidence commands remain on the generic path and may pass through redacted raw output.
+
 ## Core policy
 
 ```text
@@ -89,6 +100,6 @@ Git and GitHub are specialized high-frequency tool-feedback domains. `GIT_GITHUB
 
 ## Adapter session reporting
 
-`tfy adapter run` records internal Tool Gateway events with raw/model-visible byte sizes, rendering kind, savings percentage, and negative-savings avoidance markers. `tfy adapter report --session <id>` aggregates those events so a developer can see whether command-boundary interception actually reduced model-visible tokens for the session.
+`tfy adapter run` records internal Tool Gateway events with raw/model-visible byte sizes, rendering kind, `command_family`, savings percentage, and negative-savings avoidance markers. `tfy adapter report --session <id>` aggregates those events so a developer can see whether command-boundary interception actually reduced model-visible tokens for the session.
 
-Adapter reports use `raw_bytes` and `model_bytes` as the public size contract. Legacy runtime ledger fields such as `raw_chars` / `model_chars` are compatibility-only and are not emitted by `tfy adapter report`.
+Adapter reports use `raw_bytes` and `model_bytes` as the public size contract. They include deterministic `family_counts` and `families_by_saved_tokens` so savings can be audited by command family. Legacy runtime ledger fields such as `raw_chars` / `model_chars` are compatibility-only and are not emitted by `tfy adapter report`; legacy events without `command_family` are classified through the shared lightweight classifier when possible.

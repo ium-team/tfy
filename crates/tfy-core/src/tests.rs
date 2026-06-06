@@ -619,6 +619,36 @@ fn rust_git_status_and_data_commands_are_conservative() {
     assert_eq!(dirty.risk, "unknown");
     assert!(dirty.summary.contains(" M docs/failed_checks.md"));
 
+    let long_dirty_raw = "On branch main\nChanges not staged for commit:\n  modified:   src/lib.rs\n  new file:   docs/notes.md\n\nUntracked files:\n  scratch.txt\n".repeat(20);
+    let long_dirty =
+        summarize_command_output("git status", &long_dirty_raw, 0, dir.path()).unwrap();
+    assert_eq!(long_dirty.command_family, "git_status");
+    assert_eq!(long_dirty.risk, "unknown");
+    assert!(
+        long_dirty.model_text.contains("changed_paths=40"),
+        "{}",
+        long_dirty.model_text
+    );
+    assert!(
+        !long_dirty.model_text.contains("changed_paths=0"),
+        "{}",
+        long_dirty.model_text
+    );
+
+    let unicode_unknown =
+        summarize_command_output("git status", &"🚀.txt\n".repeat(300), 0, dir.path()).unwrap();
+    assert_eq!(unicode_unknown.command_family, "git_status");
+    assert!(
+        unicode_unknown.model_text.contains("changed_paths=unknown"),
+        "{}",
+        unicode_unknown.model_text
+    );
+    assert!(
+        unicode_unknown.model_text.contains("raw_ref="),
+        "{}",
+        unicode_unknown.model_text
+    );
+
     let conflict =
         summarize_command_output("git status --short", "UU src/app.rs\n", 0, dir.path()).unwrap();
     assert_eq!(conflict.risk, "critical");
@@ -864,4 +894,216 @@ fn public_pass_through_redacts_prefixed_secret_like_assignments() {
         "{}",
         summary.model_text
     );
+}
+
+#[test]
+fn p0_command_family_classifier_and_cargo_summary_save_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        crate::classify_command_family("cargo test --workspace"),
+        "cargo_test"
+    );
+    assert_eq!(
+        crate::classify_command_family("git diff --stat"),
+        "git_diff"
+    );
+    assert_eq!(
+        crate::classify_command_family("gh pr checks 42"),
+        "gh_pr_checks"
+    );
+
+    let mut raw = String::from("running 250 tests\n");
+    for i in 0..250 {
+        raw.push_str(&format!("test generated_case_{i} ... ok\n"));
+    }
+    raw.push_str("test result: ok. 250 passed; 0 failed; 0 ignored; finished in 1.23s\n");
+    let summary = summarize_command_output("cargo test --workspace", &raw, 0, dir.path()).unwrap();
+    assert_eq!(summary.command_family, "cargo_test");
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(
+        summary.model_text.contains("family=cargo_test"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("tests_observed=250"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.len() < raw.len(),
+        "{} >= {}",
+        summary.model_text.len(),
+        raw.len()
+    );
+}
+
+#[test]
+fn p0_test_failure_summary_preserves_actionable_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut raw = String::new();
+    for i in 0..160 {
+        raw.push_str(&format!("test passing_case_{i} ... ok\n"));
+    }
+    raw.push_str("test auth_rejects_expired_token ... FAILED\n");
+    raw.push_str("---- auth_rejects_expired_token stdout ----\n");
+    raw.push_str("thread 'auth_rejects_expired_token' panicked at src/auth.rs:42:9:\n");
+    raw.push_str("assertion failed: expected 401 got 200\n");
+    raw.push_str("failures: auth_rejects_expired_token\n");
+    raw.push_str("test result: FAILED. 160 passed; 1 failed; finished in 0.44s\n");
+    let summary = summarize_command_output("cargo test auth", &raw, 101, dir.path()).unwrap();
+    assert_eq!(summary.command_family, "cargo_test");
+    assert_eq!(summary.risk, "critical");
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(
+        summary.model_text.contains("auth_rejects_expired_token"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("src/auth.rs:42"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("expected 401 got 200"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("raw_ref="),
+        "{}",
+        summary.model_text
+    );
+}
+
+#[test]
+fn p0_git_diff_summary_reports_shape_without_losing_raw() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = "diff --git a/src/lib.rs b/src/lib.rs\nindex 111..222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n pub fn a() {}\n+pub fn b() {}\n-// old\n".repeat(80);
+    let summary = summarize_command_output("git diff", &raw, 0, dir.path()).unwrap();
+    assert_eq!(summary.command_family, "git_diff");
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(
+        summary.model_text.contains("files_changed=80"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("hunks=80"),
+        "{}",
+        summary.model_text
+    );
+    let raw_back = raw_output(dir.path(), &summary.raw_ref, None, 1).unwrap();
+    assert_eq!(raw_back, raw);
+}
+
+#[test]
+fn p0_git_diff_stat_and_log_variants_do_not_claim_false_zero_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let stat_raw =
+        " src/lib.rs        | 10 +++++-----\n README.md         |  2 ++\n 2 files changed, 7 insertions(+), 5 deletions(-)\n"
+            .repeat(40);
+    let stat_summary =
+        summarize_command_output("git diff --stat", &stat_raw, 0, dir.path()).unwrap();
+    assert_eq!(stat_summary.command_family, "git_diff");
+    assert_eq!(stat_summary.rendering_kind, "summary");
+    assert!(
+        stat_summary.model_text.contains("files_changed=80"),
+        "{}",
+        stat_summary.model_text
+    );
+    assert!(
+        stat_summary.model_text.contains("hunks=unknown"),
+        "{}",
+        stat_summary.model_text
+    );
+    assert!(
+        stat_summary.model_text.contains("added_lines=280"),
+        "{}",
+        stat_summary.model_text
+    );
+    assert!(
+        stat_summary.model_text.contains("deleted_lines=200"),
+        "{}",
+        stat_summary.model_text
+    );
+    assert!(
+        !stat_summary.model_text.contains("files_changed=0"),
+        "{}",
+        stat_summary.model_text
+    );
+    assert!(
+        !stat_summary
+            .model_text
+            .contains("added_lines=0 deleted_lines=0"),
+        "{}",
+        stat_summary.model_text
+    );
+
+    let log_raw = "feat: compact command output\nfix: preserve raw refs\n".repeat(80);
+    let log_summary =
+        summarize_command_output("git log --oneline --format=%s", &log_raw, 0, dir.path()).unwrap();
+    assert_eq!(log_summary.command_family, "git_log");
+    assert_eq!(log_summary.rendering_kind, "summary");
+    assert!(
+        log_summary.model_text.contains("commits_shown=unknown"),
+        "{}",
+        log_summary.model_text
+    );
+    assert!(
+        !log_summary.model_text.contains("commits_shown=0"),
+        "{}",
+        log_summary.model_text
+    );
+}
+
+#[test]
+fn p0_gh_pr_checks_success_and_failure_risk_are_family_aware() {
+    let dir = tempfile::tempdir().unwrap();
+    let success_raw = "build pass 2m\ntest pass 1m\n0 failed\n".repeat(40);
+    let success = summarize_command_output("gh pr checks 42", &success_raw, 0, dir.path()).unwrap();
+    assert_eq!(success.command_family, "gh_pr_checks");
+    assert_eq!(success.risk, "success");
+    assert!(
+        !success.model_text.contains("CRITICAL"),
+        "{}",
+        success.model_text
+    );
+
+    let failure_raw = "build pass 2m\ntest fail 1m\nlint action_required\n".repeat(20);
+    let failure = summarize_command_output("gh pr checks 42", &failure_raw, 0, dir.path()).unwrap();
+    assert_eq!(failure.command_family, "gh_pr_checks");
+    assert_eq!(failure.risk, "critical");
+    assert!(
+        failure.model_text.contains("CRITICAL family=gh_pr_checks"),
+        "{}",
+        failure.model_text
+    );
+    assert!(
+        failure.model_text.contains("action_required") || failure.model_text.contains("fail"),
+        "{}",
+        failure.model_text
+    );
+
+    let mixed_failure_raw = "build pass 2m\nunit 0 failed\nlint error 1m\n".repeat(20);
+    let mixed_failure =
+        summarize_command_output("gh pr checks 42", &mixed_failure_raw, 0, dir.path()).unwrap();
+    assert_eq!(mixed_failure.command_family, "gh_pr_checks");
+    assert_eq!(mixed_failure.risk, "critical");
+    assert!(
+        mixed_failure.model_text.contains("lint error"),
+        "{}",
+        mixed_failure.model_text
+    );
+}
+
+#[test]
+fn suppressed_output_savings_pct_is_never_negative() {
+    let dir = tempfile::tempdir().unwrap();
+    let command = format!("binary-ish {}", "very-long-command-fragment".repeat(20));
+    let summary = summarize_command_output(&command, "x\0", 0, dir.path()).unwrap();
+    assert_eq!(summary.rendering_kind, "suppressed");
+    assert_eq!(summary.savings_pct, 0.0);
+    assert!(summary.model_text.len() > summary.raw_chars);
 }

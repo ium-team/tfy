@@ -320,6 +320,8 @@ pub enum GatewayResponse {
         command: String,
         exit_code: i32,
         risk: String,
+        #[serde(default)]
+        command_family: String,
         summary: String,
         model_text: String,
         rendering_kind: String,
@@ -356,6 +358,8 @@ pub enum GatewayEvent {
         command: String,
         exit_code: i32,
         risk: String,
+        #[serde(default)]
+        command_family: String,
         raw_ref: String,
         #[serde(default)]
         raw_bytes: usize,

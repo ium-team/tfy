@@ -106,6 +106,7 @@ fn adapter_run_preserves_failure_exit_code() {
     let raw = dir.path().join("raw");
 
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("CARGO_TERM_COLOR", "never")
         .args([
             "adapter",
             "run",
@@ -323,7 +324,71 @@ fn adapter_report_loads_legacy_tool_command_completed_events() {
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
     assert_eq!(json["commands"], 1);
     assert_eq!(json["model_bytes"], 2);
-    assert!(json.get("saved_bytes").is_some(), "{json}");
-    assert!(json.get("net_savings_ratio").is_some(), "{json}");
+    assert_eq!(json["saved_bytes"], 0);
+    assert_eq!(json["estimated_saved_tokens"], 0);
+    assert_eq!(json["net_savings_ratio"], 0.0);
     assert_eq!(json["rendering_counts"]["legacy_unknown"], 1);
+    assert_eq!(json["family_counts"]["generic"], 1);
+    assert_eq!(json["families_by_saved_tokens"][0]["family"], "generic");
+    assert_eq!(json["families_by_saved_tokens"][0]["saved_bytes"], 0);
+}
+
+#[test]
+fn adapter_report_includes_deterministic_family_savings() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let raw = dir.path().join("raw");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("CARGO_TERM_COLOR", "never")
+        .args([
+            "adapter",
+            "run",
+            "--session",
+            "family-session",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--raw-dir",
+            raw.to_str().unwrap(),
+            "--",
+            "cargo",
+            "test",
+            "--help",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let model_text = String::from_utf8_lossy(&output.stdout);
+    assert!(model_text.contains("family=cargo_test"), "{model_text}");
+
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "adapter",
+            "report",
+            "--session",
+            "family-session",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(json["family_counts"]["cargo_test"], 1);
+    let families = json["families_by_saved_tokens"].as_array().unwrap();
+    assert_eq!(families[0]["family"], "cargo_test");
+    assert!(families[0]["saved_bytes"].as_i64().unwrap() > 0, "{json}");
+    assert!(
+        families[0]["estimated_saved_tokens"].as_i64().unwrap() > 0,
+        "{json}"
+    );
 }

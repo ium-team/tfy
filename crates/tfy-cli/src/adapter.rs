@@ -5,6 +5,7 @@ use clap::Subcommand;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use tfy_core::classify_command_family;
 use tfy_runtime::{load_events, GatewayEvent};
 
 fn estimate_tokens(chars: usize) -> usize {
@@ -193,6 +194,16 @@ exec tfy adapter run --session "${TFY_SESSION_ID:-local-session}" -- "$@"
     Ok(())
 }
 
+#[derive(Default, serde::Serialize, Clone)]
+pub(crate) struct FamilySavings {
+    family: String,
+    commands: usize,
+    raw_bytes: usize,
+    model_bytes: usize,
+    saved_bytes: isize,
+    estimated_saved_tokens: isize,
+}
+
 #[derive(Default, serde::Serialize)]
 pub(crate) struct AdapterReport {
     session: String,
@@ -208,6 +219,8 @@ pub(crate) struct AdapterReport {
     savings_pct: f64,
     negative_savings_avoided: usize,
     rendering_counts: BTreeMap<String, usize>,
+    family_counts: BTreeMap<String, usize>,
+    families_by_saved_tokens: Vec<FamilySavings>,
     raw_refs: Vec<String>,
 }
 
@@ -219,7 +232,9 @@ pub(crate) fn build_adapter_report(ledger: PathBuf, session: &str) -> Result<Ada
     };
     for event in events.iter().filter(|event| event.session_id == session) {
         if let GatewayEvent::ToolCommandCompleted {
+            command,
             exit_code,
+            command_family,
             raw_ref,
             raw_bytes,
             model_bytes,
@@ -258,10 +273,17 @@ pub(crate) fn build_adapter_report(ledger: PathBuf, session: &str) -> Result<Ada
                 rendering_kind.clone()
             };
             *report.rendering_counts.entry(rendering_kind).or_insert(0) += 1;
+            let family = if command_family.is_empty() {
+                classify_command_family(command)
+            } else {
+                command_family.clone()
+            };
+            *report.family_counts.entry(family).or_insert(0) += 1;
             report.raw_refs.push(raw_ref.clone());
         }
     }
-    report.saved_bytes = report.raw_bytes as isize - report.model_bytes as isize;
+    report.families_by_saved_tokens = build_family_savings(&events, session);
+    report.saved_bytes = saved_bytes(report.raw_bytes, report.model_bytes);
     report.net_savings_ratio = if report.raw_bytes == 0 {
         0.0
     } else {
@@ -270,9 +292,75 @@ pub(crate) fn build_adapter_report(ledger: PathBuf, session: &str) -> Result<Ada
     report.estimated_raw_tokens = estimate_tokens(report.raw_bytes);
     report.estimated_model_tokens = estimate_tokens(report.model_bytes);
     report.estimated_saved_tokens =
-        report.estimated_raw_tokens as isize - report.estimated_model_tokens as isize;
+        saved_bytes(report.estimated_raw_tokens, report.estimated_model_tokens);
     report.savings_pct = report.net_savings_ratio * 100.0;
     Ok(report)
+}
+
+fn build_family_savings(
+    events: &[tfy_runtime::RuntimeEnvelope<GatewayEvent>],
+    session: &str,
+) -> Vec<FamilySavings> {
+    let mut families: BTreeMap<String, FamilySavings> = BTreeMap::new();
+    for event in events.iter().filter(|event| event.session_id == session) {
+        if let GatewayEvent::ToolCommandCompleted {
+            command,
+            command_family,
+            raw_bytes,
+            model_bytes,
+            raw_chars,
+            summary_chars,
+            model_chars,
+            ..
+        } = &event.payload
+        {
+            let family = if command_family.is_empty() {
+                classify_command_family(command)
+            } else {
+                command_family.clone()
+            };
+            let raw_size = if *raw_bytes == 0 {
+                *raw_chars
+            } else {
+                *raw_bytes
+            };
+            let model_size = if *model_bytes != 0 {
+                *model_bytes
+            } else if *model_chars != 0 {
+                *model_chars
+            } else {
+                *summary_chars
+            };
+            let entry = families
+                .entry(family.clone())
+                .or_insert_with(|| FamilySavings {
+                    family,
+                    ..Default::default()
+                });
+            entry.commands += 1;
+            entry.raw_bytes += raw_size;
+            entry.model_bytes += model_size;
+        }
+    }
+    let mut out = families
+        .into_values()
+        .map(|mut f| {
+            f.saved_bytes = saved_bytes(f.raw_bytes, f.model_bytes);
+            f.estimated_saved_tokens =
+                saved_bytes(estimate_tokens(f.raw_bytes), estimate_tokens(f.model_bytes));
+            f
+        })
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| {
+        b.saved_bytes
+            .cmp(&a.saved_bytes)
+            .then_with(|| a.family.cmp(&b.family))
+    });
+    out
+}
+
+fn saved_bytes(raw: usize, model: usize) -> isize {
+    raw.saturating_sub(model) as isize
 }
 
 pub(crate) fn execute_adapter_report(ledger: PathBuf, session: &str, json: bool) -> Result<()> {
@@ -295,6 +383,11 @@ pub(crate) fn execute_adapter_report(ledger: PathBuf, session: &str, json: bool)
         println!(
             "negative_savings_avoided={} rendering_counts={:?}",
             report.negative_savings_avoided, report.rendering_counts
+        );
+        println!("family_counts={:?}", report.family_counts);
+        println!(
+            "families_by_saved_tokens={}",
+            serde_json::to_string(&report.families_by_saved_tokens)?
         );
         if !report.raw_refs.is_empty() {
             println!("raw_refs={}", report.raw_refs.join(","));

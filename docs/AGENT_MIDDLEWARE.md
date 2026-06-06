@@ -39,7 +39,7 @@ Gateway execution:
 tfy tool-gateway -- cargo test
 ```
 
-The AI agent receives plain model-visible text selected by a net-savings gate. Exact stdout/stderr bytes are stored locally first. If the compact summary is strictly smaller than the redacted public raw output, the model receives the summary plus recovery hint/ref. If the raw output is already smaller, the model receives the redacted raw output with no JSON/envelope overhead.
+The AI agent receives plain model-visible text selected by a net-savings gate. Exact stdout/stderr bytes are stored locally first. If the compact summary is strictly smaller than the redacted public raw output, the model receives the summary plus recovery hint/ref. If the raw output is already smaller, the model receives the redacted raw output with no JSON/envelope overhead. The implemented P0 command-family path adds fixture-driven summaries and `command_family` analytics for Git status/diff/log, `gh pr checks`, Cargo build/test/check/clippy, and common test runners while leaving unsupported commands on the generic safe path.
 
 `tfy run -- <command>` remains a compatibility/debug spelling. `tfy tool-gateway -- <command>` is the runtime-facing name that communicates the intended integration boundary.
 
@@ -152,7 +152,7 @@ tfy adapter run --session <id> -- <ordinary command>
 tfy adapter report --session <id>
 ```
 
-An AI agent still intends to run the ordinary command. The host runtime or wrapper invokes `tfy adapter run` instead of executing the command directly. TFY then stores raw output, selects the model-visible text through the no-negative-savings gate, appends an internal ledger event, preserves the original exit code, and exposes session savings through `adapter report`.
+An AI agent still intends to run the ordinary command. The host runtime or wrapper invokes `tfy adapter run` instead of executing the command directly. TFY then stores raw output, selects the model-visible text through the no-negative-savings gate, appends an internal ledger event with `command_family`, preserves the original exit code, and exposes session plus family-level savings through `adapter report`.
 
 Support claim boundary:
 

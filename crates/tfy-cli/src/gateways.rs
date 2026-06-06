@@ -80,8 +80,9 @@ pub(crate) fn tool_gateway_envelopes(
         ))
     });
     let trace_id = trace_id.unwrap_or_else(|| request_id.clone());
-    let mut provenance = ProvenanceRefs {
+    let provenance = ProvenanceRefs {
         raw_refs: vec![summary.raw_ref.clone()],
+        source_event_ids: vec![request_id.clone()],
         validation_status: Some(ValidationStatus::Valid),
         ..Default::default()
     };
@@ -90,6 +91,7 @@ pub(crate) fn tool_gateway_envelopes(
             command: summary.command.clone(),
             exit_code: summary.exit_code,
             risk: summary.risk.clone(),
+            command_family: summary.command_family.clone(),
             summary: summary.summary.clone(),
             model_text: summary.model_text.clone(),
             rendering_kind: summary.rendering_kind.clone(),
@@ -103,12 +105,12 @@ pub(crate) fn tool_gateway_envelopes(
         provenance.clone(),
         adapter_kind.clone(),
     );
-    provenance.source_event_ids = vec![request_id.clone()];
     let event = gateway_event_envelope(
         GatewayEvent::ToolCommandCompleted {
             command: summary.command,
             exit_code: summary.exit_code,
             risk: summary.risk,
+            command_family: summary.command_family,
             raw_ref: summary.raw_ref,
             raw_bytes: summary.raw_chars,
             model_bytes: summary.model_text.len(),

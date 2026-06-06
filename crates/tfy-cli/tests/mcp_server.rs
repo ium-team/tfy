@@ -11,6 +11,7 @@ struct McpChild {
 impl McpChild {
     fn start(session: &str, ledger: &std::path::Path, raw_dir: &std::path::Path) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_tfy"))
+            .env("CARGO_TERM_COLOR", "never")
             .args([
                 "mcp",
                 "serve",
@@ -226,13 +227,13 @@ fn mcp_state_projection_is_scoped_by_requested_session() {
         "jsonrpc":"2.0",
         "id":20,
         "method":"tools/call",
-        "params": {"name":"tfy_tool_run", "arguments":{"session":"session-a", "command":["sh","-c","printf 'aaa'"]}}
+        "params": {"name":"tfy_tool_run", "arguments":{"session":"session-a", "command":["sh","-c","printf 'alpha_marker_123'"]}}
     }));
     let _ = mcp.request(json!({
         "jsonrpc":"2.0",
         "id":21,
         "method":"tools/call",
-        "params": {"name":"tfy_tool_run", "arguments":{"session":"session-b", "command":["sh","-c","printf 'bbb'"]}}
+        "params": {"name":"tfy_tool_run", "arguments":{"session":"session-b", "command":["sh","-c","printf 'beta_marker_456'"]}}
     }));
 
     let state_a = mcp.request(json!({"jsonrpc":"2.0","id":22,"method":"resources/read","params":{"uri":"tfy://state/session-a"}}));
@@ -242,13 +243,13 @@ fn mcp_state_projection_is_scoped_by_requested_session() {
     assert!(
         state_a_evidence
             .iter()
-            .any(|line| line.as_str().unwrap().contains("aaa")),
+            .any(|line| line.as_str().unwrap().contains("alpha_marker_123")),
         "{state_a_json}"
     );
     assert!(
         !state_a_evidence
             .iter()
-            .any(|line| line.as_str().unwrap().contains("bbb")),
+            .any(|line| line.as_str().unwrap().contains("printf 'beta_marker_456'")),
         "{state_a_json}"
     );
 
@@ -266,13 +267,52 @@ fn mcp_state_projection_is_scoped_by_requested_session() {
     assert!(
         projected_b_evidence
             .iter()
-            .any(|line| line.as_str().unwrap().contains("bbb")),
+            .any(|line| line.as_str().unwrap().contains("beta_marker_456")),
         "{projected_b_json}"
     );
     assert!(
         !projected_b_evidence
             .iter()
-            .any(|line| line.as_str().unwrap().contains("aaa")),
+            .any(|line| line.as_str().unwrap().contains("printf 'alpha_marker_123'")),
         "{projected_b_json}"
+    );
+}
+
+#[test]
+fn mcp_tool_run_uses_p0_command_family_summary_and_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let raw = dir.path().join("raw");
+    let mut mcp = McpChild::start("mcp-family", &ledger, &raw);
+
+    let run = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":30,
+        "method":"tools/call",
+        "params": {
+            "name":"tfy_tool_run",
+            "arguments":{
+                "session":"mcp-family",
+                "command":["cargo","test","--help"]
+            }
+        }
+    }));
+    assert!(run.get("result").is_some(), "{run}");
+    let text = run["result"]["content"][0]["text"].as_str().unwrap();
+    let payload: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(payload["payload"]["command_family"], "cargo_test");
+    assert_eq!(payload["payload"]["rendering_kind"], "summary");
+    assert!(payload["payload"]["model_text"]
+        .as_str()
+        .unwrap()
+        .contains("family=cargo_test"));
+
+    let report = mcp.request(json!({"jsonrpc":"2.0","id":31,"method":"resources/read","params":{"uri":"tfy://report/mcp-family"}}));
+    let report_text = report["result"]["contents"][0]["text"].as_str().unwrap();
+    let report_json: serde_json::Value = serde_json::from_str(report_text).unwrap();
+    assert_eq!(report_json["family_counts"]["cargo_test"], 1);
+    assert_eq!(
+        report_json["families_by_saved_tokens"][0]["family"],
+        "cargo_test"
     );
 }
