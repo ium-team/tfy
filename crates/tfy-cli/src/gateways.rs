@@ -219,10 +219,20 @@ pub(crate) fn execute_context_gateway(
     let mut symbols = BTreeMap::new();
     symbols.extend(exp.symbol_map.symbols.clone());
     let decision = decide_context_need(&exp.compact_code, &symbols, &diagnostics);
-    let context_ref = stable_id(&format!(
-        "{}:{}:{}:{}:{}",
-        exp.scope.path, exp.scope.start_line, exp.scope.end_line, compactness, exp.compact_code
-    ));
+    let context_ref = exp
+        .apply_proof
+        .as_ref()
+        .map(|proof| proof.context_ref.clone())
+        .unwrap_or_else(|| {
+            stable_id(&format!(
+                "{}:{}:{}:{}:{}",
+                exp.scope.path,
+                exp.scope.start_line,
+                exp.scope.end_line,
+                compactness,
+                exp.compact_code
+            ))
+        });
     let full = if matches!(decision.action, FallbackAction::Full) {
         Some(serde_json::to_value(full_scope(&path, &scope)?)?)
     } else {
@@ -262,6 +272,7 @@ pub(crate) fn execute_context_gateway(
 pub(crate) fn execute_output_gateway(
     payload: Option<PathBuf>,
     apply: bool,
+    context_proof: Option<PathBuf>,
     session_id: String,
     request_id: Option<String>,
     trace_id: Option<String>,
@@ -269,11 +280,58 @@ pub(crate) fn execute_output_gateway(
 ) -> Result<()> {
     let request_id = request_id.unwrap_or_else(|| stable_id("output"));
     let trace_id = trace_id.unwrap_or_else(|| request_id.clone());
-    if apply {
-        bail!("output-gateway apply requires explicit authority/provenance implementation; current command is preview/validate only");
-    }
     let text = read_payload(payload)?;
     let restore_body: RestorePayload = serde_json::from_str(&text)?;
+    if apply {
+        let proof_override = context_proof
+            .map(std::fs::read_to_string)
+            .transpose()?
+            .map(|text| serde_json::from_str::<ApplyProof>(&text))
+            .transpose()?;
+        if parent_event_id.is_some()
+            && proof_override.is_none()
+            && restore_body.apply_proof.is_none()
+        {
+            bail!("parent event id alone is not authoritative for output-gateway apply");
+        }
+        let applied = apply_restored_payload(restore_body, proof_override)?;
+        let preview_diff = format!(
+            "--- original-scope\n+++ applied-scope\n@@ byte {}..{}\n{}",
+            applied.byte_start, applied.byte_end, applied.restored_code
+        );
+        let provenance = ProvenanceRefs {
+            context_refs: vec![applied.context_ref.clone()],
+            patch_refs: vec![applied.patch_ref.clone()],
+            validation_status: Some(ValidationStatus::Valid),
+            ..Default::default()
+        };
+        let response = response_envelope(
+            GatewayResponse::Output {
+                restored_code: applied.restored_code,
+                preview_diff,
+                validation_status: ValidationStatus::Valid,
+                applied: true,
+                patch_ref: applied.patch_ref,
+                applied_path: Some(applied.path),
+                changed_range: Some(serde_json::json!({
+                    "scope_id": applied.scope_id,
+                    "byte_start": applied.byte_start,
+                    "byte_end": applied.byte_end
+                })),
+                before_hash: Some(applied.before_sha256),
+                after_hash: Some(applied.after_sha256),
+            },
+            &session_id,
+            &request_id,
+            &trace_id,
+            parent_event_id,
+            provenance,
+        );
+        return print_json(&response);
+    }
+    if context_proof.is_some() {
+        bail!("--context-proof is only valid with --apply");
+    }
     let restored = restore_payload(restore_body)?;
     let patch_ref = stable_id(&restored.restored_code);
     let preview_diff = format!("--- compact\n+++ restored\n@@\n{}", restored.restored_code);
@@ -294,6 +352,10 @@ pub(crate) fn execute_output_gateway(
             validation_status: provenance_status,
             applied: false,
             patch_ref,
+            applied_path: None,
+            changed_range: None,
+            before_hash: None,
+            after_hash: None,
         },
         &session_id,
         &request_id,

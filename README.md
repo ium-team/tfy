@@ -150,10 +150,10 @@ Tool Gateway always stores exact raw stdout/stderr bytes locally first. The mode
 
 Current implementation status:
 
-- Implemented: Rust core primitives, Rust CLI, `tfy-runtime` envelope/capability/event contract, Tool Gateway text-first net-savings entrypoint, explicit debug/adapter JSON/JSONL entrypoints, shell wrapper, Context Gateway CLI, Output Gateway preview/validate CLI, State Gateway append/project CLI, raw refs, redaction, code index/expand/full/restore, evaluation.
+- Implemented: Rust core primitives, Rust CLI, `tfy-runtime` envelope/capability/event contract, Tool Gateway text-first net-savings entrypoint, explicit debug/adapter JSON/JSONL entrypoints, shell wrapper, Context Gateway CLI, Output Gateway preview/validate CLI plus content-addressed single-file selected-scope `--apply`, State Gateway append/project CLI, raw refs, redaction, code index/expand/full/restore, evaluation.
 - Implemented adapter v1: `tfy adapter` generic-shell command-boundary shim, dry-run installer, session ledger, command-family-aware savings report, and P0 Tool Gateway summaries for Git, `gh pr checks`, Cargo, TypeScript no-emit, and common test-runner output.
 - Implemented MCP foundation v2: `tfy mcp serve` stdio JSON-RPC server, MCP tool/resource discovery, raw/report/state resources, and Codex MCP dry-run/setup snippet generation.
-- Planned adapters: Codex private hooks/editor/provider automatic hook integrations and Output Gateway workspace apply beyond preview/validate.
+- Planned adapters: Codex private hooks/editor/provider automatic hook integrations and broader Output Gateway apply surfaces such as multi-file/fuzzy patch engines or deletion semantics.
 
 TFY should not claim automatic model input/output interception for a runtime until that runtime adapter exists and passes the relevant gates. The MCP foundation is a supported MCP tool/resource integration point; it still requires the host agent to route through MCP and is not a private Codex hook or universal shell interception layer.
 

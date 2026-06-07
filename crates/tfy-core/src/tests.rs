@@ -33,12 +33,15 @@ fn expand_restore_python_symbol_round_trip() {
         scope: Some(exp.scope.clone()),
         compactness: Some("symbol".into()),
         compact_code: Some(exp.compact_code.clone()),
+        base_compact_code: None,
+        context_ref: None,
         code: None,
         patch: None,
         language: Some("python".into()),
         symbols: None,
         reverse: None,
         symbol_map: Some(exp.symbol_map.clone()),
+        apply_proof: None,
     };
     let restored = restore_payload(payload).unwrap().restored_code;
     assert!(restored.contains("calculate_total_price"));
@@ -84,12 +87,15 @@ fn non_python_literal_contents_are_preserved() {
         scope: Some(exp.scope.clone()),
         compactness: Some("symbol".into()),
         compact_code: Some(exp.compact_code.clone()),
+        base_compact_code: None,
+        context_ref: None,
         code: None,
         patch: None,
         language: Some("javascript".into()),
         symbols: None,
         reverse: None,
         symbol_map: Some(exp.symbol_map.clone()),
+        apply_proof: None,
     };
     let restored = restore_payload(payload).unwrap().restored_code;
     assert!(restored.contains("\"hello : \""));
@@ -207,12 +213,15 @@ fn non_python_comments_and_literals_survive_compact_restore() {
         scope: Some(exp.scope.clone()),
         compactness: Some("symbol".into()),
         compact_code: Some(exp.compact_code.clone()),
+        base_compact_code: None,
+        context_ref: None,
         code: None,
         patch: None,
         language: Some("javascript".into()),
         symbols: None,
         reverse: None,
         symbol_map: Some(exp.symbol_map.clone()),
+        apply_proof: None,
     })
     .unwrap()
     .restored_code;
@@ -260,6 +269,8 @@ fn unicode_literals_do_not_corrupt_symbol_replacement_offsets() {
         scope_id: Some(exp.scope.id.clone()),
         scope: Some(exp.scope.clone()),
         compactness: Some("symbol".into()),
+        base_compact_code: None,
+        context_ref: None,
         compact_code: Some(exp.compact_code),
         code: None,
         patch: None,
@@ -267,6 +278,7 @@ fn unicode_literals_do_not_corrupt_symbol_replacement_offsets() {
         symbols: None,
         reverse: None,
         symbol_map: Some(exp.symbol_map),
+        apply_proof: None,
     })
     .unwrap()
     .restored_code;
@@ -335,6 +347,8 @@ fn line_comments_do_not_swallow_following_statement_after_minify() {
         scope_id: Some(exp.scope.id.clone()),
         scope: Some(exp.scope.clone()),
         compactness: Some("symbol".into()),
+        base_compact_code: None,
+        context_ref: None,
         compact_code: Some(exp.compact_code),
         code: None,
         patch: None,
@@ -342,6 +356,7 @@ fn line_comments_do_not_swallow_following_statement_after_minify() {
         symbols: None,
         reverse: None,
         symbol_map: Some(exp.symbol_map),
+        apply_proof: None,
     })
     .unwrap()
     .restored_code;
@@ -397,6 +412,8 @@ fn rust_lifetimes_do_not_mask_following_identifiers() {
         scope_id: Some(exp.scope.id.clone()),
         scope: Some(exp.scope.clone()),
         compactness: Some("symbol".into()),
+        base_compact_code: None,
+        context_ref: None,
         compact_code: Some(exp.compact_code),
         code: None,
         patch: None,
@@ -404,6 +421,7 @@ fn rust_lifetimes_do_not_mask_following_identifiers() {
         symbols: None,
         reverse: None,
         symbol_map: Some(exp.symbol_map),
+        apply_proof: None,
     })
     .unwrap()
     .restored_code;
@@ -433,6 +451,8 @@ fn rust_raw_strings_and_raw_identifiers_are_not_corrupted() {
         scope_id: Some(exp.scope.id.clone()),
         scope: Some(exp.scope.clone()),
         compactness: Some("symbol".into()),
+        base_compact_code: None,
+        context_ref: None,
         compact_code: Some(exp.compact_code),
         code: None,
         patch: None,
@@ -440,6 +460,7 @@ fn rust_raw_strings_and_raw_identifiers_are_not_corrupted() {
         symbols: None,
         reverse: None,
         symbol_map: Some(exp.symbol_map),
+        apply_proof: None,
     })
     .unwrap()
     .restored_code;

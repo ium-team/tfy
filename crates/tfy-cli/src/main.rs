@@ -158,6 +158,8 @@ enum Cmd {
         payload: Option<PathBuf>,
         #[arg(long)]
         apply: bool,
+        #[arg(long = "context-proof")]
+        context_proof: Option<PathBuf>,
         #[arg(long, default_value = "local-session")]
         session_id: String,
         #[arg(long)]
@@ -296,6 +298,7 @@ fn main() -> Result<()> {
         Cmd::OutputGateway {
             payload,
             apply,
+            context_proof,
             session_id,
             request_id,
             trace_id,
@@ -303,6 +306,7 @@ fn main() -> Result<()> {
         } => execute_output_gateway(
             payload,
             apply,
+            context_proof,
             session_id,
             request_id,
             trace_id,

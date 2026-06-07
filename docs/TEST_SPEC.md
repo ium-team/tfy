@@ -134,7 +134,7 @@ Implemented test coverage now includes:
 - `tfy shell --json` shell-adapter wrapper output.
 - `tfy state-project` compact ledger projection.
 - `tfy context-gateway` runtime envelope for compact context.
-- `tfy output-gateway` preview/validate envelope for structured compact code.
+- `tfy output-gateway` preview/validate envelope for structured compact code plus proof-gated single-file selected-scope apply success/fail-closed cases.
 
 Remaining adapter tests before stronger claims:
 
@@ -142,7 +142,7 @@ Remaining adapter tests before stronger claims:
 - MCP stdio server e2e: implemented in `crates/tfy-cli/tests/mcp_server.rs` for tools/resources; broader host-specific proxy routing remains follow-up.
 - Editor file/context adapter e2e.
 - Provider cache/layout hit/miss/accounting e2e.
-- Output Gateway workspace apply with explicit authority/provenance gates.
+- Broader Output Gateway workspace apply beyond content-addressed single-file selected-scope replacement.
 
 
 ## Adapter v1 verification

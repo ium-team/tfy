@@ -32,7 +32,7 @@ The representation ladder and method registry remain TFY's internal architecture
 |---|---|---|---|
 | Tool Gateway | command/tool output returned to the agent | `tool-gateway`, `run`, `raw`, raw refs, tool policy | Tool Gateway CLI entrypoint implemented |
 | Context Gateway | model input context before reasoning | `context-gateway`, `index`, `expand`, `full`, `decide-context` | runtime CLI implemented; external hooks planned |
-| Output Gateway | model output before file application/human display | `output-gateway`, `restore`, future explicit apply API | preview/validate CLI implemented; workspace apply planned |
+| Output Gateway | model output before file application/human display | `output-gateway`, `restore`, proof-gated `output-gateway --apply` | preview/validate CLI plus local single-file selected-scope apply implemented; broader multi-file/fuzzy/deletion apply planned |
 | State Gateway | long-running task/conversation state between turns | `state-append`, `state-project`, raw refs | event ledger/projection CLI implemented |
 
 Gateways must route back to registry methods and their validation gates; they are not a second product taxonomy.

@@ -91,10 +91,10 @@ The CLI is both a manual debug surface and the contract used by adapters. Produc
 
 - Tool Gateway: `tfy tool-gateway -- <ordinary command>` wraps command execution and returns the smallest safe model-visible text chosen by the net-savings gate.
 - Context Gateway: `tfy context-gateway` runtime envelope over `index`, `expand`, `full`, and `decide-context`; automatic external hooks remain adapter work.
-- Output Gateway: `tfy output-gateway` structured preview/validate API over `restore`; workspace apply remains behind future authority/provenance gates.
+- Output Gateway: `tfy output-gateway` structured preview/validate API over `restore`; `--apply` supports local single-file selected-scope replacement only when a content-addressed `ApplyProof` validates the exact path, byte range, source hash, compactness, language, and parser confidence. Parent event ids alone are not authoritative; apply payloads must also carry the captured source context_ref and base compact code so TFY can bind the proposed edit to the proven context.
 - State Gateway: `tfy state-append` / `tfy state-project` ledger/ref API fed by gateway events.
 
-Do not overclaim automatic interception: today the Rust CLI/core primitives, `tfy-runtime`, local Tool/Shell/Context/Output-preview/State gateway surfaces, generic-shell adapter, and MCP stdio tool/resource server exist. Codex private hooks, editor hooks, provider gateway, and universal shell interception remain separate adapters until they pass e2e gates.
+Do not overclaim automatic interception: today the Rust CLI/core primitives, `tfy-runtime`, local Tool/Shell/Context/Output-preview-and-proof-gated-apply/State gateway surfaces, generic-shell adapter, and MCP stdio tool/resource server exist. Codex private hooks, editor hooks, provider gateway, and universal shell interception remain separate adapters until they pass e2e gates.
 
 ## Runtime envelope protocol
 

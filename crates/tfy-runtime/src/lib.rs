@@ -341,6 +341,14 @@ pub enum GatewayResponse {
         validation_status: ValidationStatus,
         applied: bool,
         patch_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        applied_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        changed_range: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_hash: Option<String>,
     },
     StateProjection {
         projection: Box<StateProjection>,

@@ -804,6 +804,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tfy-core",
  "tfy-runtime",

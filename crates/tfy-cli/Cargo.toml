@@ -18,4 +18,5 @@ tfy-core = { path = "../tfy-core" }
 tfy-runtime = { path = "../tfy-runtime" }
 
 [dev-dependencies]
+sha2.workspace = true
 tempfile.workspace = true
