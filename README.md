@@ -117,6 +117,10 @@ Rust smoke commands:
 
 ```sh
 cd tfy
+cargo run -p tfy-cli -- init --codex --dry-run
+cargo run -p tfy-cli -- doctor --codex
+cargo run -p tfy-cli -- smoke --mcp
+cargo run -p tfy-cli -- gain # no-data until adapter/tfy_tool_run command events exist
 cargo run -p tfy-cli -- languages
 cargo run -p tfy-cli -- index corpus/rust/fixture_01.rs
 cargo run -p tfy-cli -- tool-gateway -- sh -c 'printf ok'
@@ -153,11 +157,25 @@ Current implementation status:
 - Implemented: Rust core primitives, Rust CLI, `tfy-runtime` envelope/capability/event contract, Tool Gateway text-first net-savings entrypoint, explicit debug/adapter JSON/JSONL entrypoints, shell wrapper, Context Gateway CLI, Output Gateway preview/validate CLI plus content-addressed single-file selected-scope `--apply`, State Gateway append/project CLI, raw refs, redaction, code index/expand/full/restore, evaluation.
 - Implemented adapter v1: `tfy adapter` generic-shell command-boundary shim, dry-run installer, session ledger, command-family-aware savings report, and P0 Tool Gateway summaries for Git, `gh pr checks`, Cargo, TypeScript no-emit, and common test-runner output.
 - Implemented MCP foundation v2: `tfy mcp serve` stdio JSON-RPC server, MCP tool/resource discovery, raw/report/state resources, Codex MCP dry-run/setup snippet generation, and an agent-native single-file selected-scope Code I/O workflow (`tfy_scope_list`, enriched `tfy_context_get`, preview-only `tfy_output_validate`, and proof-gated `tfy_output_apply`).
+- Implemented product UX P0: `tfy init` marker-bounded Codex guidance, `tfy doctor` local readiness diagnostics, `tfy smoke --mcp` automated Code I/O smoke, `tfy smoke --codex` checklist-only host validation, and `tfy gain` command-output ledger-derived savings reporting.
 - Planned adapters: Codex private hooks/editor/provider automatic hook integrations and broader Output Gateway apply surfaces such as multi-file/fuzzy patch engines or deletion semantics.
 
 TFY should not claim automatic model input/output interception for a runtime until that runtime adapter exists and passes the relevant gates. The MCP foundation is a supported MCP tool/resource integration point; it still requires the host agent to route through MCP and is not a private Codex hook or universal shell interception layer.
 
 ## MCP/Codex adapter foundation
+
+Product-facing happy path:
+
+```bash
+tfy init --codex --dry-run
+tfy init --codex --project --apply
+tfy doctor --codex
+tfy smoke --mcp
+tfy smoke --codex
+tfy gain # reports no-data until command-output savings events exist
+```
+
+`tfy init` defaults to safe project dry-run behavior. `--apply` writes only a TFY-owned marker block between `<!-- TFY:CODEX:START -->` and `<!-- TFY:CODEX:END -->`; `tfy init --uninstall --codex --project --apply` removes only that block and preserves non-TFY content. Global mode targets `~/.codex/AGENTS.md` instruction guidance and still does not directly mutate `~/.codex/config.toml` in P0.
 
 TFY can run as an MCP stdio server for agent hosts that support MCP:
 

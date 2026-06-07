@@ -1,6 +1,7 @@
 mod adapter;
 mod gateways;
 mod mcp;
+mod product;
 mod util;
 
 use adapter::{execute_adapter, AdapterCmd};
@@ -11,6 +12,10 @@ use gateways::{
     execute_plain_tool_gateway, execute_structured_tool_gateway,
 };
 use mcp::{execute_mcp, McpCmd};
+use product::{
+    execute_doctor, execute_gain, execute_init, execute_smoke, DoctorCmd, GainCmd, InitCmd,
+    SmokeCmd,
+};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use tfy_core::*;
@@ -36,6 +41,14 @@ enum Cmd {
         #[command(subcommand)]
         cmd: McpCmd,
     },
+    /// Product-facing setup lifecycle for Codex/MCP guidance. Bare `tfy init` is a safe dry-run.
+    Init(InitCmd),
+    /// Diagnose local TFY and optional Codex-facing integration readiness.
+    Doctor(DoctorCmd),
+    /// Run local MCP smoke tests or print host-facing smoke checklists.
+    Smoke(SmokeCmd),
+    /// Report measured TFY savings from adapter/MCP ledgers.
+    Gain(GainCmd),
     Index {
         path: PathBuf,
     },
@@ -203,6 +216,10 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Adapter { cmd } => execute_adapter(cmd)?,
         Cmd::Mcp { cmd } => execute_mcp(cmd)?,
+        Cmd::Init(cmd) => execute_init(cmd)?,
+        Cmd::Doctor(cmd) => execute_doctor(cmd)?,
+        Cmd::Smoke(cmd) => execute_smoke(cmd)?,
+        Cmd::Gain(cmd) => execute_gain(cmd)?,
         Cmd::Index { path } => print_json(&index_path(path)?)?,
         Cmd::Expand {
             path,

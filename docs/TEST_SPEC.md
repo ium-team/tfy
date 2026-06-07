@@ -185,3 +185,15 @@ Additional MCP hardening tests verify:
 - JSON-RPC notifications do not emit response objects on stdout.
 - `tfy://state/{session}` and `tfy_state_project` are scoped to the requested session and do not leak evidence from other sessions sharing the same ledger file.
 - Adapter reports expose the byte contract fields `raw_bytes`, `model_bytes`, `saved_bytes`, and `net_savings_ratio` while still omitting public `raw_chars` / `model_chars` fields.
+
+## Product UX P0 verification
+
+`crates/tfy-cli/tests/product_ux.rs` verifies the product-facing lifecycle layer:
+
+- `tfy init --codex --dry-run` writes nothing and prints the `mcp_host_routed` / `instruction_guidance` tiers, TFY marker names, and `codex mcp add tfy -- tfy mcp serve ...`.
+- `tfy init --codex --project --apply` creates or replaces exactly one marker-bounded `AGENTS.md` block and preserves non-TFY content.
+- `tfy init --show` reports marker state; `tfy init --uninstall --codex --project --apply` removes only the TFY-owned block.
+- `tfy doctor --codex --json` starts a local MCP child, verifies `initialize` and required tools, checks writable local dirs, and warns rather than overclaims Codex config state.
+- `tfy smoke --mcp --json` runs the local MCP Code I/O workflow end to end and proves preview validation does not mutate while proof-gated apply does.
+- `tfy smoke --codex` is checklist/report-only and states that no Codex host invocation is claimed.
+- `tfy gain` reports `No TFY savings data found yet` on empty ledgers and reports real bytes/tokens from adapter or MCP `tfy_tool_run` `ToolCommandCompleted` command events when present.

@@ -127,6 +127,14 @@ tfy adapter capabilities
 tfy adapter install --target generic-shell --dry-run
 tfy adapter run --session <id> -- <command...>
 tfy adapter report --session <id>
+tfy init --codex --dry-run
+tfy init --codex --project --apply
+tfy init --show
+tfy init --uninstall --codex --project --apply
+tfy doctor --codex
+tfy smoke --mcp
+tfy smoke --codex
+tfy gain # no-data until command-output savings events exist
 tfy mcp capabilities
 tfy mcp serve --session <id> --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw
 tfy mcp install --target codex --dry-run
@@ -137,6 +145,17 @@ tfy state-project
 ```
 
 `tfy shell` is the local shell-adapter wrapper. It does not magically modify a third-party runtime by itself; a runtime must configure its command execution path to call this wrapper. `tfy mcp serve` is the supported MCP stdio integration point for MCP-aware hosts; it still requires host MCP routing and is not a private Codex hook or provider prompt gateway.
+
+## Product lifecycle protocol
+
+`tfy init`, `tfy doctor`, `tfy smoke`, and `tfy gain` are product-facing wrappers around the lower-level protocol surfaces:
+
+- `tfy init --codex` defaults to project-scoped dry-run. `--apply` writes only a TFY-owned marker block in `AGENTS.md`; global mode targets `~/.codex/AGENTS.md`. P0 prints the Codex MCP command and does not directly mutate `~/.codex/config.toml`.
+- `tfy init --show` reports marker-block state. `tfy init --uninstall --codex --project --apply` removes only the TFY marker block and preserves all non-TFY content.
+- `tfy doctor --codex` checks the local binary, starts an MCP child for `initialize`/`tools/list`, verifies required tools, checks `.tfy/mcp` and `.tfy/raw` writability, and reports Codex setup as pass/warn/fail without claiming private hooks.
+- `tfy smoke --mcp` runs a deterministic local MCP Code I/O scenario: scope list, exact-id compact context, preview validate without mutation, proof-gated apply, and ledger evidence.
+- `tfy smoke --codex` is checklist/report-only in P0; it may guide manual host validation but must not claim Codex invoked TFY.
+- `tfy gain` reads `.tfy/mcp/ledger.jsonl`, `.tfy/adapter/ledger.jsonl`, and explicit `--ledger` paths, then reports real raw/model-visible byte savings from `ToolCommandCompleted` command-output events produced by `tfy_tool_run`, Tool Gateway, or the adapter. Code I/O smoke events are verification evidence, not savings data. With no command data it exits successfully with `No TFY savings data found yet`.
 
 ## Adapter v1 protocol
 

@@ -159,6 +159,7 @@ Support claim boundary:
 - `generic-shell` command-boundary interception: implemented and tested.
 - Codex/OMX command wrapping: only supported where the host is explicitly configured to call the generic-shell adapter.
 - MCP stdio tool/resource integration: implemented and tested through `tfy mcp serve`, including `tfy_scope_list`, enriched `tfy_context_get`, preview-only `tfy_output_validate`, and proof-gated `tfy_output_apply`.
+- Product UX lifecycle: implemented through `tfy init`, `tfy doctor`, `tfy smoke`, and `tfy gain`. These commands make setup, diagnostics, local MCP smoke, and savings reporting easier while keeping the same host-routing boundary.
 - Codex private hook/editor/provider automatic model prompt/output interception: not claimed until runtime-specific adapters have e2e tests.
 
 ## Adapter v2: MCP/Codex setup foundation
@@ -176,3 +177,16 @@ tfy mcp install --target codex --dry-run
 ```
 
 which prints a concrete `codex mcp add tfy -- tfy mcp serve ...` command and an equivalent TOML snippet. This keeps setup reversible and prevents false claims about private runtime hooks.
+
+The product-facing Codex path is:
+
+```bash
+tfy init --codex --dry-run
+tfy init --codex --project --apply
+tfy doctor --codex
+tfy smoke --mcp
+tfy smoke --codex
+tfy gain # reports no-data until adapter/tfy_tool_run command events exist
+```
+
+`tfy init --codex --project --apply` writes only a TFY-owned marker block in `AGENTS.md`. `tfy smoke --codex` remains a manual checklist/report in P0 and does not claim that Codex invoked TFY; `tfy smoke --mcp` is the automated local proof that TFY's MCP Code I/O path works. `tfy gain` reports command-output savings only after adapter or MCP `tfy_tool_run` command events exist.
