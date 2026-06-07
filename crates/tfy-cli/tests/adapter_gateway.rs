@@ -334,6 +334,97 @@ fn adapter_report_loads_legacy_tool_command_completed_events() {
 }
 
 #[test]
+fn adapter_report_reclassifies_new_p0_families_from_legacy_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let events = [
+        (
+            "fmt-r1",
+            "cargo fmt --check",
+            "cmdout_deadbeef0001_0000000000000001",
+            400usize,
+            120usize,
+        ),
+        (
+            "tsc-r1",
+            "pnpm exec tsc --noEmit",
+            "cmdout_deadbeef0002_0000000000000002",
+            800usize,
+            160usize,
+        ),
+    ];
+    let mut jsonl = String::new();
+    for (request_id, command, raw_ref, raw_chars, summary_chars) in events {
+        jsonl.push_str(
+            &serde_json::json!({
+                "protocol_version": "0.1.0",
+                "adapter_kind": "cli",
+                "adapter_version": "0.1.0",
+                "supported_gateways": ["tool", "state"],
+                "authority_mode": "execute_with_runtime_authority",
+                "session_id": "p0-new-families",
+                "turn_id": null,
+                "request_id": request_id,
+                "parent_event_id": null,
+                "trace_id": request_id,
+                "workspace_root": null,
+                "provenance": {"raw_refs": [raw_ref], "validation_status": "valid"},
+                "policy": {
+                    "max_tokens": null,
+                    "max_output_bytes": 1000000,
+                    "redact_public": true,
+                    "require_fallback_refs": true,
+                    "destructive_action_requires_confirmation": true,
+                    "adapter_enabled": true
+                },
+                "payload": {
+                    "kind": "tool_command_completed",
+                    "command": command,
+                    "exit_code": 1,
+                    "risk": "critical",
+                    "raw_ref": raw_ref,
+                    "raw_chars": raw_chars,
+                    "summary_chars": summary_chars
+                }
+            })
+            .to_string(),
+        );
+        jsonl.push('\n');
+    }
+    std::fs::write(&ledger, jsonl).unwrap();
+
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "adapter",
+            "report",
+            "--session",
+            "p0-new-families",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(json["family_counts"]["cargo_fmt_check"], 1);
+    assert_eq!(json["family_counts"]["tsc_check"], 1);
+    let families = json["families_by_saved_tokens"].as_array().unwrap();
+    assert!(
+        families.iter().any(|f| f["family"] == "cargo_fmt_check"),
+        "{json}"
+    );
+    assert!(
+        families.iter().any(|f| f["family"] == "tsc_check"),
+        "{json}"
+    );
+}
+
+#[test]
 fn adapter_report_includes_deterministic_family_savings() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = dir.path().join("ledger.jsonl");

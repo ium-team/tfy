@@ -897,6 +897,45 @@ fn public_pass_through_redacts_prefixed_secret_like_assignments() {
 }
 
 #[test]
+fn p0_command_family_golden_table_includes_only_deterministic_p0_families() {
+    let cases = [
+        ("git status --short", "git_status"),
+        ("git diff --stat", "git_diff"),
+        ("git log --oneline -5", "git_log"),
+        ("gh pr checks 42", "gh_pr_checks"),
+        ("cargo test --workspace", "cargo_test"),
+        ("cargo clippy --all-targets", "cargo_clippy"),
+        ("cargo build --workspace", "cargo_build"),
+        ("cargo check --workspace", "cargo_check"),
+        ("cargo fmt --check", "cargo_fmt_check"),
+        ("cargo fmt -- --check", "cargo_fmt_check"),
+        ("cargo fmt --all -- --check", "cargo_fmt_check"),
+        ("pytest -q", "pytest"),
+        ("python -m pytest", "pytest"),
+        ("python3 -m pytest tests", "pytest"),
+        ("npm test -- --runInBand", "npm_test"),
+        ("pnpm test", "pnpm_test"),
+        ("yarn test", "yarn_test"),
+        ("go test ./...", "go_test"),
+        ("tsc --noEmit", "tsc_check"),
+        ("npx tsc --noEmit", "tsc_check"),
+        ("pnpm exec tsc --noEmit", "tsc_check"),
+        ("yarn tsc --noEmit", "tsc_check"),
+        ("npm exec tsc -- --noEmit", "tsc_check"),
+        ("npm run build", "generic"),
+        ("pnpm build", "generic"),
+        ("yarn build", "generic"),
+        ("tsc --watch", "generic"),
+        ("tsc --watch --noEmit", "generic"),
+        ("npx tsc -w --noEmit", "generic"),
+        ("sh -c echo tsc --noEmit", "generic"),
+    ];
+    for (command, family) in cases {
+        assert_eq!(crate::classify_command_family(command), family, "{command}");
+    }
+}
+
+#[test]
 fn p0_command_family_classifier_and_cargo_summary_save_tokens() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(
@@ -1095,6 +1134,126 @@ fn p0_gh_pr_checks_success_and_failure_risk_are_family_aware() {
         mixed_failure.model_text.contains("lint error"),
         "{}",
         mixed_failure.model_text
+    );
+}
+
+#[test]
+fn p0_cargo_fmt_check_summary_preserves_diff_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = "Diff in /repo/src/lib.rs:1:\n fn main() {println!(\"hi\");}\nDiff in /repo/src/main.rs:7:\n     let value=1;\n"
+        .repeat(50);
+    let summary =
+        summarize_command_output("cargo fmt --all -- --check", &raw, 1, dir.path()).unwrap();
+    assert_eq!(summary.command_family, "cargo_fmt_check");
+    assert_eq!(summary.risk, "critical");
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(
+        summary.model_text.contains("family=cargo_fmt_check"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("format_diffs=100"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        !summary.model_text.contains("errors=0"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("src/lib.rs") || summary.model_text.contains("src/main.rs"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("raw_ref="),
+        "{}",
+        summary.model_text
+    );
+    let raw_back = raw_output(dir.path(), &summary.raw_ref, None, 1).unwrap();
+    assert_eq!(raw_back, raw);
+}
+
+#[test]
+fn p0_cargo_fmt_check_diff_is_critical_even_with_masked_zero_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = "Diff in /repo/src/lib.rs:1:\n fn main() {println!(\"hi\");}\n".repeat(50);
+    let summary = summarize_command_output("cargo fmt --check", &raw, 0, dir.path()).unwrap();
+    assert_eq!(summary.command_family, "cargo_fmt_check");
+    assert_eq!(summary.risk, "critical");
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(
+        summary.model_text.contains("format_diffs=50"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("src/lib.rs"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("raw_ref="),
+        "{}",
+        summary.model_text
+    );
+}
+
+#[test]
+fn p0_tsc_check_summary_counts_diagnostics_without_false_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = "src/index.ts(10,5): error TS2322: Type 'string' is not assignable to type 'number'.\nsrc/app.tsx(4,1): error TS2304: Cannot find name 'Widget'.\nFound 2 errors in 2 files.\n"
+        .repeat(40);
+    let summary = summarize_command_output("pnpm exec tsc --noEmit", &raw, 2, dir.path()).unwrap();
+    assert_eq!(summary.command_family, "tsc_check");
+    assert_eq!(summary.risk, "critical");
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(
+        summary.model_text.contains("family=tsc_check"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("diagnostics=80"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("TS2322"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("src/index.ts"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("raw_ref="),
+        "{}",
+        summary.model_text
+    );
+}
+
+#[test]
+fn p0_tsc_check_unknown_output_does_not_claim_zero_diagnostics() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = "TypeScript compiler output with custom plugin notes\n".repeat(80);
+    let summary = summarize_command_output("tsc --noEmit", &raw, 0, dir.path()).unwrap();
+    assert_eq!(summary.command_family, "tsc_check");
+    assert_eq!(summary.risk, "unknown");
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(
+        summary.model_text.contains("diagnostics=unknown"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        !summary.model_text.contains("diagnostics=0"),
+        "{}",
+        summary.model_text
     );
 }
 

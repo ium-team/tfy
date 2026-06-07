@@ -39,7 +39,7 @@ Gateway execution:
 tfy tool-gateway -- cargo test
 ```
 
-The AI agent receives plain model-visible text selected by a net-savings gate. Exact stdout/stderr bytes are stored locally first. If the compact summary is strictly smaller than the redacted public raw output, the model receives the summary plus recovery hint/ref. If the raw output is already smaller, the model receives the redacted raw output with no JSON/envelope overhead. The implemented P0 command-family path adds fixture-driven summaries and `command_family` analytics for Git status/diff/log, `gh pr checks`, Cargo build/test/check/clippy, and common test runners while leaving unsupported commands on the generic safe path.
+The AI agent receives plain model-visible text selected by a net-savings gate. Exact stdout/stderr bytes are stored locally first. If the compact summary is strictly smaller than the redacted public raw output, the model receives the summary plus recovery hint/ref. If the raw output is already smaller, the model receives the redacted raw output with no JSON/envelope overhead. The implemented P0 command-family path adds fixture-driven summaries and `command_family` analytics for Git status/diff/log, `gh pr checks`, Cargo build/test/check/clippy/fmt-check, TypeScript no-emit checks, and common test runners while leaving unsupported commands on the generic safe path.
 
 `tfy run -- <command>` remains a compatibility/debug spelling. `tfy tool-gateway -- <command>` is the runtime-facing name that communicates the intended integration boundary.
 

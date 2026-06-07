@@ -678,6 +678,9 @@ fn classify_direct_command(cmd: &str) -> String {
         ["cargo", "clippy", ..] => "cargo_clippy".into(),
         ["cargo", "build", ..] => "cargo_build".into(),
         ["cargo", "check", ..] => "cargo_check".into(),
+        ["cargo", "fmt", rest @ ..] if args_contain_exact(rest, "--check") => {
+            "cargo_fmt_check".into()
+        }
         ["pytest", ..] | ["python", "-m", "pytest", ..] | ["python3", "-m", "pytest", ..] => {
             "pytest".into()
         }
@@ -685,8 +688,30 @@ fn classify_direct_command(cmd: &str) -> String {
         ["pnpm", "test", ..] => "pnpm_test".into(),
         ["yarn", "test", ..] => "yarn_test".into(),
         ["go", "test", ..] => "go_test".into(),
+        ["tsc", rest @ ..]
+        | ["npx", "tsc", rest @ ..]
+        | ["pnpm", "exec", "tsc", rest @ ..]
+        | ["yarn", "tsc", rest @ ..]
+        | ["npm", "exec", "tsc", rest @ ..]
+            if tsc_no_emit_args(rest) =>
+        {
+            "tsc_check".into()
+        }
         _ => "generic".into(),
     }
+}
+
+fn args_contain_exact(args: &[&str], needle: &str) -> bool {
+    args.contains(&needle)
+}
+
+fn tsc_no_emit_args(args: &[&str]) -> bool {
+    args_contain_exact(args, "--noEmit") && !tsc_long_running_args(args)
+}
+
+fn tsc_long_running_args(args: &[&str]) -> bool {
+    args.iter()
+        .any(|arg| matches!(*arg, "--watch" | "-w" | "--watchFile" | "--watchDirectory"))
 }
 
 fn family_risk(
@@ -731,11 +756,39 @@ fn family_risk(
                 "unknown".into()
             }
         }
+        "cargo_fmt_check" => {
+            if has_cargo_fmt_diff(raw) || has_hard_failure_marker(raw) {
+                "critical".into()
+            } else if is_success(raw) || raw.trim().is_empty() {
+                "success".into()
+            } else {
+                "unknown".into()
+            }
+        }
+        "tsc_check" => {
+            if has_typescript_diagnostics(raw) || has_hard_failure_marker(raw) {
+                "critical".into()
+            } else if is_success(raw) || raw.trim().is_empty() {
+                "success".into()
+            } else {
+                "unknown".into()
+            }
+        }
         _ if is_git_github => policy.risk(command, raw, exit_code),
         _ if is_error(raw) => "critical".into(),
         _ if is_success(raw) || raw.trim().is_empty() => "success".into(),
         _ => "unknown".into(),
     }
+}
+
+fn has_cargo_fmt_diff(raw: &str) -> bool {
+    raw.lines().any(|line| line.starts_with("Diff in "))
+}
+
+fn has_typescript_diagnostics(raw: &str) -> bool {
+    Regex::new(r"(?m)\berror\s+TS[0-9]+:")
+        .expect("valid TypeScript diagnostic regex")
+        .is_match(raw)
 }
 
 fn has_zero_test_failures(raw: &str) -> bool {
@@ -802,6 +855,8 @@ fn family_summary_candidate(
         "cargo_clippy" | "cargo_build" | "cargo_check" => {
             Some(build_summary(family, cmd, code, raw, evidence, rr, risk))
         }
+        "cargo_fmt_check" => Some(cargo_fmt_summary(cmd, code, raw, evidence, rr, risk)),
+        "tsc_check" => Some(tsc_summary(cmd, code, raw, evidence, rr, risk)),
         _ => None,
     }
 }
@@ -1127,6 +1182,70 @@ fn build_summary(
     lines.push(format!("- warnings={warnings} errors={errors}"));
     lines.push(format!("- {finished}"));
     lines.extend(evidence.iter().take(10).map(|e| format!("- evidence: {e}")));
+    lines.push(format!("raw_ref={rr}"));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn cargo_fmt_summary(
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> String {
+    let diff_count = raw
+        .lines()
+        .filter(|line| line.starts_with("Diff in "))
+        .count();
+    let diffs = if diff_count > 0 || raw.trim().is_empty() {
+        diff_count.to_string()
+    } else {
+        "unknown".into()
+    };
+    let diff_lines = collect_lines(raw, r"(?i)(^Diff in |rustfmt|formatted|formatting)", 10);
+    let mut lines = vec![format!(
+        "TFY command summary: {} family=cargo_fmt_check exit={code} cmd={cmd}",
+        risk.to_uppercase()
+    )];
+    lines.push(format!("- format_diffs={diffs}"));
+    lines.extend(diff_lines.into_iter().map(|x| format!("- {x}")));
+    if risk != "success" {
+        lines.extend(evidence.iter().take(8).map(|e| format!("- evidence: {e}")));
+    }
+    lines.push(format!("raw_ref={rr}"));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn tsc_summary(
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> String {
+    let diagnostics_count = Regex::new(r"(?m)\berror\s+TS[0-9]+:")
+        .expect("valid TypeScript diagnostic count regex")
+        .find_iter(raw)
+        .count();
+    let diagnostics = if diagnostics_count > 0 || raw.trim().is_empty() {
+        diagnostics_count.to_string()
+    } else {
+        "unknown".into()
+    };
+    let type_errors = collect_lines(raw, r"(?i)(error TS[0-9]+:|Found [0-9]+ errors?)", 10);
+    let mut lines = vec![format!(
+        "TFY command summary: {} family=tsc_check exit={code} cmd={cmd}",
+        risk.to_uppercase()
+    )];
+    lines.push(format!("- diagnostics={diagnostics}"));
+    lines.extend(type_errors.into_iter().map(|x| format!("- {x}")));
+    if risk != "success" {
+        lines.extend(evidence.iter().take(8).map(|e| format!("- evidence: {e}")));
+    }
     lines.push(format!("raw_ref={rr}"));
     lines.push(String::new());
     lines.join("\n")
