@@ -152,7 +152,7 @@ Current implementation status:
 
 - Implemented: Rust core primitives, Rust CLI, `tfy-runtime` envelope/capability/event contract, Tool Gateway text-first net-savings entrypoint, explicit debug/adapter JSON/JSONL entrypoints, shell wrapper, Context Gateway CLI, Output Gateway preview/validate CLI plus content-addressed single-file selected-scope `--apply`, State Gateway append/project CLI, raw refs, redaction, code index/expand/full/restore, evaluation.
 - Implemented adapter v1: `tfy adapter` generic-shell command-boundary shim, dry-run installer, session ledger, command-family-aware savings report, and P0 Tool Gateway summaries for Git, `gh pr checks`, Cargo, TypeScript no-emit, and common test-runner output.
-- Implemented MCP foundation v2: `tfy mcp serve` stdio JSON-RPC server, MCP tool/resource discovery, raw/report/state resources, and Codex MCP dry-run/setup snippet generation.
+- Implemented MCP foundation v2: `tfy mcp serve` stdio JSON-RPC server, MCP tool/resource discovery, raw/report/state resources, Codex MCP dry-run/setup snippet generation, and an agent-native single-file selected-scope Code I/O workflow (`tfy_scope_list`, enriched `tfy_context_get`, preview-only `tfy_output_validate`, and proof-gated `tfy_output_apply`).
 - Planned adapters: Codex private hooks/editor/provider automatic hook integrations and broader Output Gateway apply surfaces such as multi-file/fuzzy patch engines or deletion semantics.
 
 TFY should not claim automatic model input/output interception for a runtime until that runtime adapter exists and passes the relevant gates. The MCP foundation is a supported MCP tool/resource integration point; it still requires the host agent to route through MCP and is not a private Codex hook or universal shell interception layer.
@@ -167,6 +167,13 @@ tfy mcp serve --session local-session --ledger .tfy/mcp/ledger.jsonl --raw-dir .
 tfy mcp install --target codex --dry-run
 ```
 
-The server exposes `tfy_tool_run`, `tfy_raw_get`, `tfy_context_get`, `tfy_output_validate`, `tfy_state_project`, and `tfy_adapter_report`, plus `tfy://raw/{raw_ref}`, `tfy://report/{session}`, and `tfy://state/{session}` resources. MCP stdout is JSON-RPC only; logs and warnings go to stderr or files. Non-zero child commands are returned as tool results and do not terminate the MCP server.
+The server exposes `tfy_tool_run`, `tfy_raw_get`, `tfy_scope_list`, `tfy_context_get`, `tfy_output_validate`, `tfy_output_apply`, `tfy_state_project`, and `tfy_adapter_report`, plus `tfy://raw/{raw_ref}`, `tfy://report/{session}`, and `tfy://state/{session}` resources. MCP stdout is JSON-RPC only; logs and warnings go to stderr or files. Non-zero child commands are returned as tool results and do not terminate the MCP server.
+
+MCP Code I/O workflow:
+
+1. `tfy_scope_list` returns bounded scope metadata and snapshot-stable `scope.id` selectors; names are display hints only.
+2. `tfy_context_get` returns compact selected-scope code, symbol map, `base_compact_code`, `context_ref`, and `ApplyProof`.
+3. `tfy_output_validate` restores compact output in preview mode and never mutates the workspace.
+4. `tfy_output_apply` applies only through the same proof-gated single-file selected-scope semantics as `tfy output-gateway --apply`; parent event ids or ledger state alone are not authority.
 
 This is MCP tool/resource integration. It does not claim private Codex hook interception, provider prompt mutation, or universal shell interception without host MCP routing.

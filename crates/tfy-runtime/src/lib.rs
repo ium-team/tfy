@@ -530,12 +530,18 @@ pub fn project_state(events: &[RuntimeEnvelope<GatewayEvent>]) -> StateProjectio
                 validation_status,
                 applied,
             } => {
-                projection
-                    .changed_files
-                    .push(format!("patch_ref={patch_ref} applied={applied}"));
-                projection
-                    .decisions
-                    .push(format!("output validation: {validation_status:?}"));
+                if *applied {
+                    projection
+                        .changed_files
+                        .push(format!("patch_ref={patch_ref} applied=true"));
+                    projection
+                        .decisions
+                        .push(format!("output apply: {validation_status:?}"));
+                } else {
+                    projection.decisions.push(format!(
+                        "output preview validation: {validation_status:?} patch_ref={patch_ref} applied=false"
+                    ));
+                }
             }
             GatewayEvent::Fallback { reason, message } => {
                 projection

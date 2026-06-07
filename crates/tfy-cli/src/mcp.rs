@@ -190,8 +190,10 @@ fn mcp_tools() -> Vec<serde_json::Value> {
     vec![
         serde_json::json!({"name":"tfy_tool_run","description":"Run an ordinary command through TFY Tool Gateway; raw output is stored locally and model-facing output is compact only when smaller.","inputSchema":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"}},"session":{"type":"string"}},"required":["command"]}}),
         serde_json::json!({"name":"tfy_raw_get","description":"Recover raw output by raw_ref.","inputSchema":{"type":"object","properties":{"raw_ref":{"type":"string"},"around":{"type":"string"},"context":{"type":"integer"}},"required":["raw_ref"]}}),
-        serde_json::json!({"name":"tfy_context_get","description":"Get compact or full context for a file scope.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"scope":{"type":"string"},"compactness":{"type":"string"}},"required":["path","scope"]}}),
-        serde_json::json!({"name":"tfy_output_validate","description":"Validate/restore compact code output without applying changes.","inputSchema":{"type":"object","properties":{"restore_payload":{"type":"object"}},"required":["restore_payload"]}}),
+        serde_json::json!({"name":"tfy_scope_list","description":"List bounded code scopes by snapshot-stable scope id for agent-native context selection. Names are UX hints only; downstream context/apply should use exact ids.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0}},"required":["path"]}}),
+        serde_json::json!({"name":"tfy_context_get","description":"Get compact context for an exact code scope id, including base compact code, context_ref, symbol map, and ApplyProof for later proof-gated apply.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"scope":{"type":"string"},"compactness":{"type":"string"},"session":{"type":"string"}},"required":["path","scope"]}}),
+        serde_json::json!({"name":"tfy_output_validate","description":"Validate/restore compact code output without applying changes.","inputSchema":{"type":"object","properties":{"restore_payload":{"type":"object"},"session":{"type":"string"}},"required":["restore_payload"]}}),
+        serde_json::json!({"name":"tfy_output_apply","description":"Apply compact code output through TFY's proof-gated single-file selected-scope apply path. Requires ApplyProof; parent_event_id or ledger state alone is not authority.","inputSchema":{"type":"object","properties":{"restore_payload":{"type":"object"},"context_proof":{"type":"object"},"parent_event_id":{"type":"string"},"session":{"type":"string"}},"required":["restore_payload"]}}),
         serde_json::json!({"name":"tfy_state_project","description":"Project compact task state from the TFY ledger.","inputSchema":{"type":"object","properties":{"session":{"type":"string"}}}}),
         serde_json::json!({"name":"tfy_adapter_report","description":"Report measured byte savings for an MCP session.","inputSchema":{"type":"object","properties":{"session":{"type":"string"}}}}),
     ]
@@ -277,42 +279,10 @@ fn mcp_tools_call(
                 .map_err(|e| (-32000, e.to_string()))?;
             Ok(mcp_tool_content(bytes_to_safe_json(raw_ref, bytes)))
         }
-        "tfy_context_get" => {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| (-32602, "path is required".to_string()))?;
-            let scope = args
-                .get("scope")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| (-32602, "scope is required".to_string()))?;
-            let compactness = args
-                .get("compactness")
-                .and_then(|v| v.as_str())
-                .unwrap_or("symbol");
-            let exp = expand_scope(PathBuf::from(path), scope, compactness)
-                .map_err(|e| (-32000, e.to_string()))?;
-            Ok(mcp_tool_content(
-                serde_json::to_value(exp).map_err(|e| (-32000, e.to_string()))?,
-            ))
-        }
-        "tfy_output_validate" => {
-            let restore_payload_value = args
-                .get("restore_payload")
-                .cloned()
-                .ok_or_else(|| (-32602, "restore_payload is required".to_string()))?;
-            let payload: RestorePayload = serde_json::from_value(restore_payload_value)
-                .map_err(|e| (-32602, e.to_string()))?;
-            let restored = restore_payload(payload).map_err(|e| (-32000, e.to_string()))?;
-            let patch_ref = stable_id(&restored.restored_code);
-            Ok(mcp_tool_content(serde_json::json!({
-                "validation_status":"non_authoritative",
-                "applied":false,
-                "restored_code":restored.restored_code,
-                "patch_ref": patch_ref,
-                "warnings":["MCP output validation is preview-only; workspace apply and full benefit validation require explicit authority/provenance gates"]
-            })))
-        }
+        "tfy_scope_list" => mcp_scope_list(args),
+        "tfy_context_get" => mcp_context_get(args, default_session, ledger),
+        "tfy_output_validate" => mcp_output_validate(args, default_session, ledger),
+        "tfy_output_apply" => mcp_output_apply(args, default_session, ledger),
         "tfy_state_project" => {
             let session = args
                 .get("session")
@@ -338,6 +308,276 @@ fn mcp_tools_call(
         }
         _ => Err((-32602, format!("unknown tool: {name}"))),
     }
+}
+
+fn mcp_scope_list(
+    args: serde_json::Value,
+) -> std::result::Result<serde_json::Value, (i32, String)> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (-32602, "path is required".to_string()))?;
+    let query = args.get("query").and_then(|v| v.as_str());
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+    let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let limit = limit.clamp(1, 200);
+    let index = index_path(PathBuf::from(path)).map_err(|e| (-32000, e.to_string()))?;
+    let mut scopes = index.scopes;
+    if let Some(query) = query.filter(|q| !q.trim().is_empty()) {
+        scopes.retain(|scope| {
+            scope.id.contains(query) || scope.name.contains(query) || scope.path.contains(query)
+        });
+    }
+    let total = scopes.len();
+    let selected: Vec<_> = scopes.into_iter().skip(offset).take(limit).collect();
+    let next_offset = if offset + selected.len() < total {
+        Some(offset + selected.len())
+    } else {
+        None
+    };
+    Ok(mcp_tool_content(serde_json::json!({
+        "path": path,
+        "selector_contract": "use exact scope.id for tfy_context_get; names are display hints only",
+        "limit": limit,
+        "offset": offset,
+        "returned": selected.len(),
+        "total_matching": total,
+        "truncated": next_offset.is_some(),
+        "next_offset": next_offset,
+        "scopes": selected
+    })))
+}
+
+fn mcp_context_get(
+    args: serde_json::Value,
+    default_session: &str,
+    ledger: &PathBuf,
+) -> std::result::Result<serde_json::Value, (i32, String)> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (-32602, "path is required".to_string()))?;
+    let scope = args
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (-32602, "scope is required".to_string()))?;
+    let compactness = args
+        .get("compactness")
+        .and_then(|v| v.as_str())
+        .unwrap_or("symbol");
+    let session = args
+        .get("session")
+        .and_then(|v| v.as_str())
+        .unwrap_or(default_session);
+    let index = index_path(PathBuf::from(path)).map_err(|e| (-32000, e.to_string()))?;
+    if !index.scopes.iter().any(|candidate| candidate.id == scope) {
+        return Err((
+            -32602,
+            "tfy_context_get requires an exact scope id from tfy_scope_list; display names are not authoritative selectors"
+                .into(),
+        ));
+    }
+    let exp = expand_scope(PathBuf::from(path), scope, compactness)
+        .map_err(|e| (-32000, e.to_string()))?;
+    let context_ref = exp
+        .apply_proof
+        .as_ref()
+        .map(|proof| proof.context_ref.clone())
+        .unwrap_or_else(|| stable_id(&exp.compact_code));
+    let response = serde_json::json!({
+        "selector_contract": "scope was resolved by exact id when possible; use returned scope.id for downstream apply",
+        "scope": exp.scope,
+        "compactness": exp.compactness,
+        "compact_code": exp.compact_code,
+        "base_compact_code": exp.compact_code,
+        "context_ref": context_ref,
+        "symbol_map": exp.symbol_map,
+        "apply_proof": exp.apply_proof,
+        "metrics": exp.metrics,
+        "parser": exp.parser,
+        "confidence": exp.confidence,
+        "fallback_action": exp.fallback_action,
+        "reason": exp.reason,
+        "fallbacks": {
+            "full_context": "call tfy_context_get with compactness=light or use CLI full/raw fallback when confidence is insufficient",
+            "apply": "call tfy_output_apply with restore_payload carrying base_compact_code, context_ref, symbol_map, and exactly one apply_proof"
+        }
+    });
+    let event = mcp_event_envelope(
+        GatewayEvent::ContextSelected {
+            context_ref: context_ref.clone(),
+            action: "selected".into(),
+            reason: format!("mcp compact context for scope {scope}"),
+        },
+        session,
+        &stable_id(&format!("mcp-context:{session}:{context_ref}")),
+        ProvenanceRefs {
+            context_refs: vec![context_ref],
+            validation_status: Some(ValidationStatus::Valid),
+            ..Default::default()
+        },
+    );
+    if let Err(err) = append_event(ledger, &event) {
+        eprintln!("tfy mcp warning: could not append context event: {err}");
+    }
+    Ok(mcp_tool_content(response))
+}
+
+fn mcp_output_validate(
+    args: serde_json::Value,
+    default_session: &str,
+    ledger: &PathBuf,
+) -> std::result::Result<serde_json::Value, (i32, String)> {
+    let restore_payload_value = args
+        .get("restore_payload")
+        .cloned()
+        .ok_or_else(|| (-32602, "restore_payload is required".to_string()))?;
+    let session = args
+        .get("session")
+        .and_then(|v| v.as_str())
+        .unwrap_or(default_session);
+    let payload: RestorePayload =
+        serde_json::from_value(restore_payload_value).map_err(|e| (-32602, e.to_string()))?;
+    let restored = restore_payload(payload).map_err(|e| (-32000, e.to_string()))?;
+    let patch_ref = stable_id(&restored.restored_code);
+    let event = mcp_event_envelope(
+        GatewayEvent::OutputValidated {
+            patch_ref: patch_ref.clone(),
+            validation_status: ValidationStatus::NonAuthoritative,
+            applied: false,
+        },
+        session,
+        &stable_id(&format!("mcp-output-validate:{session}:{patch_ref}")),
+        ProvenanceRefs {
+            patch_refs: vec![patch_ref.clone()],
+            validation_status: Some(ValidationStatus::NonAuthoritative),
+            ..Default::default()
+        },
+    );
+    if let Err(err) = append_event(ledger, &event) {
+        eprintln!("tfy mcp warning: could not append output validation event: {err}");
+    }
+    Ok(mcp_tool_content(serde_json::json!({
+        "validation_status":"non_authoritative",
+        "applied":false,
+        "restored_code":restored.restored_code,
+        "patch_ref": patch_ref,
+        "warnings":["MCP output validation is preview-only and never mutates files; use tfy_output_apply with exactly one ApplyProof for workspace writes"]
+    })))
+}
+
+fn mcp_output_apply(
+    args: serde_json::Value,
+    default_session: &str,
+    ledger: &PathBuf,
+) -> std::result::Result<serde_json::Value, (i32, String)> {
+    let restore_payload_value = args
+        .get("restore_payload")
+        .cloned()
+        .ok_or_else(|| (-32602, "restore_payload is required".to_string()))?;
+    let parent_event_id = args.get("parent_event_id").and_then(|v| v.as_str());
+    let session = args
+        .get("session")
+        .and_then(|v| v.as_str())
+        .unwrap_or(default_session);
+    let payload: RestorePayload =
+        serde_json::from_value(restore_payload_value).map_err(|e| (-32602, e.to_string()))?;
+    let proof_override = args
+        .get("context_proof")
+        .cloned()
+        .map(serde_json::from_value::<ApplyProof>)
+        .transpose()
+        .map_err(|e| (-32602, e.to_string()))?;
+    if parent_event_id.is_some() && proof_override.is_none() && payload.apply_proof.is_none() {
+        return Err((
+            -32602,
+            "parent_event_id or ledger history alone is not authoritative for tfy_output_apply"
+                .into(),
+        ));
+    }
+    let applied =
+        apply_restored_payload(payload, proof_override).map_err(|e| (-32000, e.to_string()))?;
+    let preview_diff = format!(
+        "--- original-scope
++++ applied-scope
+@@ byte {}..{}
+{}",
+        applied.byte_start, applied.byte_end, applied.restored_code
+    );
+    let response = serde_json::json!({
+        "validation_status": "valid",
+        "applied": true,
+        "restored_code": applied.restored_code,
+        "preview_diff": preview_diff,
+        "patch_ref": applied.patch_ref,
+        "applied_path": applied.path,
+        "changed_range": {
+            "scope_id": applied.scope_id,
+            "byte_start": applied.byte_start,
+            "byte_end": applied.byte_end
+        },
+        "before_hash": applied.before_sha256,
+        "after_hash": applied.after_sha256,
+        "context_ref": applied.context_ref,
+        "authority": "apply_proof_and_current_file_state_only"
+    });
+    let event = mcp_event_envelope(
+        GatewayEvent::OutputValidated {
+            patch_ref: response["patch_ref"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            validation_status: ValidationStatus::Valid,
+            applied: true,
+        },
+        session,
+        &stable_id(&format!(
+            "mcp-output-apply:{}:{}",
+            session,
+            response["patch_ref"].as_str().unwrap_or_default()
+        )),
+        ProvenanceRefs {
+            context_refs: vec![response["context_ref"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()],
+            patch_refs: vec![response["patch_ref"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()],
+            validation_status: Some(ValidationStatus::Valid),
+            ..Default::default()
+        },
+    );
+    if let Err(err) = append_event(ledger, &event) {
+        eprintln!("tfy mcp warning: could not append output apply event: {err}");
+    }
+    Ok(mcp_tool_content(response))
+}
+
+fn mcp_event_envelope(
+    payload: GatewayEvent,
+    session: &str,
+    request_id: &str,
+    provenance: ProvenanceRefs,
+) -> RuntimeEnvelope<GatewayEvent> {
+    let trace_id = stable_id(&format!("mcp-trace:{request_id}"));
+    let mut envelope = RuntimeEnvelope::new(
+        AdapterKind::Mcp,
+        vec![
+            GatewayKind::Tool,
+            GatewayKind::Context,
+            GatewayKind::Output,
+            GatewayKind::State,
+        ],
+        AuthorityMode::ExecuteWithRuntimeAuthority,
+        session,
+        request_id,
+        trace_id,
+        payload,
+    );
+    envelope.provenance = provenance;
+    envelope
 }
 
 fn mcp_tool_content(value: serde_json::Value) -> serde_json::Value {

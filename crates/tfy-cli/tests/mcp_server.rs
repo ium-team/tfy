@@ -316,3 +316,258 @@ fn mcp_tool_run_uses_p0_command_family_summary_and_report() {
         "cargo_test"
     );
 }
+
+fn mcp_content_json(response: &serde_json::Value) -> serde_json::Value {
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("MCP tool response text");
+    serde_json::from_str(text).unwrap()
+}
+
+#[test]
+fn mcp_context_get_rejects_display_name_selectors() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let raw = dir.path().join("raw");
+    let file = dir.path().join("sample.py");
+    std::fs::write(
+        &file,
+        "def calculate_total_price(price, tax_rate):
+    return price + price * tax_rate
+",
+    )
+    .unwrap();
+
+    let mut mcp = McpChild::start("exact-id", &ledger, &raw);
+    let rejected = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":39,
+        "method":"tools/call",
+        "params":{"name":"tfy_context_get","arguments":{"path":file.to_str().unwrap(),"scope":"calculate_total_price"}}
+    }));
+    assert!(rejected.get("error").is_some(), "{rejected}");
+    assert!(rejected["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("exact scope id"));
+}
+
+#[test]
+fn mcp_code_io_workflow_lists_context_validates_and_applies() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let raw = dir.path().join("raw");
+    let file = dir.path().join("sample.py");
+    std::fs::write(
+        &file,
+        "def calculate_total_price(price, tax_rate):\n    return price + price * tax_rate\n\ndef keep_me(value):\n    return value\n",
+    )
+    .unwrap();
+
+    let mut mcp = McpChild::start("code-io", &ledger, &raw);
+    let tools = mcp.request(json!({"jsonrpc":"2.0","id":40,"method":"tools/list"}));
+    let names: Vec<_> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"tfy_scope_list"));
+    assert!(names.contains(&"tfy_output_apply"));
+
+    let listed = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":41,
+        "method":"tools/call",
+        "params":{"name":"tfy_scope_list","arguments":{"path":file.to_str().unwrap(),"limit":1}}
+    }));
+    let listed_json = mcp_content_json(&listed);
+    assert_eq!(listed_json["returned"], 1);
+    assert_eq!(listed_json["truncated"], true);
+    assert!(listed_json["selector_contract"]
+        .as_str()
+        .unwrap()
+        .contains("scope.id"));
+    let scope_id = listed_json["scopes"][0]["id"].as_str().unwrap().to_string();
+
+    let context = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":42,
+        "method":"tools/call",
+        "params":{"name":"tfy_context_get","arguments":{"session":"code-io","path":file.to_str().unwrap(),"scope":scope_id,"compactness":"symbol"}}
+    }));
+    let compact = mcp_content_json(&context);
+    assert_eq!(compact["base_compact_code"], compact["compact_code"]);
+    assert_eq!(
+        compact["context_ref"],
+        compact["apply_proof"]["context_ref"]
+    );
+    assert_eq!(compact["symbol_map"]["scope_id"], compact["scope"]["id"]);
+    assert!(compact["apply_proof"]["source_sha256"].as_str().is_some());
+
+    let restore_payload = json!({
+        "scope_id": compact["scope"]["id"],
+        "language": compact["scope"]["language"],
+        "compactness": compact["compactness"],
+        "compact_code": "def f1(a,b): return a * (1 + b)",
+        "base_compact_code": compact["compact_code"],
+        "context_ref": compact["context_ref"],
+        "symbol_map": compact["symbol_map"],
+        "apply_proof": compact["apply_proof"]
+    });
+
+    let before_preview = std::fs::read_to_string(&file).unwrap();
+    let preview = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":43,
+        "method":"tools/call",
+        "params":{"name":"tfy_output_validate","arguments":{"session":"code-io","restore_payload":restore_payload}}
+    }));
+    let preview_json = mcp_content_json(&preview);
+    assert_eq!(preview_json["validation_status"], "non_authoritative");
+    assert_eq!(preview_json["applied"], false);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before_preview);
+
+    let applied = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":44,
+        "method":"tools/call",
+        "params":{"name":"tfy_output_apply","arguments":{"session":"code-io","restore_payload":restore_payload}}
+    }));
+    let applied_json = mcp_content_json(&applied);
+    assert_eq!(applied_json["validation_status"], "valid");
+    assert_eq!(applied_json["applied"], true);
+    assert_eq!(
+        applied_json["authority"],
+        "apply_proof_and_current_file_state_only"
+    );
+    assert_eq!(applied_json["applied_path"], file.to_str().unwrap());
+    let source = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        source.contains("def calculate_total_price(price,tax_rate): return price * (1 + tax_rate)")
+    );
+    assert!(source.contains("def keep_me(value):\n    return value"));
+
+    let state = mcp.request(json!({"jsonrpc":"2.0","id":45,"method":"resources/read","params":{"uri":"tfy://state/code-io"}}));
+    let state_text = state["result"]["contents"][0]["text"].as_str().unwrap();
+    let state_json: serde_json::Value = serde_json::from_str(state_text).unwrap();
+    assert!(!state_json["context_refs"].as_array().unwrap().is_empty());
+    let changed_files = state_json["changed_files"].as_array().unwrap();
+    assert_eq!(changed_files.len(), 1, "{state_json}");
+    assert!(changed_files[0].as_str().unwrap().contains("applied=true"));
+    assert!(state_json["decisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line.as_str().unwrap().contains("output preview validation")));
+}
+
+#[test]
+fn mcp_output_apply_rejects_parent_event_id_without_proof() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let raw = dir.path().join("raw");
+    let file = dir.path().join("sample.py");
+    std::fs::write(
+        &file,
+        "def calculate_total_price(price, tax_rate):\n    return price + price * tax_rate\n",
+    )
+    .unwrap();
+    let original = std::fs::read_to_string(&file).unwrap();
+
+    let mut mcp = McpChild::start("parent-only", &ledger, &raw);
+    let listed = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":50,
+        "method":"tools/call",
+        "params":{"name":"tfy_scope_list","arguments":{"path":file.to_str().unwrap(),"query":"calculate_total_price"}}
+    }));
+    let listed_json = mcp_content_json(&listed);
+    let scope_id = listed_json["scopes"][0]["id"].as_str().unwrap();
+    let context = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":51,
+        "method":"tools/call",
+        "params":{"name":"tfy_context_get","arguments":{"path":file.to_str().unwrap(),"scope":scope_id}}
+    }));
+    let compact = mcp_content_json(&context);
+    let no_proof_payload = json!({
+        "scope_id": compact["scope"]["id"],
+        "language": compact["scope"]["language"],
+        "compactness": compact["compactness"],
+        "compact_code": "def f1(a,b): return a",
+        "base_compact_code": compact["compact_code"],
+        "context_ref": compact["context_ref"],
+        "symbol_map": compact["symbol_map"]
+    });
+    let rejected = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":52,
+        "method":"tools/call",
+        "params":{"name":"tfy_output_apply","arguments":{"restore_payload":no_proof_payload,"parent_event_id":"ctx-only"}}
+    }));
+    assert!(rejected.get("error").is_some(), "{rejected}");
+    assert!(rejected["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("parent_event_id"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+}
+
+#[test]
+fn mcp_output_apply_rejects_stale_proof_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let raw = dir.path().join("raw");
+    let file = dir.path().join("sample.py");
+    std::fs::write(
+        &file,
+        "def calculate_total_price(price, tax_rate):\n    return price + price * tax_rate\n",
+    )
+    .unwrap();
+
+    let mut mcp = McpChild::start("stale", &ledger, &raw);
+    let listed = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":60,
+        "method":"tools/call",
+        "params":{"name":"tfy_scope_list","arguments":{"path":file.to_str().unwrap(),"query":"calculate_total_price"}}
+    }));
+    let listed_json = mcp_content_json(&listed);
+    let scope_id = listed_json["scopes"][0]["id"].as_str().unwrap();
+    let context = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":61,
+        "method":"tools/call",
+        "params":{"name":"tfy_context_get","arguments":{"path":file.to_str().unwrap(),"scope":scope_id}}
+    }));
+    let compact = mcp_content_json(&context);
+    std::fs::write(
+        &file,
+        "def calculate_total_price(price, tax_percent):\n    return price + price * tax_percent\n",
+    )
+    .unwrap();
+    let changed = std::fs::read_to_string(&file).unwrap();
+    let restore_payload = json!({
+        "scope_id": compact["scope"]["id"],
+        "language": compact["scope"]["language"],
+        "compactness": compact["compactness"],
+        "compact_code": "def f1(a,b): return a * (1 + b)",
+        "base_compact_code": compact["compact_code"],
+        "context_ref": compact["context_ref"],
+        "symbol_map": compact["symbol_map"],
+        "apply_proof": compact["apply_proof"]
+    });
+    let rejected = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":62,
+        "method":"tools/call",
+        "params":{"name":"tfy_output_apply","arguments":{"restore_payload":restore_payload}}
+    }));
+    assert!(rejected.get("error").is_some(), "{rejected}");
+    assert!(rejected["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("stale"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), changed);
+}

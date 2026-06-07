@@ -4,7 +4,7 @@
 
 TFY is intended to sit inside an AI-agent runtime as an **I/O middleware**, not merely as a command a human types manually. The Rust CLI remains the debug/protocol surface, but the product path is that shells, MCP tools, editor integrations, Codex-style runtimes, or provider adapters route high-token boundaries through TFY automatically.
 
-Current status: the Rust core, CLI primitives, `tfy-runtime` wire contract, Tool/Shell Gateway surfaces, Context Gateway CLI, Output Gateway preview/validate CLI plus proof-gated local single-file selected-scope apply, State Gateway ledger/projection CLI, `tfy adapter` generic-shell command-boundary adapter, and `tfy mcp` stdio tool/resource server are implemented. Codex private hooks/editor/provider automatic hooks and broad Output Gateway workspace apply remain adapter-specific follow-up work.
+Current status: the Rust core, CLI primitives, `tfy-runtime` wire contract, Tool/Shell Gateway surfaces, Context Gateway CLI, Output Gateway preview/validate CLI plus proof-gated local single-file selected-scope apply, State Gateway ledger/projection CLI, `tfy adapter` generic-shell command-boundary adapter, and `tfy mcp` stdio tool/resource server are implemented. MCP now includes a host-routed agent-native Code I/O workflow: bounded ID-first scope listing, compact selected-scope context with `ApplyProof`, preview-only validation, and proof-gated MCP apply through the existing single-file selected-scope apply semantics. Codex private hooks/editor/provider automatic hooks and broad Output Gateway workspace apply remain adapter-specific follow-up work.
 
 ## Boundary model
 
@@ -19,8 +19,8 @@ The gateway model is the external runtime integration model. It does not replace
 | Gateway boundary | Runtime question | Current TFY primitives | Method families | Owner | Status | Fallback |
 |---|---|---|---|---|---|---|
 | Tool Gateway | What happens when an agent runs an ordinary command/tool? | `tfy tool-gateway`, `tfy run`, `tfy raw`, `RawStore`, `ToolPolicy` | tool feedback compression, raw refs, output fingerprinting, error clustering, Git/GitHub harness, redaction | Rust core + shell/tool wrapper adapter | Core primitive and CLI entrypoint implemented | `raw_ref`, ranged raw expansion, exit/risk/evidence preservation |
-| Context Gateway | What context reaches the model before reasoning? | `tfy context-gateway`, `tfy index`, `expand`, `full`, `decide-context` | semantic skeletons, compact code/maps, retrieval budget planner, adaptive compactness, dependency-neighborhood slicing, refs/deltas | Rust core + runtime envelope; external runtime adapters later | Runtime-facing CLI implemented; Codex/MCP/editor hooks planned | related/full fallback on low confidence, diagnostics, unresolved symbols |
-| Output Gateway | What happens after the model emits compact code or patches? | `tfy output-gateway`, `tfy restore`; proof-gated explicit apply API | deterministic restoration, patch/edit-script output, compact schemas, validation gates | Rust core + runtime envelope; narrow local apply implemented | Preview/validate CLI and content-addressed single-file selected-scope apply implemented; broader workspace apply remains planned behind authority/provenance gates | reject unmapped/stale symbols; request full/context fallback before apply |
+| Context Gateway | What context reaches the model before reasoning? | `tfy context-gateway`, `tfy index`, `expand`, `full`, `decide-context`; MCP `tfy_scope_list`/`tfy_context_get` | semantic skeletons, compact code/maps, retrieval budget planner, adaptive compactness, dependency-neighborhood slicing, refs/deltas | Rust core + runtime envelope + MCP host-routed workflow | Runtime-facing CLI and MCP selected-scope context implemented; private Codex/editor hooks planned | related/full fallback on low confidence, diagnostics, unresolved symbols |
+| Output Gateway | What happens after the model emits compact code or patches? | `tfy output-gateway`, `tfy restore`; MCP `tfy_output_validate`/`tfy_output_apply`; proof-gated explicit apply API | deterministic restoration, patch/edit-script output, compact schemas, validation gates | Rust core + runtime envelope + MCP host-routed workflow; narrow local apply implemented | Preview/validate CLI/MCP and content-addressed single-file selected-scope apply implemented; broader workspace apply remains planned behind authority/provenance gates | reject unmapped/stale symbols; request full/context fallback before apply |
 | State Gateway | What persists across turns without raw-history bloat? | `tfy state-append`, `tfy state-project`, raw refs as evidence handles | task-state compaction, output fingerprinting, local memoization, refs/deltas | Rust runtime schema + event ledger | Append/project CLI implemented; external session adapters planned | preserve decisions/evidence/raw refs; non-authoritative projection triggers fallback |
 
 ## Tool Gateway: implemented first
@@ -64,11 +64,11 @@ The Context Gateway mediates model input. It should choose the cheapest safe rep
 index/skeleton -> selected compact scope -> related neighborhood -> full fallback
 ```
 
-It uses existing primitives (`index`, `expand`, `full`, `decide-context`) through `tfy context-gateway` and returns a runtime envelope. It must not claim automatic model-context interception for Codex/MCP/editor/provider runtimes until concrete adapters implement those hooks.
+It uses existing primitives (`index`, `expand`, `full`, `decide-context`) through `tfy context-gateway` and returns a runtime envelope. Through MCP, `tfy_scope_list` provides bounded snapshot-stable scope ids and `tfy_context_get` returns compact selected-scope code plus symbol map, `base_compact_code`, `context_ref`, and `ApplyProof`. This is host-routed MCP tool use, not private model-context interception for Codex/editor/provider runtimes.
 
 ## Output Gateway: preview/validate plus proof-gated apply
 
-The Output Gateway handles structured outputs in preview/validate mode and can apply only a narrow, content-addressed single-file selected-scope replacement:
+The Output Gateway handles structured outputs in preview/validate mode and can apply only a narrow, content-addressed single-file selected-scope replacement. The same boundary is available through MCP as preview-only `tfy_output_validate` and proof-gated `tfy_output_apply`:
 
 - compact code payloads produced with TFY symbol maps
 - compact patches/edit scripts with explicit scope IDs and map refs
@@ -125,7 +125,7 @@ Implemented runtime foundation:
 Still adapter-required:
 
 - Codex hook integration.
-- MCP server/proxy integration: stdio MCP server implemented through `tfy mcp serve`; broader proxy/host-specific routing remains follow-up.
+- MCP server/proxy integration: stdio MCP server implemented through `tfy mcp serve`, including host-routed Tool/Context/Output/State tools and single-file selected-scope Code I/O workflow; broader proxy/host-specific routing remains follow-up.
 - Editor integration.
 - Provider/cache-specific prompt layout integration.
 - Output Gateway broad workspace mutation beyond proof-gated single-file selected-scope apply; multi-file/fuzzy/deletion apply still requires explicit authority, provenance, and validation gates.
@@ -158,7 +158,7 @@ Support claim boundary:
 
 - `generic-shell` command-boundary interception: implemented and tested.
 - Codex/OMX command wrapping: only supported where the host is explicitly configured to call the generic-shell adapter.
-- MCP stdio tool/resource integration: implemented and tested through `tfy mcp serve`.
+- MCP stdio tool/resource integration: implemented and tested through `tfy mcp serve`, including `tfy_scope_list`, enriched `tfy_context_get`, preview-only `tfy_output_validate`, and proof-gated `tfy_output_apply`.
 - Codex private hook/editor/provider automatic model prompt/output interception: not claimed until runtime-specific adapters have e2e tests.
 
 ## Adapter v2: MCP/Codex setup foundation
