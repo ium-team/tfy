@@ -69,7 +69,7 @@ Prefer draft PRs while an adapter boundary or output contract is still being rev
 
 ## Automatic Git/GitHub closeout
 
-For agent-authored work, committing, pushing, and updating the draft PR are part of “done.” A separate user reminder is not required unless the user explicitly opted out of Git/GitHub actions.
+For agent-authored work, committing, pushing, and updating the draft PR are part of “done.” A separate user reminder is not required unless the user explicitly opted out of Git/GitHub actions. If a user explicitly asks the agent to merge, the agent must recheck CI and merge state first. GitHub does not permit PR authors to approve their own PRs, so agent-authored merges must cite independent review evidence and must not represent a failed self-approval attempt as a GitHub approval.
 
 ## Verification gate
 

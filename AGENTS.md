@@ -68,6 +68,8 @@ Closeout steps:
 
 Do not auto-merge PRs, change branch protection, change repository settings, delete remote branches, or force-push shared history unless explicitly requested or already required for an approved history-cleanup task.
 
+When a user explicitly requests agent-driven merge, the agent may merge after rechecking CI, merge state, branch target, and independent review evidence. GitHub does not allow an author to approve their own pull request; record any failed self-approval attempt honestly and rely on separately collected independent review evidence rather than claiming a GitHub approval that cannot exist.
+
 If a work unit is intentionally local-only, record that in the final response with the reason and the exact unpushed state.
 
 ## Commit policy
