@@ -1,5 +1,5 @@
 use crate::adapter::build_adapter_report;
-use crate::gateways::tool_gateway_envelopes;
+use crate::gateways::{apply_repeated_output_elision, tool_gateway_envelopes};
 use crate::util::{print_json, stable_id};
 use crate::workspace::{apply_plan, validate_plan, WorkspaceApplyPlan};
 use anyhow::{bail, Result};
@@ -254,7 +254,7 @@ fn mcp_tools_call(
                 .and_then(|v| v.as_str())
                 .unwrap_or(default_session)
                 .to_string();
-            let (event, response, _exit_code) = tool_gateway_envelopes(
+            let (mut event, mut response, _exit_code) = tool_gateway_envelopes(
                 command,
                 raw_dir.clone(),
                 max_summary_bytes,
@@ -266,6 +266,7 @@ fn mcp_tools_call(
                 Origin::mcp_host(OriginHost::Generic),
             )
             .map_err(|e| (-32000, e.to_string()))?;
+            apply_repeated_output_elision(ledger, &mut event, &mut response);
             if let Err(err) = append_event(ledger, &event) {
                 eprintln!("tfy mcp warning: could not append ledger event: {err}");
             }

@@ -48,7 +48,7 @@ Each method entry must declare:
 - Raw output is stored and requestable by raw ref.
 - Around expansion recovers nearby evidence.
 - Unknown output uses conservative summaries.
-- Repeated unchanged output can be represented by status/hash/ref.
+- Repeated unchanged output can be represented by status/hash/ref after storing fresh raw evidence and only when the repeat notice is smaller than raw output.
 - Error clustering preserves representative evidence and raw recovery.
 
 ## Git/GitHub harness tests
@@ -201,4 +201,5 @@ Additional MCP hardening tests verify:
 - `tfy doctor --codex --json` starts a local MCP child, verifies `initialize` and required tools, checks writable local dirs, and warns rather than overclaims Codex config state.
 - `tfy smoke --mcp --json` runs the local MCP Code I/O workflow end to end and proves preview validation does not mutate while proof-gated apply does.
 - `tfy smoke --codex` is checklist/report-only and states that no Codex host invocation is claimed.
-- `tfy gain` reports `No TFY savings data found yet` on empty ledgers and reports real bytes/tokens from adapter or MCP `tfy_tool_run` `ToolCommandCompleted` command events when present.
+- `tfy gain` reports `No TFY savings data found yet` on empty ledgers and reports real bytes/tokens from adapter or MCP `tfy_tool_run` `ToolCommandCompleted` command events when present, including `repeat_elided` counts for unchanged repeated output.
+- `tfy launch-report --json` exposes the `mcp_stdio`, `tfy_agent_adapter`, `generic_shell`, and `codex` readiness matrix, blocks unverified/evidence-missing host launch claims, lists unsupported provider/editor/private-hook/universal-terminal paths, and includes the five required launch benchmark scenario names.

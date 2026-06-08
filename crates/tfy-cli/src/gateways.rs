@@ -2,7 +2,7 @@ use crate::util::{print_json, read_payload, stable_id};
 use anyhow::{bail, Result};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tfy_core::*;
 use tfy_runtime::*;
 
@@ -71,7 +71,7 @@ pub(crate) fn execute_structured_tool_gateway_with_origin(
     adapter_kind: AdapterKind,
     origin: Origin,
 ) -> Result<()> {
-    let (event, response, exit_code) = tool_gateway_envelopes(
+    let (mut event, mut response, exit_code) = tool_gateway_envelopes(
         command,
         raw_dir,
         max_summary_bytes,
@@ -82,6 +82,7 @@ pub(crate) fn execute_structured_tool_gateway_with_origin(
         adapter_kind,
         origin,
     )?;
+    apply_repeated_output_elision(&ledger, &mut event, &mut response);
     if let Err(err) = append_event(ledger, &event) {
         eprintln!("tfy adapter warning: could not append ledger event: {err}");
     }
@@ -138,6 +139,7 @@ pub(crate) fn tool_gateway_envelopes(
             summary: summary.summary.clone(),
             model_text: summary.model_text.clone(),
             rendering_kind: summary.rendering_kind.clone(),
+            output_sha256: summary.output_sha256.clone(),
             raw_ref: summary.raw_ref.clone(),
             evidence: summary.evidence.clone(),
         },
@@ -167,6 +169,7 @@ pub(crate) fn tool_gateway_envelopes(
             negative_savings_avoided: summary.rendering_kind == "pass_through"
                 && summary.raw_chars <= summary.summary_chars,
             rendering_kind: summary.rendering_kind,
+            output_sha256: summary.output_sha256,
         },
         EnvelopeMeta {
             session_id: &session_id,
@@ -183,6 +186,100 @@ pub(crate) fn tool_gateway_envelopes(
         _ => 1,
     };
     Ok((event, response, exit_code))
+}
+
+pub(crate) fn apply_repeated_output_elision(
+    ledger: &Path,
+    event: &mut RuntimeEnvelope<GatewayEvent>,
+    response: &mut RuntimeEnvelope<GatewayResponse>,
+) {
+    let GatewayEvent::ToolCommandCompleted {
+        command,
+        exit_code,
+        command_family,
+        raw_ref,
+        raw_bytes,
+        model_bytes,
+        raw_chars,
+        summary_chars,
+        model_chars,
+        savings_pct,
+        rendering_kind,
+        output_sha256,
+        ..
+    } = &mut event.payload
+    else {
+        return;
+    };
+    if output_sha256.is_empty() || *raw_bytes == 0 && *raw_chars == 0 {
+        return;
+    }
+    let Ok(events) = load_events(ledger) else {
+        return;
+    };
+    let raw_size = if *raw_bytes == 0 {
+        *raw_chars
+    } else {
+        *raw_bytes
+    };
+    let Some(previous_raw_ref) = events.iter().rev().find_map(|previous| {
+        if previous.session_id != event.session_id {
+            return None;
+        }
+        match &previous.payload {
+            GatewayEvent::ToolCommandCompleted {
+                command: previous_command,
+                exit_code: previous_exit_code,
+                raw_ref: previous_raw_ref,
+                raw_bytes: previous_raw_bytes,
+                raw_chars: previous_raw_chars,
+                output_sha256: previous_hash,
+                ..
+            } if previous_command == command
+                && previous_exit_code == exit_code
+                && previous_hash == output_sha256
+                && previous_raw_ref != raw_ref
+                && (if *previous_raw_bytes == 0 {
+                    *previous_raw_chars
+                } else {
+                    *previous_raw_bytes
+                }) == raw_size =>
+            {
+                Some(previous_raw_ref.clone())
+            }
+            _ => None,
+        }
+    }) else {
+        return;
+    };
+    let repeated_text = format!(
+        "[tfy: repeated unchanged command output elided; command_family={command_family} previous_raw_ref={previous_raw_ref} raw_ref={raw_ref}]\n"
+    );
+    if repeated_text.len() >= raw_size {
+        return;
+    }
+    *rendering_kind = "repeat_elided".into();
+    *model_bytes = repeated_text.len();
+    *model_chars = repeated_text.len();
+    *summary_chars = repeated_text.len();
+    *savings_pct = if raw_size == 0 {
+        0.0
+    } else {
+        ((raw_size as f64 - repeated_text.len() as f64) / raw_size as f64 * 10000.0).round() / 100.0
+    };
+    if let GatewayResponse::ToolCommand {
+        summary,
+        model_text,
+        rendering_kind,
+        evidence,
+        ..
+    } = &mut response.payload
+    {
+        *summary = repeated_text.clone();
+        *model_text = repeated_text;
+        *rendering_kind = "repeat_elided".into();
+        evidence.push(format!("unchanged repeat of raw_ref={previous_raw_ref}"));
+    }
 }
 
 fn gateway_event_envelope(

@@ -106,6 +106,18 @@ pub(crate) struct ExplainCmd {
     pub json: bool,
 }
 
+#[derive(Args, Clone)]
+pub(crate) struct LaunchReportCmd {
+    #[arg(long)]
+    pub json: bool,
+    #[arg(long)]
+    pub ledger: Vec<PathBuf>,
+    #[arg(long, default_value = "local-session")]
+    pub session: String,
+    #[arg(long)]
+    pub all: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScopeTarget {
     Project,
@@ -165,9 +177,30 @@ struct SurfaceStatus {
 #[derive(Serialize)]
 struct ProductStatusReport {
     status: String,
+    minimum_v1_host_matrix: Vec<HostReadiness>,
     surfaces: Vec<SurfaceStatus>,
+    launch_claim_gate: String,
     not_supported: Vec<String>,
     truthfulness_boundary: String,
+}
+
+#[derive(Serialize)]
+struct HostReadiness {
+    host: String,
+    status: String,
+    setup: String,
+    evidence_gate: Vec<String>,
+    launch_claim: String,
+}
+
+#[derive(Serialize)]
+struct LaunchReadinessReport {
+    status: String,
+    host_matrix: Vec<HostReadiness>,
+    gain: GainReport,
+    blockers: Vec<String>,
+    not_supported: Vec<String>,
+    required_benchmark_scenarios: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -299,6 +332,12 @@ pub(crate) fn execute_status(cmd: StatusCmd) -> Result<()> {
         print_json(&report)?;
     } else {
         println!("TFY status: {}", report.status);
+        for host in &report.minimum_v1_host_matrix {
+            println!(
+                "host {}: {} — {}",
+                host.host, host.status, host.launch_claim
+            );
+        }
         for surface in &report.surfaces {
             println!("{}: {} — {}", surface.name, surface.status, surface.message);
         }
@@ -317,6 +356,36 @@ pub(crate) fn execute_explain(cmd: ExplainCmd) -> Result<()> {
         println!("Automatic routing: {}", report.automatic_routing);
         println!("Apply: {}", report.apply_model);
         println!("Out of scope: {}", report.out_of_scope.join(", "));
+    }
+    Ok(())
+}
+
+pub(crate) fn execute_launch_report(cmd: LaunchReportCmd) -> Result<()> {
+    let ledgers = gain_ledgers(&cmd.ledger);
+    let gain = build_gain_report(&ledgers, if cmd.all { None } else { Some(&cmd.session) })?;
+    let status = build_product_status_report();
+    let report = build_launch_readiness_report(status, gain);
+    if cmd.json {
+        print_json(&report)?;
+    } else {
+        println!("TFY launch readiness: {}", report.status);
+        println!(
+            "host_matrix={}",
+            report
+                .host_matrix
+                .iter()
+                .map(|h| format!("{}:{}", h.host, h.status))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        println!(
+            "commands={} saved_bytes={} fallback_frequency={:.2}",
+            report.gain.commands, report.gain.saved_bytes, report.gain.fallback_frequency
+        );
+        if !report.blockers.is_empty() {
+            println!("blockers={}", report.blockers.join("; "));
+        }
+        println!("not_supported={}", report.not_supported.join(","));
     }
     Ok(())
 }
@@ -533,6 +602,7 @@ fn marker_present(text: &str) -> bool {
 fn build_product_status_report() -> ProductStatusReport {
     ProductStatusReport {
         status: "active".into(),
+        minimum_v1_host_matrix: minimum_v1_host_matrix(),
         surfaces: vec![
             SurfaceStatus { name: "command_output".into(), status: "active".into(), message: "AI-origin commands can route through tfy agent/adapter/MCP; normal human terminal commands are not intercepted.".into() },
             SurfaceStatus { name: "context_compacting".into(), status: "active".into(), message: "AI can list scopes and request exact compact function/file scopes instead of whole files.".into() },
@@ -545,13 +615,140 @@ fn build_product_status_report() -> ProductStatusReport {
             SurfaceStatus { name: "editor_integration".into(), status: "not_supported".into(), message: "Editor auto-connection is outside TFY scope.".into() },
             SurfaceStatus { name: "private_codex_hook".into(), status: "not_supported".into(), message: "No private or hidden Codex prompt interception is claimed.".into() },
         ],
-        not_supported: vec![
-            "provider_api_gateway".into(),
-            "editor_integration".into(),
-            "private_codex_hook".into(),
-            "ordinary_human_terminal_interception".into(),
-        ],
+        launch_claim_gate: "A host is launch-supported only after setup, smoke, ledger evidence, raw recovery, and no-negative-savings checks pass.".into(),
+        not_supported: not_supported_surfaces(),
         truthfulness_boundary: "supported AI-host routing only; no provider proxy, editor hook, private Codex hook, or universal shell interception".into(),
+    }
+}
+
+fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
+    vec![
+        HostReadiness {
+            host: "mcp_stdio".into(),
+            status: "configurable_local_smoke_required".into(),
+            setup: "tfy mcp serve configured by the host".into(),
+            evidence_gate: vec![
+                "initialize/tools-list".into(),
+                "tool/context/output/state ledger events".into(),
+                "raw_ref recovery".into(),
+            ],
+            launch_claim: "candidate launch route after MCP smoke and host-routed ledger evidence pass".into(),
+        },
+        HostReadiness {
+            host: "tfy_agent_adapter".into(),
+            status: "configurable_evidence_required".into(),
+            setup: "tfy agent or tfy adapter run wraps AI-origin command execution".into(),
+            evidence_gate: vec![
+                "ToolCommandCompleted ledger event".into(),
+                "raw_ref recovery".into(),
+                "no-negative-savings rendering".into(),
+            ],
+            launch_claim: "candidate launch route after configured runtime produces ledger/raw/no-negative-savings evidence".into(),
+        },
+        HostReadiness {
+            host: "generic_shell".into(),
+            status: "configurable_wrapper_evidence_required".into(),
+            setup: "tfy adapter install --target generic-shell".into(),
+            evidence_gate: vec![
+                "configured wrapper invocation".into(),
+                "adapter ledger report".into(),
+                "raw_ref recovery".into(),
+            ],
+            launch_claim: "candidate launch route after wrapper invocation and adapter ledger evidence pass; ordinary human terminals are untouched"
+                .into(),
+        },
+        HostReadiness {
+            host: "codex".into(),
+            status: "configured_but_unverified".into(),
+            setup: "Codex MCP config plus TFY AGENTS.md guidance".into(),
+            evidence_gate: vec![
+                "Codex host actually invokes TFY MCP".into(),
+                "ledger events from Codex session".into(),
+                "raw recovery and no-negative-savings".into(),
+            ],
+            launch_claim: "not launch-supported until host invocation evidence exists".into(),
+        },
+    ]
+}
+
+fn not_supported_surfaces() -> Vec<String> {
+    vec![
+        "provider_api_gateway".into(),
+        "editor_integration".into(),
+        "private_codex_hook".into(),
+        "ordinary_human_terminal_interception".into(),
+        "unconfigured_hosts".into(),
+    ]
+}
+
+fn apply_launch_evidence(mut hosts: Vec<HostReadiness>, gain: &GainReport) -> Vec<HostReadiness> {
+    let has_command_evidence = gain.commands > 0 && gain.saved_bytes >= 0;
+    let has_repeat_evidence = gain
+        .rendering_counts
+        .get("repeat_elided")
+        .copied()
+        .unwrap_or(0)
+        > 0;
+    if has_command_evidence {
+        for host in &mut hosts {
+            if host.host == "tfy_agent_adapter" {
+                host.status = "verified_command_ledger_evidence".into();
+                host.launch_claim = "verified for command-boundary token control in ledgers supplied to this report".into();
+                host.evidence_gate.push(format!(
+                    "observed commands={} saved_bytes={}",
+                    gain.commands, gain.saved_bytes
+                ));
+                if has_repeat_evidence {
+                    host.evidence_gate
+                        .push("observed repeat_elided unchanged-output savings".into());
+                }
+            }
+        }
+    }
+    hosts
+}
+
+fn build_launch_readiness_report(
+    status: ProductStatusReport,
+    gain: GainReport,
+) -> LaunchReadinessReport {
+    let mut blockers = Vec::new();
+    let host_matrix = apply_launch_evidence(status.minimum_v1_host_matrix, &gain);
+    for host in &host_matrix {
+        if host.status.contains("unverified")
+            || host.status.contains("evidence_required")
+            || host.status.contains("smoke_required")
+        {
+            blockers.push(format!(
+                "host {} is {}; do not claim launch support until evidence gate passes",
+                host.host, host.status
+            ));
+        }
+    }
+    if gain.saved_bytes < 0 {
+        blockers.push("negative savings detected in gain ledgers".into());
+    }
+    if gain.commands == 0 {
+        blockers.push("no command-output savings data found; run adapter/MCP tool workflows before launch claims".into());
+    }
+    LaunchReadinessReport {
+        status: if blockers.is_empty() {
+            "pass"
+        } else {
+            "blocked"
+        }
+        .into(),
+        host_matrix,
+        gain,
+        blockers,
+        not_supported: status.not_supported,
+        required_benchmark_scenarios: vec![
+            "command-heavy debugging".into(),
+            "context-heavy code edit".into(),
+            "repeated test loop".into(),
+            "Git/GitHub evidence".into(),
+            "long-session state compaction".into(),
+        ],
     }
 }
 

@@ -21,8 +21,9 @@ use gateways::{
 };
 use mcp::{execute_mcp, McpCmd};
 use product::{
-    execute_doctor, execute_explain, execute_gain, execute_init, execute_setup, execute_smoke,
-    execute_status, DoctorCmd, ExplainCmd, GainCmd, InitCmd, SetupCmd, SmokeCmd, StatusCmd,
+    execute_doctor, execute_explain, execute_gain, execute_init, execute_launch_report,
+    execute_setup, execute_smoke, execute_status, DoctorCmd, ExplainCmd, GainCmd, InitCmd,
+    LaunchReportCmd, SetupCmd, SmokeCmd, StatusCmd,
 };
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -69,6 +70,8 @@ enum Cmd {
     Status(StatusCmd),
     /// Explain the compact-AI/readable-file TFY model in user-facing terms.
     Explain(ExplainCmd),
+    /// Report launch-readiness evidence, blockers, host readiness matrix, and measured savings.
+    LaunchReport(LaunchReportCmd),
     Index {
         path: PathBuf,
     },
@@ -252,6 +255,7 @@ fn main() -> Result<()> {
         Cmd::Doctor(cmd) => execute_doctor(cmd)?,
         Cmd::Smoke(cmd) => execute_smoke(cmd)?,
         Cmd::Gain(cmd) => execute_gain(cmd)?,
+        Cmd::LaunchReport(cmd) => execute_launch_report(cmd)?,
         Cmd::Setup(cmd) => execute_setup(cmd)?,
         Cmd::Status(cmd) => execute_status(cmd)?,
         Cmd::Explain(cmd) => execute_explain(cmd)?,

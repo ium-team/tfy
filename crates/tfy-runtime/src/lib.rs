@@ -403,6 +403,8 @@ pub enum GatewayResponse {
         summary: String,
         model_text: String,
         rendering_kind: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        output_sha256: String,
         raw_ref: String,
         evidence: Vec<String>,
     },
@@ -463,6 +465,8 @@ pub enum GatewayEvent {
         negative_savings_avoided: bool,
         #[serde(default)]
         rendering_kind: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        output_sha256: String,
     },
     ContextSelected {
         context_ref: String,

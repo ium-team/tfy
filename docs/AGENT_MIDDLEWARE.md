@@ -39,7 +39,7 @@ Gateway execution:
 tfy tool-gateway -- cargo test
 ```
 
-The AI agent receives plain model-visible text selected by a net-savings gate. Exact stdout/stderr bytes are stored locally first. If the compact summary is strictly smaller than the redacted public raw output, the model receives the summary plus recovery hint/ref. If the raw output is already smaller, the model receives the redacted raw output with no JSON/envelope overhead. The implemented P0 command-family path adds fixture-driven summaries and `command_family` analytics for Git status/diff/log, `gh pr checks`, Cargo build/test/check/clippy/fmt-check, TypeScript no-emit checks, and common test runners while leaving unsupported commands on the generic safe path.
+The AI agent receives plain model-visible text selected by a net-savings gate. Exact stdout/stderr bytes are stored locally first. If the compact summary is strictly smaller than the redacted public raw output, the model receives the summary plus recovery hint/ref. If a same-session command repeats with the same exit code and output hash, TFY elides the repeat only after storing a fresh raw ref and only when the repeat notice is smaller than raw output. If the raw output is already smaller, the model receives the redacted raw output with no JSON/envelope overhead. The implemented P0 command-family path adds fixture-driven summaries and `command_family` analytics for Git status/diff/log, `gh pr checks`, Cargo build/test/check/clippy/fmt-check, TypeScript no-emit checks, and common test runners while leaving unsupported commands on the generic safe path.
 
 `tfy run -- <command>` remains a compatibility/debug spelling. `tfy tool-gateway -- <command>` is the runtime-facing name that communicates the intended integration boundary.
 
@@ -192,4 +192,4 @@ tfy explain
 tfy gain # reports no-data until adapter/tfy_tool_run command events exist
 ```
 
-`tfy init --codex --project --apply` writes only a TFY-owned marker block in `AGENTS.md`. `tfy smoke --codex` remains a manual checklist/report in P0 and does not claim that Codex invoked TFY; `tfy smoke --mcp` is the automated local proof that TFY's MCP Code I/O path works. `tfy gain` reports command-output savings only after adapter or MCP `tfy_tool_run` command events exist.
+`tfy init --codex --project --apply` writes only a TFY-owned marker block in `AGENTS.md`. `tfy smoke --codex` remains a manual checklist/report in P0 and does not claim that Codex invoked TFY; `tfy smoke --mcp` is the automated local proof that TFY's MCP Code I/O path works. `tfy launch-report` exposes the v1 host matrix and blocks launch claims while Codex lacks host ledger evidence. `tfy gain` reports command-output savings only after adapter or MCP `tfy_tool_run` command events exist.

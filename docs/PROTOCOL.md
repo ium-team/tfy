@@ -174,7 +174,8 @@ tfy state-project
 - `tfy doctor --codex` checks the local binary, starts an MCP child for `initialize`/`tools/list`, verifies required tools, checks `.tfy/mcp` and `.tfy/raw` writability, and reports Codex setup as pass/warn/fail without claiming private hooks.
 - `tfy smoke --mcp` runs a deterministic local MCP Code I/O scenario: scope list, exact-id compact context, preview validate without mutation, proof-gated apply, and ledger evidence.
 - `tfy smoke --codex` is checklist/report-only in P0; it may guide manual host validation but must not claim Codex invoked TFY.
-- `tfy gain` reads `.tfy/mcp/ledger.jsonl`, `.tfy/adapter/ledger.jsonl`, and explicit `--ledger` paths, then reports real raw/model-visible byte savings from `ToolCommandCompleted` command-output events produced by `tfy_tool_run`, Tool Gateway, or the adapter. Code I/O smoke events are verification evidence, not savings data. With no command data it exits successfully with `No TFY savings data found yet`.
+- `tfy gain` reads `.tfy/mcp/ledger.jsonl`, `.tfy/adapter/ledger.jsonl`, and explicit `--ledger` paths, then reports real raw/model-visible byte savings from `ToolCommandCompleted` command-output events produced by `tfy_tool_run`, Tool Gateway, or the adapter. Repeated unchanged command output is counted as `repeat_elided` only after fresh raw evidence is stored and the elision is smaller than raw output. Code I/O smoke events are verification evidence, not savings data. With no command data it exits successfully with `No TFY savings data found yet`.
+- `tfy launch-report` combines the v1 host-readiness matrix, unsupported-surface audit, required benchmark scenarios, and current gain data. It blocks launch claims while Codex remains configured-but-unverified or command savings data is absent.
 
 ## Adapter v1 protocol
 

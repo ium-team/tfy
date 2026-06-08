@@ -389,3 +389,245 @@ fn setup_status_and_explain_make_supported_boundaries_obvious() {
         "{explain_text}"
     );
 }
+
+#[test]
+fn repeated_adapter_output_is_elided_only_after_raw_evidence_is_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let raw = dir.path().join("raw");
+    let noisy = "for i in $(seq 1 120); do echo repeated-line-$i; done";
+
+    let first = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "adapter",
+            "run",
+            "--session",
+            "repeat-session",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--raw-dir",
+            raw.to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            noisy,
+        ])
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+    let first_text = String::from_utf8_lossy(&first.stdout);
+    assert!(!first_text.contains("repeat_elided"), "{first_text}");
+
+    let second = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "adapter",
+            "run",
+            "--session",
+            "repeat-session",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--raw-dir",
+            raw.to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            noisy,
+        ])
+        .output()
+        .unwrap();
+    assert!(second.status.success());
+    let second_text = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        second_text.contains("repeated unchanged command output elided"),
+        "{second_text}"
+    );
+    assert!(second_text.contains("previous_raw_ref="), "{second_text}");
+    assert!(second_text.contains("raw_ref="), "{second_text}");
+    assert!(std::fs::read_dir(&raw).unwrap().count() >= 2);
+
+    let gain = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "gain",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--session",
+            "repeat-session",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(gain.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&gain.stdout).unwrap();
+    assert_eq!(json["rendering_counts"]["repeat_elided"], 1);
+    assert!(json["saved_bytes"].as_i64().unwrap() > 0, "{json}");
+}
+
+#[test]
+fn repeated_elision_uses_exact_raw_bytes_not_lossy_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let raw = dir.path().join("raw");
+    let script = "python3 -c 'import os,sys; sys.stdout.buffer.write(bytes([int(os.environ[\"BYTE\"])]) * 240)'";
+
+    let first = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("BYTE", "255")
+        .args([
+            "adapter",
+            "run",
+            "--session",
+            "binary-repeat-session",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--raw-dir",
+            raw.to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            script,
+        ])
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+
+    let second = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("BYTE", "254")
+        .args([
+            "adapter",
+            "run",
+            "--session",
+            "binary-repeat-session",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--raw-dir",
+            raw.to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            script,
+        ])
+        .output()
+        .unwrap();
+    assert!(second.status.success());
+    let second_text = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        !second_text.contains("repeated unchanged command output elided"),
+        "{second_text}"
+    );
+    assert!(
+        second_text.contains("output suppressed") || !second_text.contains("repeat_elided"),
+        "{second_text}"
+    );
+
+    let gain = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "gain",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--session",
+            "binary-repeat-session",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(gain.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&gain.stdout).unwrap();
+    assert!(
+        json["rendering_counts"].get("repeat_elided").is_none(),
+        "{json}"
+    );
+}
+
+#[test]
+fn launch_report_promotes_adapter_when_gain_ledger_has_command_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let raw = dir.path().join("raw");
+    let run = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "adapter",
+            "run",
+            "--session",
+            "launch-evidence",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--raw-dir",
+            raw.to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "for i in $(seq 1 100); do echo launch-evidence-$i; done",
+        ])
+        .output()
+        .unwrap();
+    assert!(run.status.success());
+
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--session",
+            "launch-evidence",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(report.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let adapter = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["host"] == "tfy_agent_adapter")
+        .unwrap();
+    assert_eq!(adapter["status"], "verified_command_ledger_evidence");
+    assert!(adapter["launch_claim"]
+        .as_str()
+        .unwrap()
+        .contains("verified for command-boundary token control"));
+}
+
+#[test]
+fn launch_report_blocks_unverified_codex_and_exposes_v1_host_matrix() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["launch-report", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["status"], "blocked");
+    assert!(json["blockers"].as_array().unwrap().iter().any(|b| {
+        b.as_str()
+            .unwrap()
+            .contains("host codex is configured_but_unverified")
+    }));
+    let hosts = json["host_matrix"].as_array().unwrap();
+    assert!(hosts.iter().any(|h| h["host"] == "mcp_stdio"));
+    assert!(hosts.iter().any(|h| h["host"] == "tfy_agent_adapter"));
+    assert!(hosts.iter().any(|h| h["host"] == "generic_shell"));
+    assert!(hosts
+        .iter()
+        .any(|h| h["host"] == "codex" && h["status"] == "configured_but_unverified"));
+    assert!(json["not_supported"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s == "provider_api_gateway"));
+    assert!(
+        json["required_benchmark_scenarios"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 5
+    );
+}

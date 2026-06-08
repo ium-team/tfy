@@ -25,6 +25,7 @@ pub struct CommandSummary {
     pub savings_pct: f64,
     pub evidence: Vec<String>,
     pub command_family: String,
+    pub output_sha256: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,11 @@ pub enum ToolPolicy {
     Auto,
     Generic,
     GitGithub,
+}
+
+struct StoredRaw {
+    raw_ref: String,
+    output_sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -271,7 +277,10 @@ fn compress_bytes(
         exit_code,
         max_summary_bytes,
         requested_policy,
-        raw_ref,
+        StoredRaw {
+            raw_ref,
+            output_sha256: sha256_hex(raw_bytes),
+        },
     )
 }
 
@@ -282,8 +291,10 @@ fn compress_with_raw_ref(
     exit_code: i32,
     max_summary_bytes: Option<usize>,
     requested_policy: ToolPolicy,
-    raw_ref: String,
+    stored_raw: StoredRaw,
 ) -> Result<CommandSummary> {
+    let raw_ref = stored_raw.raw_ref;
+    let output_sha256 = stored_raw.output_sha256;
     let policy = GitGithubToolPolicy::new();
     let command_family = classify_command_family(command);
     let is_git_github = match requested_policy {
@@ -340,7 +351,14 @@ fn compress_with_raw_ref(
         raw_ref,
         evidence,
         command_family,
+        output_sha256,
     })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
 }
 
 fn savings_pct_floor(raw_len: usize, model_len: usize) -> f64 {

@@ -336,6 +336,46 @@ fn mcp_tool_run_uses_p0_command_family_summary_and_report() {
     );
 }
 
+#[test]
+fn mcp_tool_run_repeated_output_uses_shared_elision_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let raw = dir.path().join("raw");
+    let mut mcp = McpChild::start("mcp-repeat", &ledger, &raw);
+    let command = [
+        "sh",
+        "-c",
+        "for i in $(seq 1 100); do echo mcp-repeat-$i; done",
+    ];
+
+    let first = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":40,
+        "method":"tools/call",
+        "params": {"name":"tfy_tool_run", "arguments":{"session":"mcp-repeat", "command":command}}
+    }));
+    let first_payload = mcp_content_json(&first);
+    assert_ne!(first_payload["payload"]["rendering_kind"], "repeat_elided");
+
+    let second = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":41,
+        "method":"tools/call",
+        "params": {"name":"tfy_tool_run", "arguments":{"session":"mcp-repeat", "command":command}}
+    }));
+    let second_payload = mcp_content_json(&second);
+    assert_eq!(second_payload["payload"]["rendering_kind"], "repeat_elided");
+    assert!(second_payload["payload"]["model_text"]
+        .as_str()
+        .unwrap()
+        .contains("previous_raw_ref="));
+
+    let report = mcp.request(json!({"jsonrpc":"2.0","id":42,"method":"resources/read","params":{"uri":"tfy://report/mcp-repeat"}}));
+    let report_text = report["result"]["contents"][0]["text"].as_str().unwrap();
+    let report_json: serde_json::Value = serde_json::from_str(report_text).unwrap();
+    assert_eq!(report_json["rendering_counts"]["repeat_elided"], 1);
+}
+
 fn mcp_content_json(response: &serde_json::Value) -> serde_json::Value {
     let text = response["result"]["content"][0]["text"]
         .as_str()
