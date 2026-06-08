@@ -1,4 +1,5 @@
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
@@ -47,6 +48,21 @@ impl McpChild {
         );
         serde_json::from_str(&line).unwrap()
     }
+}
+
+fn sha256_hex(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+fn workspace_proof(id: &str, base: Option<&str>, preview: Option<&str>) -> serde_json::Value {
+    json!({
+        "proof_id": id,
+        "source_ref": format!("ctx-{id}"),
+        "validation_status": "valid",
+        "authority": "workspace_apply",
+        "base_file_hash": base,
+        "restored_preview_hash": preview
+    })
 }
 
 impl Drop for McpChild {
@@ -131,6 +147,9 @@ fn mcp_initialize_tools_and_resource_templates_are_discoverable() {
     assert!(names.contains(&"tfy_tool_run"));
     assert!(names.contains(&"tfy_raw_get"));
     assert!(names.contains(&"tfy_adapter_report"));
+    assert!(names.contains(&"tfy_restore_display"));
+    assert!(names.contains(&"tfy_workspace_validate"));
+    assert!(names.contains(&"tfy_workspace_apply"));
 
     let templates =
         mcp.request(json!({"jsonrpc":"2.0","id":3,"method":"resources/templates/list"}));
@@ -570,4 +589,69 @@ fn mcp_output_apply_rejects_stale_proof_without_writing() {
         .unwrap()
         .contains("stale"));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), changed);
+}
+
+#[test]
+fn mcp_workspace_validate_apply_records_mcp_origin_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let raw = dir.path().join("raw");
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(workspace.join("a.txt"), "alpha\n").unwrap();
+    let current = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&workspace).unwrap();
+    let mut mcp = McpChild::start("workspace-mcp", &ledger, &raw);
+
+    let base_hash = sha256_hex("alpha\n");
+    let preview_hash = sha256_hex("beta\n");
+    let mut plan = json!({
+        "plan_id":"mcp-plan",
+        "origin":{"kind":"mcp_host","host":"generic","invocation":"mcp_tool","intercepted":true,"user_shell_mutated":false},
+        "operations":[{
+            "op_id":"m1",
+            "kind":"modify_exact",
+            "path_before":"a.txt",
+            "base_file_hash":base_hash,
+            "content":"beta\n",
+            "restored_preview_hash":preview_hash,
+            "full_file_scope":true,
+            "per_op_proof":workspace_proof("proof-mcp", Some(&base_hash), Some(&preview_hash))
+        }]
+    });
+
+    let validate = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":80,
+        "method":"tools/call",
+        "params":{"name":"tfy_workspace_validate","arguments":{"plan":plan}}
+    }));
+    assert!(validate.get("result").is_some(), "{validate}");
+    let text = validate["result"]["content"][0]["text"].as_str().unwrap();
+    let report: serde_json::Value = serde_json::from_str(text).unwrap();
+    let plan_hash = report["plan_hash"].as_str().unwrap().to_string();
+    plan["validation_status"] = json!("valid");
+    plan["validation_proof"] = json!(plan_hash.clone());
+
+    let apply = mcp.request(json!({
+        "jsonrpc":"2.0",
+        "id":81,
+        "method":"tools/call",
+        "params":{"name":"tfy_workspace_apply","arguments":{"plan":plan,"plan_hash":plan_hash}}
+    }));
+    std::env::set_current_dir(current).unwrap();
+    assert!(apply.get("result").is_some(), "{apply}");
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+        "beta\n"
+    );
+
+    let ledger_text = std::fs::read_to_string(&ledger).unwrap();
+    assert!(ledger_text.contains("workspace_validate"), "{ledger_text}");
+    assert!(ledger_text.contains("workspace_apply"), "{ledger_text}");
+    for line in ledger_text.lines() {
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(event["origin"]["kind"], "mcp_host", "{event}");
+        assert_eq!(event["origin"]["invocation"], "mcp_tool", "{event}");
+    }
 }

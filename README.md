@@ -132,6 +132,10 @@ cargo run -p tfy-cli -- adapter capabilities
 cargo run -p tfy-cli -- adapter install --target generic-shell --dry-run
 cargo run -p tfy-cli -- adapter run --session smoke -- sh -c 'printf ok'
 cargo run -p tfy-cli -- adapter report --session smoke
+cargo run -p tfy-cli -- agent capabilities
+cargo run -p tfy-cli -- agent install --dry-run
+cargo run -p tfy-cli -- restore-display --payload payload.json --json
+cargo run -p tfy-cli -- workspace validate --payload workspace-plan.json --json
 cargo run -p tfy-cli -- mcp capabilities
 cargo run -p tfy-cli -- mcp install --target codex --dry-run
 cargo test --quiet
@@ -154,11 +158,11 @@ Tool Gateway always stores exact raw stdout/stderr bytes locally first. The mode
 
 Current implementation status:
 
-- Implemented: Rust core primitives, Rust CLI, `tfy-runtime` envelope/capability/event contract, Tool Gateway text-first net-savings entrypoint, explicit debug/adapter JSON/JSONL entrypoints, shell wrapper, Context Gateway CLI, Output Gateway preview/validate CLI plus content-addressed single-file selected-scope `--apply`, State Gateway append/project CLI, raw refs, redaction, code index/expand/full/restore, evaluation.
+- Implemented: Rust core primitives, Rust CLI, `tfy-runtime` envelope/capability/event contract with explicit origin/provenance fields, Tool Gateway text-first net-savings entrypoint, explicit debug/adapter JSON/JSONL entrypoints, shell wrapper, AI-agent wrapper, Context Gateway CLI, Output Gateway preview/validate CLI plus content-addressed single-file selected-scope `--apply`, display-only restore formatter, WorkspaceApplyPlan validate/apply for proof-gated exact multi-file operations, State Gateway append/project CLI, raw refs, redaction, code index/expand/full/restore, evaluation.
 - Implemented adapter v1: `tfy adapter` generic-shell command-boundary shim, dry-run installer, session ledger, command-family-aware savings report, and P0 Tool Gateway summaries for Git, `gh pr checks`, Cargo, TypeScript no-emit, and common test-runner output.
-- Implemented MCP foundation v2: `tfy mcp serve` stdio JSON-RPC server, MCP tool/resource discovery, raw/report/state resources, Codex MCP dry-run/setup snippet generation, and an agent-native single-file selected-scope Code I/O workflow (`tfy_scope_list`, enriched `tfy_context_get`, preview-only `tfy_output_validate`, and proof-gated `tfy_output_apply`).
+- Implemented MCP foundation v2: `tfy mcp serve` stdio JSON-RPC server, MCP tool/resource discovery, raw/report/state resources, Codex MCP dry-run/setup snippet generation, and an agent-native Code I/O workflow (`tfy_scope_list`, enriched `tfy_context_get`, preview-only `tfy_output_validate`, proof-gated `tfy_output_apply`, display-only `tfy_restore_display`, and workspace `tfy_workspace_validate`/`tfy_workspace_apply` for validated plans).
 - Implemented product UX P0: `tfy init` marker-bounded Codex guidance, `tfy doctor` local readiness diagnostics, `tfy smoke --mcp` automated Code I/O smoke, `tfy smoke --codex` checklist-only host validation, and `tfy gain` command-output ledger-derived savings reporting.
-- Planned adapters: Codex private hooks/editor/provider automatic hook integrations and broader Output Gateway apply surfaces such as multi-file/fuzzy patch engines or deletion semantics.
+- Planned adapters: Codex private hooks/editor/provider automatic hook integrations and fuzzy workspace mutation. Exact multi-file WorkspaceApplyPlan operations are implemented behind plan-hash plus per-operation proof gates.
 
 TFY should not claim automatic model input/output interception for a runtime until that runtime adapter exists and passes the relevant gates. The MCP foundation is a supported MCP tool/resource integration point; it still requires the host agent to route through MCP and is not a private Codex hook or universal shell interception layer.
 
@@ -193,5 +197,7 @@ MCP Code I/O workflow:
 2. `tfy_context_get` returns compact selected-scope code, symbol map, `base_compact_code`, `context_ref`, and `ApplyProof`.
 3. `tfy_output_validate` restores compact output in preview mode and never mutates the workspace.
 4. `tfy_output_apply` applies only through the same proof-gated single-file selected-scope semantics as `tfy output-gateway --apply`; parent event ids or ledger state alone are not authority.
+5. `tfy_restore_display` turns compact/restored code into human-readable display text only; it does not create apply authority.
+6. `tfy_workspace_validate` and `tfy_workspace_apply` validate/apply explicit WorkspaceApplyPlan operations with a plan hash plus per-operation proofs. Fuzzy mutation remains preview-only/fail-closed.
 
 This is MCP tool/resource integration. It does not claim private Codex hook interception, provider prompt mutation, or universal shell interception without host MCP routing.

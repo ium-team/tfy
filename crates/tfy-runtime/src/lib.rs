@@ -29,6 +29,81 @@ pub enum AdapterKind {
     Cli,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OriginKind {
+    AgentRuntime,
+    HumanCli,
+    McpHost,
+    TestHarness,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OriginHost {
+    Codex,
+    Omx,
+    Generic,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OriginInvocation {
+    Wrapper,
+    McpTool,
+    ExplicitCli,
+    PrivateHook,
+    ProviderGateway,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Origin {
+    pub kind: OriginKind,
+    pub host: OriginHost,
+    pub invocation: OriginInvocation,
+    pub intercepted: bool,
+    pub user_shell_mutated: bool,
+}
+
+impl Origin {
+    pub fn human_cli() -> Self {
+        Self {
+            kind: OriginKind::HumanCli,
+            host: OriginHost::Generic,
+            invocation: OriginInvocation::ExplicitCli,
+            intercepted: false,
+            user_shell_mutated: false,
+        }
+    }
+
+    pub fn agent_runtime(host: OriginHost, invocation: OriginInvocation) -> Self {
+        Self {
+            kind: OriginKind::AgentRuntime,
+            host,
+            invocation,
+            intercepted: true,
+            user_shell_mutated: false,
+        }
+    }
+
+    pub fn mcp_host(host: OriginHost) -> Self {
+        Self {
+            kind: OriginKind::McpHost,
+            host,
+            invocation: OriginInvocation::McpTool,
+            intercepted: true,
+            user_shell_mutated: false,
+        }
+    }
+}
+
+impl Default for Origin {
+    fn default() -> Self {
+        Self::human_cli()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityMode {
@@ -126,6 +201,8 @@ pub struct RuntimeEnvelope<T> {
     pub parent_event_id: Option<String>,
     pub trace_id: String,
     pub workspace_root: Option<String>,
+    #[serde(default)]
+    pub origin: Origin,
     pub provenance: ProvenanceRefs,
     pub policy: RuntimePolicy,
     pub payload: T,
@@ -153,6 +230,7 @@ impl<T> RuntimeEnvelope<T> {
             parent_event_id: None,
             trace_id: trace_id.into(),
             workspace_root: None,
+            origin: Origin::default(),
             provenance: ProvenanceRefs::default(),
             policy: RuntimePolicy::default(),
             payload,

@@ -19,6 +19,9 @@ const REQUIRED_MCP_TOOLS: &[&str] = &[
     "tfy_context_get",
     "tfy_output_validate",
     "tfy_output_apply",
+    "tfy_restore_display",
+    "tfy_workspace_validate",
+    "tfy_workspace_apply",
     "tfy_state_project",
     "tfy_adapter_report",
 ];

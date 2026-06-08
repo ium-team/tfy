@@ -164,6 +164,16 @@ pub struct RestoreResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreDisplayResponse {
+    pub scope_id: String,
+    pub restored_code: String,
+    pub display_code: String,
+    pub display_only: bool,
+    pub authority: String,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextDecision {
     pub action: FallbackAction,
     pub reason: String,

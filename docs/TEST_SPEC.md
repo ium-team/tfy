@@ -135,6 +135,9 @@ Implemented test coverage now includes:
 - `tfy state-project` compact ledger projection.
 - `tfy context-gateway` runtime envelope for compact context.
 - `tfy output-gateway` preview/validate envelope for structured compact code plus proof-gated single-file selected-scope apply success/fail-closed cases.
+- `tfy agent` configured-AI-wrapper origin/provenance behavior, proving agent-origin interception without mutating ordinary human shell startup files.
+- `tfy restore-display` display-only readable restoration that restores original symbols and carries no apply authority.
+- `tfy workspace validate/apply` exact multi-file WorkspaceApplyPlan success/fail-closed cases for base hashes, plan hashes, per-operation proof, and explicit delete semantics.
 
 Remaining adapter tests before stronger claims:
 
@@ -142,7 +145,8 @@ Remaining adapter tests before stronger claims:
 - MCP stdio server e2e: implemented in `crates/tfy-cli/tests/mcp_server.rs` for tools/resources; broader host-specific proxy routing remains follow-up.
 - Editor file/context adapter e2e.
 - Provider cache/layout hit/miss/accounting e2e.
-- Broader Output Gateway workspace apply beyond content-addressed single-file selected-scope replacement.
+- Private Codex hook/provider/editor interception.
+- Fuzzy workspace mutation beyond fail-closed/preview-only behavior.
 
 
 ## Adapter v1 verification
@@ -185,6 +189,7 @@ Additional MCP hardening tests verify:
 - JSON-RPC notifications do not emit response objects on stdout.
 - `tfy://state/{session}` and `tfy_state_project` are scoped to the requested session and do not leak evidence from other sessions sharing the same ledger file.
 - Adapter reports expose the byte contract fields `raw_bytes`, `model_bytes`, `saved_bytes`, and `net_savings_ratio` while still omitting public `raw_chars` / `model_chars` fields.
+- MCP tools list includes `tfy_restore_display`, `tfy_workspace_validate`, and `tfy_workspace_apply` for host-routed display and exact workspace apply paths.
 
 ## Product UX P0 verification
 

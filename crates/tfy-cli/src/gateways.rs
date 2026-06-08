@@ -6,6 +6,16 @@ use std::path::PathBuf;
 use tfy_core::*;
 use tfy_runtime::*;
 
+struct EnvelopeMeta<'a> {
+    session_id: &'a str,
+    request_id: &'a str,
+    trace_id: &'a str,
+    parent_event_id: Option<String>,
+    provenance: ProvenanceRefs,
+    adapter_kind: AdapterKind,
+    origin: Origin,
+}
+
 pub(crate) fn execute_plain_tool_gateway(
     command: Vec<String>,
     raw_dir: PathBuf,
@@ -30,6 +40,37 @@ pub(crate) fn execute_structured_tool_gateway(
     trace_id: Option<String>,
     parent_event_id: Option<String>,
 ) -> Result<()> {
+    execute_structured_tool_gateway_with_origin(
+        command,
+        raw_dir,
+        max_summary_bytes,
+        json,
+        jsonl,
+        ledger,
+        session_id,
+        request_id,
+        trace_id,
+        parent_event_id,
+        AdapterKind::Cli,
+        Origin::human_cli(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_structured_tool_gateway_with_origin(
+    command: Vec<String>,
+    raw_dir: PathBuf,
+    max_summary_bytes: usize,
+    json: bool,
+    jsonl: bool,
+    ledger: PathBuf,
+    session_id: String,
+    request_id: Option<String>,
+    trace_id: Option<String>,
+    parent_event_id: Option<String>,
+    adapter_kind: AdapterKind,
+    origin: Origin,
+) -> Result<()> {
     let (event, response, exit_code) = tool_gateway_envelopes(
         command,
         raw_dir,
@@ -38,7 +79,8 @@ pub(crate) fn execute_structured_tool_gateway(
         request_id,
         trace_id,
         parent_event_id,
-        AdapterKind::Cli,
+        adapter_kind,
+        origin,
     )?;
     if let Err(err) = append_event(ledger, &event) {
         eprintln!("tfy adapter warning: could not append ledger event: {err}");
@@ -67,6 +109,7 @@ pub(crate) fn tool_gateway_envelopes(
     trace_id: Option<String>,
     parent_event_id: Option<String>,
     adapter_kind: AdapterKind,
+    origin: Origin,
 ) -> Result<(
     RuntimeEnvelope<GatewayEvent>,
     RuntimeEnvelope<GatewayResponse>,
@@ -98,12 +141,15 @@ pub(crate) fn tool_gateway_envelopes(
             raw_ref: summary.raw_ref.clone(),
             evidence: summary.evidence.clone(),
         },
-        &session_id,
-        &request_id,
-        &trace_id,
-        parent_event_id.clone(),
-        provenance.clone(),
-        adapter_kind.clone(),
+        EnvelopeMeta {
+            session_id: &session_id,
+            request_id: &request_id,
+            trace_id: &trace_id,
+            parent_event_id: parent_event_id.clone(),
+            provenance: provenance.clone(),
+            adapter_kind: adapter_kind.clone(),
+            origin: origin.clone(),
+        },
     );
     let event = gateway_event_envelope(
         GatewayEvent::ToolCommandCompleted {
@@ -122,12 +168,15 @@ pub(crate) fn tool_gateway_envelopes(
                 && summary.raw_chars <= summary.summary_chars,
             rendering_kind: summary.rendering_kind,
         },
-        &session_id,
-        &request_id,
-        &trace_id,
-        parent_event_id,
-        provenance,
-        adapter_kind,
+        EnvelopeMeta {
+            session_id: &session_id,
+            request_id: &request_id,
+            trace_id: &trace_id,
+            parent_event_id,
+            provenance,
+            adapter_kind,
+            origin,
+        },
     );
     let exit_code = match &response.payload {
         GatewayResponse::ToolCommand { exit_code, .. } => *exit_code,
@@ -138,15 +187,10 @@ pub(crate) fn tool_gateway_envelopes(
 
 fn gateway_event_envelope(
     payload: GatewayEvent,
-    session_id: &str,
-    request_id: &str,
-    trace_id: &str,
-    parent_event_id: Option<String>,
-    provenance: ProvenanceRefs,
-    adapter_kind: AdapterKind,
+    meta: EnvelopeMeta<'_>,
 ) -> RuntimeEnvelope<GatewayEvent> {
     let mut envelope = RuntimeEnvelope::new(
-        adapter_kind,
+        meta.adapter_kind,
         vec![
             GatewayKind::Tool,
             GatewayKind::Context,
@@ -154,27 +198,23 @@ fn gateway_event_envelope(
             GatewayKind::State,
         ],
         AuthorityMode::ExecuteWithRuntimeAuthority,
-        session_id,
-        request_id,
-        trace_id,
+        meta.session_id,
+        meta.request_id,
+        meta.trace_id,
         payload,
     );
-    envelope.parent_event_id = parent_event_id;
-    envelope.provenance = provenance;
+    envelope.parent_event_id = meta.parent_event_id;
+    envelope.provenance = meta.provenance;
+    envelope.origin = meta.origin;
     envelope
 }
 
 fn gateway_response_envelope(
     payload: GatewayResponse,
-    session_id: &str,
-    request_id: &str,
-    trace_id: &str,
-    parent_event_id: Option<String>,
-    provenance: ProvenanceRefs,
-    adapter_kind: AdapterKind,
+    meta: EnvelopeMeta<'_>,
 ) -> RuntimeEnvelope<GatewayResponse> {
     let mut envelope = RuntimeEnvelope::new(
-        adapter_kind,
+        meta.adapter_kind,
         vec![
             GatewayKind::Tool,
             GatewayKind::Context,
@@ -182,13 +222,14 @@ fn gateway_response_envelope(
             GatewayKind::State,
         ],
         AuthorityMode::ExecuteWithRuntimeAuthority,
-        session_id,
-        request_id,
-        trace_id,
+        meta.session_id,
+        meta.request_id,
+        meta.trace_id,
         payload,
     );
-    envelope.parent_event_id = parent_event_id;
-    envelope.provenance = provenance;
+    envelope.parent_event_id = meta.parent_event_id;
+    envelope.provenance = meta.provenance;
+    envelope.origin = meta.origin;
     envelope
 }
 

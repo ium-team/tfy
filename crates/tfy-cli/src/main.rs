@@ -1,12 +1,17 @@
 mod adapter;
+mod agent;
+mod display;
 mod gateways;
 mod mcp;
 mod product;
 mod util;
+mod workspace;
 
 use adapter::{execute_adapter, AdapterCmd};
+use agent::{execute_agent, AgentCmd};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use display::{execute_restore_display, RestoreDisplayCmd};
 use gateways::{
     context_decision_from_value, execute_context_gateway, execute_output_gateway,
     execute_plain_tool_gateway, execute_structured_tool_gateway,
@@ -21,6 +26,7 @@ use std::path::PathBuf;
 use tfy_core::*;
 use tfy_runtime::*;
 use util::{parse_gateway, parse_output_mode, print_json, read_payload, stable_id};
+use workspace::{execute_workspace, WorkspaceCmd};
 
 #[derive(Parser)]
 #[command(name = "tfy", about = "Token-efficient AI work interface")]
@@ -31,6 +37,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Explicit AI-agent runtime wrapper. Routes AI-originated I/O through TFY without touching normal terminals.
+    Agent {
+        #[command(subcommand)]
+        cmd: AgentCmd,
+    },
     /// Agent-runtime adapter commands for opt-in automatic command-boundary interception.
     Adapter {
         #[command(subcommand)]
@@ -66,6 +77,8 @@ enum Cmd {
         #[arg(long)]
         payload: Option<PathBuf>,
     },
+    /// Restore compact code into human-readable display text. Display-only, not apply authority.
+    RestoreDisplay(RestoreDisplayCmd),
     DecideContext {
         #[arg(long)]
         payload: Option<PathBuf>,
@@ -182,6 +195,11 @@ enum Cmd {
         #[arg(long)]
         parent_event_id: Option<String>,
     },
+    /// Workspace-level validate/apply plan for multi-file changes with plan hash + per-op proofs.
+    Workspace {
+        #[command(subcommand)]
+        cmd: WorkspaceCmd,
+    },
     /// Append a runtime GatewayEvent envelope to the State Gateway ledger.
     StateAppend {
         #[arg(long, default_value = ".tfy/state/ledger.jsonl")]
@@ -214,6 +232,7 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Agent { cmd } => execute_agent(cmd)?,
         Cmd::Adapter { cmd } => execute_adapter(cmd)?,
         Cmd::Mcp { cmd } => execute_mcp(cmd)?,
         Cmd::Init(cmd) => execute_init(cmd)?,
@@ -232,6 +251,7 @@ fn main() -> Result<()> {
             let p: RestorePayload = serde_json::from_str(&text)?;
             print_json(&restore_payload(p)?)?;
         }
+        Cmd::RestoreDisplay(cmd) => execute_restore_display(cmd)?,
         Cmd::DecideContext { payload } => {
             let text = read_payload(payload)?;
             let v: serde_json::Value = serde_json::from_str(&text)?;
@@ -329,6 +349,7 @@ fn main() -> Result<()> {
             trace_id,
             parent_event_id,
         )?,
+        Cmd::Workspace { cmd } => execute_workspace(cmd)?,
         Cmd::StateAppend { ledger, payload } => {
             let text = read_payload(payload)?;
             let event: RuntimeEnvelope<GatewayEvent> = serde_json::from_str(&text)?;

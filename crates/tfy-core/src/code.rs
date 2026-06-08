@@ -254,6 +254,95 @@ pub fn restore_payload(payload: RestorePayload) -> Result<RestoreResponse> {
     })
 }
 
+pub fn restore_display_payload(payload: RestorePayload) -> Result<RestoreDisplayResponse> {
+    let restored = restore_payload(payload)?;
+    let (display_code, warning) = readable_display_code(&restored.restored_code);
+    Ok(RestoreDisplayResponse {
+        scope_id: restored.scope_id,
+        restored_code: restored.restored_code,
+        display_code,
+        display_only: true,
+        authority: "display_only_not_apply_authority".into(),
+        warning,
+    })
+}
+
+fn readable_display_code(code: &str) -> (String, Option<String>) {
+    let trimmed = code.trim();
+    if trimmed.is_empty() {
+        return ("\n".into(), Some("restored code is empty".into()));
+    }
+    if trimmed.contains('\n') && !trimmed.lines().any(|line| line.len() > 160) {
+        return (format!("{}\n", trimmed), None);
+    }
+    let mut out = String::new();
+    let mut indent = 0usize;
+    let mut in_string: Option<char> = None;
+    let mut escape = false;
+    let write_indent = |out: &mut String, indent: usize| {
+        for _ in 0..indent {
+            out.push_str("  ");
+        }
+    };
+    for ch in trimmed.chars() {
+        if let Some(quote) = in_string {
+            out.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == quote {
+                in_string = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' | '`' => {
+                in_string = Some(ch);
+                out.push(ch);
+            }
+            '{' | '[' | '(' => {
+                out.push(ch);
+                out.push('\n');
+                indent += 1;
+                write_indent(&mut out, indent);
+            }
+            '}' | ']' | ')' => {
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                indent = indent.saturating_sub(1);
+                write_indent(&mut out, indent);
+                out.push(ch);
+            }
+            ';' => {
+                out.push(';');
+                out.push('\n');
+                write_indent(&mut out, indent);
+            }
+            ',' => {
+                out.push(',');
+                if indent > 0 {
+                    out.push('\n');
+                    write_indent(&mut out, indent);
+                } else {
+                    out.push(' ');
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    let display = out
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    (format!("{}\n", display.trim()), None)
+}
+
 pub fn apply_restored_payload(
     payload: RestorePayload,
     proof_override: Option<ApplyProof>,

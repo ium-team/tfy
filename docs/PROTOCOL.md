@@ -9,6 +9,7 @@ TFY exposes an agent-neutral protocol so any AI agent, editor, shell wrapper, or
 - `tfy full <path> <scope>` — full source fallback.
 - `tfy decide-context` — selected/related/full fallback decision from payload and diagnostics.
 - `tfy restore` — deterministic readable restoration from compact payload.
+- `tfy restore-display` — display-only readable formatting/restoration for human UX; not apply authority.
 - `tfy tool-gateway -- <command...>` — runtime-facing Tool Gateway entrypoint for command interception; default output is plain model-visible text, not JSON.
 - `tfy run -- <command...>` — compatibility/debug spelling for risk-aware compact command feedback.
 - `tfy raw <raw_ref>` — full or ranged raw command output.
@@ -18,8 +19,12 @@ TFY exposes an agent-neutral protocol so any AI agent, editor, shell wrapper, or
 - `tfy adapter install --target generic-shell --dry-run` — reversible setup instructions for command-wrapper interception.
 - `tfy adapter run --session <id> -- <command...>` — supported generic-shell command-boundary adapter.
 - `tfy adapter report --session <id>` — session savings/evidence report from adapter ledger.
+- `tfy agent capabilities` — reports the configured AI-agent-wrapper-only automatic interception boundary and origin contract.
+- `tfy agent install --dry-run` — prints a reversible wrapper script without mutating shell startup files.
+- `tfy agent run --session <id> -- <command...>` — AI-runtime command wrapper that marks origin as agent runtime while leaving ordinary human terminals untouched.
 - `tfy mcp capabilities` — supported MCP tools/resources and support-boundary report.
-- `tfy mcp serve --session <id>` — MCP stdio JSON-RPC server; stdout is JSON-RPC only. Exposes Tool/Context/Output/State tools, including host-routed Code I/O tools for bounded scope listing, compact context, preview validation, and proof-gated apply.
+- `tfy mcp serve --session <id>` — MCP stdio JSON-RPC server; stdout is JSON-RPC only. Exposes Tool/Context/Output/State tools, including host-routed Code I/O tools for bounded scope listing, compact context, preview validation, restore-display, WorkspaceApplyPlan validation, and proof-gated apply.
+- `tfy workspace validate --payload plan.json` / `tfy workspace apply --payload plan.json --plan-hash <hash>` — explicit multi-file WorkspaceApplyPlan validation and exact apply for modify/add/delete/rename/move operations, gated by origin/provenance, per-op proof, base hashes, and plan hash. Fuzzy mutation remains fail-closed/preview-only.
 - `tfy mcp install --target codex --dry-run` — concrete Codex MCP command/TOML setup snippet without mutating config.
 
 ## Final protocol capabilities
@@ -94,7 +99,7 @@ The CLI is both a manual debug surface and the contract used by adapters. Produc
 - Output Gateway: `tfy output-gateway` structured preview/validate API over `restore`; `--apply` supports local single-file selected-scope replacement only when a content-addressed `ApplyProof` validates the exact path, byte range, source hash, compactness, language, and parser confidence. Parent event ids alone are not authoritative; apply payloads must also carry the captured source context_ref and base compact code so TFY can bind the proposed edit to the proven context.
 - State Gateway: `tfy state-append` / `tfy state-project` ledger/ref API fed by gateway events.
 
-Do not overclaim automatic interception: today the Rust CLI/core primitives, `tfy-runtime`, local Tool/Shell/Context/Output-preview-and-proof-gated-apply/State gateway surfaces, generic-shell adapter, and MCP stdio tool/resource server exist. MCP supports host-routed Code I/O with snapshot-stable scope ids, compact context, preview validation, and proof-gated single-file selected-scope apply. Codex private hooks, editor hooks, provider gateway, and universal shell interception remain separate adapters until they pass e2e gates.
+Do not overclaim automatic interception: today the Rust CLI/core primitives, `tfy-runtime`, local Tool/Shell/Context/Output-preview-and-proof-gated-apply/State gateway surfaces, generic-shell adapter, configured AI-agent wrapper, and MCP stdio tool/resource server exist. MCP supports host-routed Code I/O with snapshot-stable scope ids, compact context, preview validation, restore-display, WorkspaceApplyPlan validation, proof-gated single-file selected-scope apply, and proof-gated exact multi-file workspace apply. Codex private hooks, editor hooks, provider gateway, fuzzy mutation, and universal shell interception remain separate adapters/features until they pass e2e gates.
 
 ## Runtime envelope protocol
 
@@ -110,6 +115,7 @@ Every runtime-facing request, response, and event is wrapped in `RuntimeEnvelope
 - `authority_mode`
 - `session_id`, `request_id`, `trace_id`, optional `turn_id`, optional `parent_event_id`
 - `provenance`
+- `origin` (`kind`, `host`, `invocation`, `intercepted`, `user_shell_mutated`)
 - `policy`
 - gateway-specific `payload`
 
@@ -127,6 +133,9 @@ tfy adapter capabilities
 tfy adapter install --target generic-shell --dry-run
 tfy adapter run --session <id> -- <command...>
 tfy adapter report --session <id>
+tfy agent capabilities
+tfy agent install --dry-run
+tfy agent run --session <id> -- <command...>
 tfy init --codex --dry-run
 tfy init --codex --project --apply
 tfy init --show
@@ -140,11 +149,14 @@ tfy mcp serve --session <id> --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw
 tfy mcp install --target codex --dry-run
 tfy context-gateway <path> <scope> [--diagnostics ...]
 tfy output-gateway --payload payload.json
+tfy restore-display --payload payload.json
+tfy workspace validate --payload workspace-plan.json
+tfy workspace apply --payload workspace-plan.json --plan-hash <hash>
 tfy state-append --payload event.json
 tfy state-project
 ```
 
-`tfy shell` is the local shell-adapter wrapper. It does not magically modify a third-party runtime by itself; a runtime must configure its command execution path to call this wrapper. `tfy mcp serve` is the supported MCP stdio integration point for MCP-aware hosts; it still requires host MCP routing and is not a private Codex hook or provider prompt gateway.
+`tfy shell` is the local shell-adapter wrapper. `tfy agent run` is the AI-runtime wrapper with explicit origin/provenance and `user_shell_mutated=false`. Neither command magically modifies a third-party runtime by itself; a runtime must configure its command execution path to call the wrapper. `tfy mcp serve` is the supported MCP stdio integration point for MCP-aware hosts; it still requires host MCP routing and is not a private Codex hook or provider prompt gateway.
 
 ## Product lifecycle protocol
 
@@ -180,6 +192,6 @@ Adapter reports use `raw_bytes` and `model_bytes` as the public size contract. L
 
 `tfy mcp serve` implements a line-delimited JSON-RPC stdio server for MCP hosts. It supports `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, and `resources/read`. `initialize` declares both tool and resource capabilities. Concrete resources are returned by `resources/list`; parameterized URI templates are returned by `resources/templates/list`.
 
-MCP tools expose existing TFY gateway behavior rather than a second compression engine. `tfy_tool_run` stores raw output locally, returns compact model-facing output only when it is smaller/safe, preserves command exit metadata, appends an MCP ledger event when possible, and never exits the MCP server on child command failure. `tfy_scope_list` returns bounded snapshot-stable scope ids, `tfy_context_get` returns compact selected-scope context with symbol map, `base_compact_code`, `context_ref`, and `ApplyProof`, `tfy_output_validate` restores in preview-only mode, and `tfy_output_apply` mutates only through the existing proof-gated single-file selected-scope apply path. Parent event ids or ledger state alone are not apply authority. Raw/report/state recovery is available through `tfy://raw/{raw_ref}`, `tfy://report/{session}`, and `tfy://state/{session}`.
+MCP tools expose existing TFY gateway behavior rather than a second compression engine. `tfy_tool_run` stores raw output locally, returns compact model-facing output only when it is smaller/safe, preserves command exit metadata, appends an MCP ledger event when possible, and never exits the MCP server on child command failure. `tfy_scope_list` returns bounded snapshot-stable scope ids, `tfy_context_get` returns compact selected-scope context with symbol map, `base_compact_code`, `context_ref`, and `ApplyProof`, `tfy_output_validate` restores in preview-only mode, and `tfy_output_apply` mutates only through the existing proof-gated single-file selected-scope apply path. `tfy_restore_display` provides display-only readable output, while `tfy_workspace_validate` and `tfy_workspace_apply` expose exact multi-file WorkspaceApplyPlan validation/apply with plan-hash and per-operation proof gates. Parent event ids or ledger state alone are not apply authority. Raw/report/state recovery is available through `tfy://raw/{raw_ref}`, `tfy://report/{session}`, and `tfy://state/{session}`.
 
 MCP session resources are session-scoped. `tfy://state/{session}` and `tfy_state_project` filter the ledger by requested session before projecting state, so one session cannot receive another session's tool evidence through state reads. JSON-RPC notifications such as `notifications/initialized` are treated as one-way messages and do not produce stdout responses.

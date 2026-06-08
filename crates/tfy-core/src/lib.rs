@@ -5,7 +5,10 @@ pub mod language;
 pub mod protocol;
 pub mod tool_feedback;
 
-pub use code::{apply_restored_payload, expand_scope, full_scope, index_path, restore_payload};
+pub use code::{
+    apply_restored_payload, expand_scope, full_scope, index_path, restore_display_payload,
+    restore_payload,
+};
 pub use context::decide_context_need;
 pub use eval::evaluate_code;
 pub use language::{supported_languages, LanguageKind};

@@ -1,6 +1,7 @@
 use crate::adapter::build_adapter_report;
 use crate::gateways::tool_gateway_envelopes;
 use crate::util::{print_json, stable_id};
+use crate::workspace::{apply_plan, validate_plan, WorkspaceApplyPlan};
 use anyhow::{bail, Result};
 use clap::Subcommand;
 use std::fs;
@@ -194,6 +195,9 @@ fn mcp_tools() -> Vec<serde_json::Value> {
         serde_json::json!({"name":"tfy_context_get","description":"Get compact context for an exact code scope id, including base compact code, context_ref, symbol map, and ApplyProof for later proof-gated apply.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"scope":{"type":"string"},"compactness":{"type":"string"},"session":{"type":"string"}},"required":["path","scope"]}}),
         serde_json::json!({"name":"tfy_output_validate","description":"Validate/restore compact code output without applying changes.","inputSchema":{"type":"object","properties":{"restore_payload":{"type":"object"},"session":{"type":"string"}},"required":["restore_payload"]}}),
         serde_json::json!({"name":"tfy_output_apply","description":"Apply compact code output through TFY's proof-gated single-file selected-scope apply path. Requires ApplyProof; parent_event_id or ledger state alone is not authority.","inputSchema":{"type":"object","properties":{"restore_payload":{"type":"object"},"context_proof":{"type":"object"},"parent_event_id":{"type":"string"},"session":{"type":"string"}},"required":["restore_payload"]}}),
+        serde_json::json!({"name":"tfy_restore_display","description":"Restore compact code into human-readable display text. Display-only; does not create apply authority.","inputSchema":{"type":"object","properties":{"restore_payload":{"type":"object"}},"required":["restore_payload"]}}),
+        serde_json::json!({"name":"tfy_workspace_validate","description":"Validate a multi-file WorkspaceApplyPlan and return a no-mutation readable preview plus plan_hash.","inputSchema":{"type":"object","properties":{"plan":{"type":"object"}},"required":["plan"]}}),
+        serde_json::json!({"name":"tfy_workspace_apply","description":"Apply a validated WorkspaceApplyPlan with exact plan_hash plus per-operation proofs. Fails closed on stale/ambiguous plans.","inputSchema":{"type":"object","properties":{"plan":{"type":"object"},"plan_hash":{"type":"string"}},"required":["plan","plan_hash"]}}),
         serde_json::json!({"name":"tfy_state_project","description":"Project compact task state from the TFY ledger.","inputSchema":{"type":"object","properties":{"session":{"type":"string"}}}}),
         serde_json::json!({"name":"tfy_adapter_report","description":"Report measured byte savings for an MCP session.","inputSchema":{"type":"object","properties":{"session":{"type":"string"}}}}),
     ]
@@ -259,6 +263,7 @@ fn mcp_tools_call(
                 None,
                 None,
                 AdapterKind::Mcp,
+                Origin::mcp_host(OriginHost::Generic),
             )
             .map_err(|e| (-32000, e.to_string()))?;
             if let Err(err) = append_event(ledger, &event) {
@@ -283,6 +288,9 @@ fn mcp_tools_call(
         "tfy_context_get" => mcp_context_get(args, default_session, ledger),
         "tfy_output_validate" => mcp_output_validate(args, default_session, ledger),
         "tfy_output_apply" => mcp_output_apply(args, default_session, ledger),
+        "tfy_restore_display" => mcp_restore_display(args),
+        "tfy_workspace_validate" => mcp_workspace_validate(args, default_session, ledger),
+        "tfy_workspace_apply" => mcp_workspace_apply(args, default_session, ledger),
         "tfy_state_project" => {
             let session = args
                 .get("session")
@@ -346,6 +354,100 @@ fn mcp_scope_list(
         "next_offset": next_offset,
         "scopes": selected
     })))
+}
+
+fn mcp_restore_display(
+    args: serde_json::Value,
+) -> std::result::Result<serde_json::Value, (i32, String)> {
+    let payload: RestorePayload = serde_json::from_value(
+        args.get("restore_payload")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )
+    .map_err(|e| (-32602, format!("invalid restore_payload: {e}")))?;
+    let display = restore_display_payload(payload)
+        .map_err(|e| (-32000, format!("restore display failed: {e}")))?;
+    Ok(mcp_tool_content(
+        serde_json::to_value(display).map_err(|e| (-32000, e.to_string()))?,
+    ))
+}
+
+fn mcp_workspace_validate(
+    args: serde_json::Value,
+    session: &str,
+    ledger: &PathBuf,
+) -> std::result::Result<serde_json::Value, (i32, String)> {
+    let plan: WorkspaceApplyPlan =
+        serde_json::from_value(args.get("plan").cloned().unwrap_or(serde_json::Value::Null))
+            .map_err(|e| (-32602, format!("invalid workspace plan: {e}")))?;
+    let report =
+        validate_plan(&plan).map_err(|e| (-32000, format!("workspace validate failed: {e}")))?;
+    let event = mcp_event_envelope(
+        GatewayEvent::Validation {
+            status: ValidationStatus::Valid,
+            message: format!(
+                "workspace_validate plan_id={} plan_hash={}",
+                report.plan_id, report.plan_hash
+            ),
+        },
+        session,
+        &stable_id(&format!(
+            "mcp-workspace-validate:{}:{}",
+            session, report.plan_hash
+        )),
+        ProvenanceRefs {
+            validation_status: Some(ValidationStatus::Valid),
+            patch_refs: vec![report.plan_hash.clone()],
+            ..Default::default()
+        },
+    );
+    if let Err(err) = append_event(ledger, &event) {
+        eprintln!("tfy mcp warning: could not append workspace validate event: {err}");
+    }
+    Ok(mcp_tool_content(
+        serde_json::to_value(report).map_err(|e| (-32000, e.to_string()))?,
+    ))
+}
+
+fn mcp_workspace_apply(
+    args: serde_json::Value,
+    session: &str,
+    ledger: &PathBuf,
+) -> std::result::Result<serde_json::Value, (i32, String)> {
+    let plan: WorkspaceApplyPlan =
+        serde_json::from_value(args.get("plan").cloned().unwrap_or(serde_json::Value::Null))
+            .map_err(|e| (-32602, format!("invalid workspace plan: {e}")))?;
+    let plan_hash = args
+        .get("plan_hash")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (-32602, "missing plan_hash".to_string()))?;
+    let report = apply_plan(&plan, plan_hash)
+        .map_err(|e| (-32000, format!("workspace apply failed: {e}")))?;
+    let event = mcp_event_envelope(
+        GatewayEvent::Validation {
+            status: ValidationStatus::Valid,
+            message: format!(
+                "workspace_apply plan_id={} plan_hash={} applied_operations={}",
+                report.plan_id, report.plan_hash, report.applied_operations
+            ),
+        },
+        session,
+        &stable_id(&format!(
+            "mcp-workspace-apply:{}:{}",
+            session, report.plan_hash
+        )),
+        ProvenanceRefs {
+            validation_status: Some(ValidationStatus::Valid),
+            patch_refs: vec![report.plan_hash.clone()],
+            ..Default::default()
+        },
+    );
+    if let Err(err) = append_event(ledger, &event) {
+        eprintln!("tfy mcp warning: could not append workspace apply event: {err}");
+    }
+    Ok(mcp_tool_content(
+        serde_json::to_value(report).map_err(|e| (-32000, e.to_string()))?,
+    ))
 }
 
 fn mcp_context_get(
@@ -577,6 +679,7 @@ fn mcp_event_envelope(
         payload,
     );
     envelope.provenance = provenance;
+    envelope.origin = Origin::mcp_host(OriginHost::Generic);
     envelope
 }
 
