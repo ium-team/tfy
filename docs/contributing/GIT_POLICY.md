@@ -73,7 +73,8 @@ AI agents must treat Git/GitHub closeout as part of every completed work unit, n
 
 Safety limits:
 
-- Do not merge PRs automatically.
+- Do not merge PRs automatically unless the user/maintainer explicitly requests agent-driven merge for that PR.
+- For explicit agent-driven merge, first recheck CI, merge state, target branch, and review evidence. GitHub blocks authors from approving their own PRs; agents must not claim self-approval as a GitHub approval. If the same agent authored the PR, document the self-approval limitation and cite independent review evidence collected outside GitHub review state before merging.
 - Do not change branch protection or repository settings automatically.
 - Do not delete remote branches or force-push shared history unless the task is explicitly history cleanup or branch hygiene.
 - Do not include unrelated working-tree changes in a work-unit commit.
