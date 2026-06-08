@@ -429,6 +429,51 @@ fn launch_report_keeps_named_host_setup_evidence_below_launch_supported() {
 }
 
 #[test]
+fn launch_report_keeps_openclaw_planned_discovery_even_with_host_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("setup-proof.txt"), "configured").unwrap();
+    std::fs::write(dir.path().join("invocation-proof.txt"), "invoked").unwrap();
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {"host":"openclaw","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":10,"baseline_ms":10}
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let openclaw = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "openclaw")
+        .unwrap();
+    assert_eq!(openclaw["status"], "planned_discovery", "{json}");
+    assert_eq!(
+        openclaw["launch_claim"],
+        "unsupported/planned until official/current evidence proves a safe route",
+        "{json}"
+    );
+}
+
+#[test]
 fn launch_report_caps_named_host_even_with_unrelated_mcp_savings() {
     let dir = tempfile::tempdir().unwrap();
     let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))

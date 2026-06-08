@@ -1488,7 +1488,7 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     overhead_measured,
                     overhead_passed
                 ));
-            } else if host_integration(&host.host).is_ok() {
+            } else if host_accepts_launch_evidence(&host.host) {
                 let setup_artifact_verified = host
                     .setup_artifact
                     .as_ref()
@@ -1542,6 +1542,10 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
     }
 }
 
+fn host_accepts_launch_evidence(host: &str) -> bool {
+    host_integration(host).is_ok_and(|integration| integration.status != "planned_discovery")
+}
+
 fn host_artifact_exists(base: &Path, artifact: &Path) -> bool {
     let path = if artifact.is_absolute() {
         artifact.to_path_buf()
@@ -1593,6 +1597,7 @@ fn apply_launch_evidence(
                     && route.positive_savings;
                 (local, local && route_host_ready(route), Some(route))
             }
+            "openclaw" => (false, false, None),
             "codex" => {
                 let named = evidence.named_hosts.get("codex");
                 let local = named
