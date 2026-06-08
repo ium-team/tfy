@@ -299,9 +299,26 @@ fn mcp_tools_call(
                 .unwrap_or(default_session);
             let events = load_events(ledger).map_err(|e| (-32000, e.to_string()))?;
             let scoped = scoped_events(&events, session);
+            let projection = project_state(&scoped);
+            let ledger_ref = stable_id(&format!("mcp-state-project:{session}:{}", scoped.len()));
+            let event = mcp_event_envelope(
+                GatewayEvent::StateProjected {
+                    ledger_ref: ledger_ref.clone(),
+                    authoritative: true,
+                },
+                session,
+                &ledger_ref,
+                ProvenanceRefs {
+                    ledger_refs: vec![ledger.display().to_string()],
+                    validation_status: Some(ValidationStatus::Valid),
+                    ..Default::default()
+                },
+            );
+            if let Err(err) = append_event(ledger, &event) {
+                eprintln!("tfy mcp warning: could not append state project event: {err}");
+            }
             Ok(mcp_tool_content(
-                serde_json::to_value(project_state(&scoped))
-                    .map_err(|e| (-32000, e.to_string()))?,
+                serde_json::to_value(projection).map_err(|e| (-32000, e.to_string()))?,
             ))
         }
         "tfy_adapter_report" => {

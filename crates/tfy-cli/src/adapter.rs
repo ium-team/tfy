@@ -1,4 +1,4 @@
-use crate::gateways::execute_structured_tool_gateway;
+use crate::gateways::execute_structured_tool_gateway_with_origin;
 use crate::util::print_json;
 use anyhow::{bail, Result};
 use clap::Subcommand;
@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use tfy_core::classify_command_family;
-use tfy_runtime::{load_events, GatewayEvent};
+use tfy_runtime::{load_events, AdapterKind, GatewayEvent, Origin, OriginHost, OriginInvocation};
 
 fn estimate_tokens(chars: usize) -> usize {
     chars.div_ceil(4)
@@ -119,7 +119,7 @@ pub(crate) fn execute_adapter(cmd: AdapterCmd) -> Result<()> {
             json,
             jsonl,
             command,
-        } => execute_structured_tool_gateway(
+        } => execute_structured_tool_gateway_with_origin(
             command,
             raw_dir,
             max_summary_bytes,
@@ -130,6 +130,8 @@ pub(crate) fn execute_adapter(cmd: AdapterCmd) -> Result<()> {
             request_id,
             trace_id,
             parent_event_id,
+            AdapterKind::Shell,
+            Origin::agent_runtime(OriginHost::Generic, OriginInvocation::Wrapper),
         ),
         AdapterCmd::Report {
             ledger,

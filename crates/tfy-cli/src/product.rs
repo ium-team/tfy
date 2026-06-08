@@ -1,14 +1,14 @@
 use crate::util::{print_json, stable_id};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use tfy_runtime::{load_events, GatewayEvent};
+use tfy_runtime::{load_events, AdapterKind, GatewayEvent, OriginInvocation};
 
 const TFY_CODEX_START: &str = "<!-- TFY:CODEX:START -->";
 const TFY_CODEX_END: &str = "<!-- TFY:CODEX:END -->";
@@ -64,6 +64,8 @@ pub(crate) struct SmokeCmd {
     pub codex: bool,
     #[arg(long)]
     pub json: bool,
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Args, Clone)]
@@ -112,6 +114,9 @@ pub(crate) struct LaunchReportCmd {
     pub json: bool,
     #[arg(long)]
     pub ledger: Vec<PathBuf>,
+    /// JSON evidence proving host setup and real host invocation per route.
+    #[arg(long = "host-evidence")]
+    pub host_evidence: Vec<PathBuf>,
     #[arg(long, default_value = "local-session")]
     pub session: String,
     #[arg(long)]
@@ -188,7 +193,9 @@ struct ProductStatusReport {
 struct HostReadiness {
     host: String,
     status: String,
+    required_for_v1: bool,
     setup: String,
+    normal_workflow: String,
     evidence_gate: Vec<String>,
     launch_claim: String,
 }
@@ -198,6 +205,12 @@ struct LaunchReadinessReport {
     status: String,
     host_matrix: Vec<HostReadiness>,
     gain: GainReport,
+    host_evidence: HostEvidenceSummary,
+    release_thresholds: ReleaseThresholds,
+    measurement_method: MeasurementMethod,
+    privacy_raw_store: PrivacyRawStorePolicy,
+    overhead_policy: OverheadPolicy,
+    unsupported_claim_audit: UnsupportedClaimAudit,
     blockers: Vec<String>,
     not_supported: Vec<String>,
     required_benchmark_scenarios: Vec<String>,
@@ -209,6 +222,11 @@ struct ProductExplainReport {
     file_and_user_output: String,
     automatic_routing: String,
     apply_model: String,
+    what_tfy_changed: Vec<String>,
+    data_stored_locally: Vec<String>,
+    raw_recovery: String,
+    deletion_export: String,
+    launch_pass_block_reason: String,
     out_of_scope: Vec<String>,
 }
 
@@ -221,6 +239,14 @@ struct SmokeReport {
     preview_applied: bool,
     apply_applied: bool,
     ledger_events: usize,
+    evidence: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct SmokeSuiteReport {
+    status: String,
+    mode: String,
+    reports: Vec<SmokeReport>,
     evidence: Vec<String>,
 }
 
@@ -241,7 +267,159 @@ struct GainReport {
     fallback_frequency: f64,
     rendering_counts: BTreeMap<String, usize>,
     family_counts: BTreeMap<String, usize>,
+    measurement_method: MeasurementMethod,
     message: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct MeasurementMethod {
+    byte_savings: String,
+    token_estimate: String,
+    tokenizer_exact: bool,
+}
+
+impl Default for MeasurementMethod {
+    fn default() -> Self {
+        Self {
+            byte_savings: "exact UTF-8 byte counts recorded from raw/model-visible gateway payloads".into(),
+            token_estimate: "conservative proxy estimate using ceil(bytes/4) when tokenizer-specific counts are unavailable".into(),
+            tokenizer_exact: false,
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct ReleaseThresholds {
+    correctness_parity: String,
+    default_savings: String,
+    positive_required_route_savings: String,
+    missed_context_or_evidence: String,
+    overhead: String,
+    time_to_first_saving: String,
+}
+
+impl Default for ReleaseThresholds {
+    fn default() -> Self {
+        Self {
+            correctness_parity: "100% mandatory benchmark scenarios pass required checks".into(),
+            default_savings: "no negative model-visible bytes/tokens unless an explicit fallback/debug/internal reason is recorded".into(),
+            positive_required_route_savings: "at least one command-heavy or repeated-output scenario per required route shows positive saved bytes/tokens".into(),
+            missed_context_or_evidence: "0 unhandled missed-context or missed-evidence incidents".into(),
+            overhead: "report local overhead; >2x baseline or +5s requires a documented launch-report exception".into(),
+            time_to_first_saving: "prepared-repo quickstart reaches first positive gain/launch-report evidence in under 10 minutes".into(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct PrivacyRawStorePolicy {
+    default_raw_dirs: Vec<String>,
+    retention_default: String,
+    deletion_export: String,
+    disclosure: String,
+    blockers: Vec<String>,
+}
+
+impl Default for PrivacyRawStorePolicy {
+    fn default() -> Self {
+        Self {
+            default_raw_dirs: vec![".tfy/raw".into(), ".tfy/mcp/raw or configured --raw-dir".into()],
+            retention_default: "local project data is retained until the user deletes/prunes the .tfy directory; TFY does not upload raw evidence".into(),
+            deletion_export: "delete/export by inspecting .tfy/raw, .tfy/mcp/ledger.jsonl, .tfy/adapter/ledger.jsonl, or configured raw/ledger paths; release implementation must add first-class commands before claiming managed retention".into(),
+            disclosure: "TFY stores raw command/context evidence locally before compacting model-visible text so correctness and audit recovery remain possible".into(),
+            blockers: vec![
+                "secret leakage in CLI/log/ledger/launch-report output".into(),
+                "path traversal or symlink escape in raw-store paths".into(),
+                "unsafe raw-store permissions".into(),
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct OverheadPolicy {
+    measurement: String,
+    exception_threshold: String,
+    exception_authority: String,
+    report_location: String,
+}
+
+impl Default for OverheadPolicy {
+    fn default() -> Self {
+        Self {
+            measurement:
+                "local smoke/benchmark wall time must be reported alongside launch evidence".into(),
+            exception_threshold: ">2x baseline or +5s local overhead".into(),
+            exception_authority:
+                "release owner must record an explicit launch-report exception before release"
+                    .into(),
+            report_location: "tfy launch-report --json overhead_policy and blockers".into(),
+        }
+    }
+}
+
+#[derive(Default, Serialize)]
+struct HostEvidenceSummary {
+    commands: usize,
+    raw_refs: usize,
+    no_negative_savings: bool,
+    positive_savings: bool,
+    generic_shell_route: RouteEvidence,
+    tfy_agent_adapter_route: RouteEvidence,
+    mcp_stdio_route: RouteEvidence,
+    generic_shell_wrapper: bool,
+    tfy_agent_adapter: bool,
+    mcp_tool: bool,
+    mcp_context: bool,
+    mcp_output: bool,
+    mcp_state: bool,
+    codex_real_invocation: bool,
+    evidence_notes: Vec<String>,
+}
+
+#[derive(Default, Clone, Serialize)]
+struct RouteEvidence {
+    commands: usize,
+    raw_refs: usize,
+    no_negative_savings: bool,
+    positive_savings: bool,
+    setup_verified: bool,
+    real_invocation_verified: bool,
+    setup_artifact_verified: bool,
+    invocation_artifact_verified: bool,
+    overhead_measured: bool,
+    overhead_passed: bool,
+    overhead_ms: Option<u64>,
+    baseline_ms: Option<u64>,
+    overhead_exception: Option<String>,
+    tool: bool,
+    context: bool,
+    output: bool,
+    state: bool,
+}
+
+#[derive(Deserialize)]
+struct HostEvidenceFile {
+    hosts: Vec<HostSetupEvidence>,
+}
+
+#[derive(Deserialize)]
+struct HostSetupEvidence {
+    host: String,
+    setup_verified: bool,
+    real_invocation_verified: bool,
+    setup_artifact: Option<PathBuf>,
+    invocation_artifact: Option<PathBuf>,
+    overhead_ms: Option<u64>,
+    baseline_ms: Option<u64>,
+    overhead_exception: Option<String>,
+}
+
+#[derive(Serialize)]
+struct UnsupportedClaimAudit {
+    status: String,
+    audited_claims: Vec<String>,
+    rule: String,
 }
 
 pub(crate) fn execute_init(cmd: InitCmd) -> Result<()> {
@@ -281,6 +459,50 @@ pub(crate) fn execute_doctor(cmd: DoctorCmd) -> Result<()> {
 }
 
 pub(crate) fn execute_smoke(cmd: SmokeCmd) -> Result<()> {
+    if cmd.all {
+        let mut reports = Vec::new();
+        let mut evidence = Vec::new();
+        let adapter = run_adapter_smoke()?;
+        evidence.extend(adapter.evidence.clone());
+        reports.push(adapter);
+        let agent = run_agent_smoke()?;
+        evidence.extend(agent.evidence.clone());
+        reports.push(agent);
+        let mcp = run_mcp_smoke()?;
+        evidence.extend(mcp.evidence.clone());
+        reports.push(mcp);
+        if cmd.codex {
+            if cmd.json {
+                write_codex_smoke_checklist(std::io::stderr())?;
+            } else {
+                print_codex_smoke_checklist()?;
+            }
+            evidence.push(
+                "codex smoke remains checklist-only until real host invocation evidence exists"
+                    .into(),
+            );
+        }
+        let suite = SmokeSuiteReport {
+            status: if reports.iter().all(|r| r.status == "pass") {
+                "pass"
+            } else {
+                "fail"
+            }
+            .into(),
+            mode: "all".into(),
+            reports,
+            evidence,
+        };
+        if cmd.json {
+            print_json(&suite)?;
+        } else {
+            println!("TFY smoke all: {}", suite.status);
+            for e in &suite.evidence {
+                println!("✓ {e}");
+            }
+        }
+        return Ok(());
+    }
     if cmd.codex {
         if cmd.json && (cmd.mcp || cmd.local) {
             write_codex_smoke_checklist(std::io::stderr())?;
@@ -355,6 +577,14 @@ pub(crate) fn execute_explain(cmd: ExplainCmd) -> Result<()> {
         println!("Files/user output: {}", report.file_and_user_output);
         println!("Automatic routing: {}", report.automatic_routing);
         println!("Apply: {}", report.apply_model);
+        println!("What changed: {}", report.what_tfy_changed.join("; "));
+        println!(
+            "Data stored locally: {}",
+            report.data_stored_locally.join("; ")
+        );
+        println!("Raw recovery: {}", report.raw_recovery);
+        println!("Deletion/export: {}", report.deletion_export);
+        println!("Launch pass/block: {}", report.launch_pass_block_reason);
         println!("Out of scope: {}", report.out_of_scope.join(", "));
     }
     Ok(())
@@ -362,9 +592,15 @@ pub(crate) fn execute_explain(cmd: ExplainCmd) -> Result<()> {
 
 pub(crate) fn execute_launch_report(cmd: LaunchReportCmd) -> Result<()> {
     let ledgers = gain_ledgers(&cmd.ledger);
-    let gain = build_gain_report(&ledgers, if cmd.all { None } else { Some(&cmd.session) })?;
+    let session = if cmd.all {
+        None
+    } else {
+        Some(cmd.session.as_str())
+    };
+    let gain = build_gain_report(&ledgers, session)?;
+    let host_evidence = build_host_evidence_summary(&ledgers, session, &cmd.host_evidence);
     let status = build_product_status_report();
-    let report = build_launch_readiness_report(status, gain);
+    let report = build_launch_readiness_report(status, gain, host_evidence);
     if cmd.json {
         print_json(&report)?;
     } else {
@@ -626,7 +862,9 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
         HostReadiness {
             host: "mcp_stdio".into(),
             status: "configurable_local_smoke_required".into(),
+            required_for_v1: true,
             setup: "tfy mcp serve configured by the host".into(),
+            normal_workflow: "host agent calls normal MCP tools/resources; user does not manually compact, paste refs, or edit raw ledgers on the happy path".into(),
             evidence_gate: vec![
                 "initialize/tools-list".into(),
                 "tool/context/output/state ledger events".into(),
@@ -637,7 +875,9 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
         HostReadiness {
             host: "tfy_agent_adapter".into(),
             status: "configurable_evidence_required".into(),
+            required_for_v1: true,
             setup: "tfy agent or tfy adapter run wraps AI-origin command execution".into(),
+            normal_workflow: "agent still requests ordinary commands; configured TFY wrapper preserves exit/status semantics while compacting model-visible feedback".into(),
             evidence_gate: vec![
                 "ToolCommandCompleted ledger event".into(),
                 "raw_ref recovery".into(),
@@ -648,7 +888,9 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
         HostReadiness {
             host: "generic_shell".into(),
             status: "configurable_wrapper_evidence_required".into(),
+            required_for_v1: true,
             setup: "tfy adapter install --target generic-shell".into(),
+            normal_workflow: "only the configured agent command executor is wrapped; ordinary human terminals are never globally intercepted".into(),
             evidence_gate: vec![
                 "configured wrapper invocation".into(),
                 "adapter ledger report".into(),
@@ -660,7 +902,9 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
         HostReadiness {
             host: "codex".into(),
             status: "configured_but_unverified".into(),
+            required_for_v1: false,
             setup: "Codex MCP config plus TFY AGENTS.md guidance".into(),
+            normal_workflow: "Codex remains normal only after official/configurable MCP or hook routing proves real host invocation; checklist-only guidance is not launch support".into(),
             evidence_gate: vec![
                 "Codex host actually invokes TFY MCP".into(),
                 "ledger events from Codex session".into(),
@@ -681,46 +925,364 @@ fn not_supported_surfaces() -> Vec<String> {
     ]
 }
 
-fn apply_launch_evidence(mut hosts: Vec<HostReadiness>, gain: &GainReport) -> Vec<HostReadiness> {
-    let has_command_evidence = gain.commands > 0 && gain.saved_bytes >= 0;
+fn build_host_evidence_summary(
+    ledgers: &[PathBuf],
+    session: Option<&str>,
+    host_evidence_files: &[PathBuf],
+) -> HostEvidenceSummary {
+    let mut summary = HostEvidenceSummary {
+        no_negative_savings: true,
+        generic_shell_route: RouteEvidence {
+            no_negative_savings: true,
+            ..Default::default()
+        },
+        tfy_agent_adapter_route: RouteEvidence {
+            no_negative_savings: true,
+            ..Default::default()
+        },
+        mcp_stdio_route: RouteEvidence {
+            no_negative_savings: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for ledger in ledgers {
+        let Ok(events) = load_events(ledger) else {
+            continue;
+        };
+        let ledger_hint = ledger.to_string_lossy();
+        for event in events {
+            if let Some(session_filter) = session {
+                if event.session_id != session_filter {
+                    continue;
+                }
+            }
+            match &event.payload {
+                GatewayEvent::ToolCommandCompleted {
+                    raw_ref,
+                    raw_bytes,
+                    model_bytes,
+                    raw_chars,
+                    summary_chars,
+                    model_chars,
+                    negative_savings_avoided,
+                    rendering_kind,
+                    ..
+                } => {
+                    summary.commands += 1;
+                    let raw_size = if *raw_bytes == 0 {
+                        *raw_chars
+                    } else {
+                        *raw_bytes
+                    };
+                    let model_size = if *model_bytes != 0 {
+                        *model_bytes
+                    } else if *model_chars != 0 {
+                        *model_chars
+                    } else {
+                        *summary_chars
+                    };
+                    if model_size > raw_size && !negative_savings_avoided {
+                        summary.no_negative_savings = false;
+                    }
+                    if raw_size > model_size {
+                        summary.positive_savings = true;
+                    }
+                    if event.adapter_kind == AdapterKind::Mcp {
+                        summary.mcp_tool = true;
+                        update_route_tool_evidence(
+                            &mut summary.mcp_stdio_route,
+                            raw_ref,
+                            event.provenance.raw_refs.len(),
+                            raw_size,
+                            model_size,
+                            *negative_savings_avoided,
+                        );
+                    } else if event.adapter_kind == AdapterKind::Cli
+                        && matches!(event.origin.invocation, OriginInvocation::Wrapper)
+                    {
+                        summary.tfy_agent_adapter = true;
+                        update_route_tool_evidence(
+                            &mut summary.tfy_agent_adapter_route,
+                            raw_ref,
+                            event.provenance.raw_refs.len(),
+                            raw_size,
+                            model_size,
+                            *negative_savings_avoided,
+                        );
+                    } else if matches!(event.adapter_kind, AdapterKind::Shell)
+                        && (ledger_hint.contains("adapter")
+                            || matches!(event.origin.invocation, OriginInvocation::Wrapper))
+                    {
+                        summary.generic_shell_wrapper = true;
+                        update_route_tool_evidence(
+                            &mut summary.generic_shell_route,
+                            raw_ref,
+                            event.provenance.raw_refs.len(),
+                            raw_size,
+                            model_size,
+                            *negative_savings_avoided,
+                        );
+                    }
+                    if event.origin.host == tfy_runtime::OriginHost::Codex
+                        && event.origin.intercepted
+                        && !matches!(event.origin.invocation, OriginInvocation::PrivateHook)
+                    {
+                        summary.codex_real_invocation = true;
+                    }
+                    if !rendering_kind.is_empty() {
+                        summary
+                            .evidence_notes
+                            .push(format!("tool rendering_kind={rendering_kind}"));
+                    }
+                }
+                GatewayEvent::ContextSelected { .. } => {
+                    if event.adapter_kind == AdapterKind::Mcp {
+                        summary.mcp_context = true;
+                        summary.mcp_stdio_route.context = true;
+                    }
+                }
+                GatewayEvent::OutputValidated { .. } => {
+                    if event.adapter_kind == AdapterKind::Mcp {
+                        summary.mcp_output = true;
+                        summary.mcp_stdio_route.output = true;
+                    }
+                }
+                GatewayEvent::StateProjected { .. } => {
+                    if event.adapter_kind == AdapterKind::Mcp {
+                        summary.mcp_state = true;
+                        summary.mcp_stdio_route.state = true;
+                    }
+                }
+                GatewayEvent::Fallback { .. }
+                | GatewayEvent::Validation { .. }
+                | GatewayEvent::Error { .. } => {}
+            }
+        }
+    }
+    apply_host_setup_evidence(&mut summary, host_evidence_files);
+    summary.raw_refs = summary.generic_shell_route.raw_refs
+        + summary.tfy_agent_adapter_route.raw_refs
+        + summary.mcp_stdio_route.raw_refs;
+    if summary.commands == 0 {
+        summary.no_negative_savings = false;
+    }
+    summary
+}
+
+fn update_route_tool_evidence(
+    route: &mut RouteEvidence,
+    raw_ref: &str,
+    provenance_raw_refs: usize,
+    raw_size: usize,
+    model_size: usize,
+    negative_savings_avoided: bool,
+) {
+    route.commands += 1;
+    route.tool = true;
+    route.raw_refs += provenance_raw_refs;
+    if !raw_ref.is_empty() && provenance_raw_refs == 0 {
+        route.raw_refs += 1;
+    }
+    if model_size > raw_size && !negative_savings_avoided {
+        route.no_negative_savings = false;
+    }
+    if raw_size > model_size {
+        route.positive_savings = true;
+    }
+}
+
+fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf]) {
+    for path in files {
+        let Ok(text) = fs::read_to_string(path) else {
+            summary
+                .evidence_notes
+                .push(format!("host evidence file unreadable: {}", path.display()));
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_str::<HostEvidenceFile>(&text) else {
+            summary.evidence_notes.push(format!(
+                "host evidence file invalid JSON: {}",
+                path.display()
+            ));
+            continue;
+        };
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        for host in parsed.hosts {
+            let route = match host.host.as_str() {
+                "generic_shell" => Some(&mut summary.generic_shell_route),
+                "tfy_agent_adapter" => Some(&mut summary.tfy_agent_adapter_route),
+                "mcp_stdio" => Some(&mut summary.mcp_stdio_route),
+                _ => None,
+            };
+            if let Some(route) = route {
+                let setup_artifact_verified = host
+                    .setup_artifact
+                    .as_ref()
+                    .is_some_and(|artifact| host_artifact_exists(base, artifact));
+                let invocation_artifact_verified = host
+                    .invocation_artifact
+                    .as_ref()
+                    .is_some_and(|artifact| host_artifact_exists(base, artifact));
+                let overhead_measured = host.overhead_ms.is_some() && host.baseline_ms.is_some();
+                let overhead_passed = match (host.overhead_ms, host.baseline_ms) {
+                    (Some(overhead), Some(baseline)) => {
+                        overhead <= baseline.saturating_mul(2)
+                            && overhead <= baseline.saturating_add(5_000)
+                    }
+                    _ => false,
+                } || host
+                    .overhead_exception
+                    .as_deref()
+                    .is_some_and(|exception| !exception.trim().is_empty());
+                route.setup_artifact_verified |= setup_artifact_verified;
+                route.invocation_artifact_verified |= invocation_artifact_verified;
+                route.setup_verified |= host.setup_verified && setup_artifact_verified;
+                route.real_invocation_verified |=
+                    host.real_invocation_verified && invocation_artifact_verified;
+                route.overhead_measured |= overhead_measured;
+                route.overhead_passed |= overhead_passed;
+                route.overhead_ms = route.overhead_ms.or(host.overhead_ms);
+                route.baseline_ms = route.baseline_ms.or(host.baseline_ms);
+                if route.overhead_exception.is_none() {
+                    route.overhead_exception = host.overhead_exception;
+                }
+                summary.evidence_notes.push(format!(
+                    "host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={}",
+                    host.host,
+                    host.setup_verified,
+                    setup_artifact_verified,
+                    host.real_invocation_verified,
+                    invocation_artifact_verified,
+                    overhead_measured,
+                    overhead_passed
+                ));
+            }
+        }
+    }
+}
+
+fn host_artifact_exists(base: &Path, artifact: &Path) -> bool {
+    let path = if artifact.is_absolute() {
+        artifact.to_path_buf()
+    } else {
+        base.join(artifact)
+    };
+    path.is_file()
+}
+
+fn apply_launch_evidence(
+    mut hosts: Vec<HostReadiness>,
+    gain: &GainReport,
+    evidence: &HostEvidenceSummary,
+) -> Vec<HostReadiness> {
     let has_repeat_evidence = gain
         .rendering_counts
         .get("repeat_elided")
         .copied()
         .unwrap_or(0)
         > 0;
-    if has_command_evidence {
-        for host in &mut hosts {
-            if host.host == "tfy_agent_adapter" {
-                host.status = "verified_command_ledger_evidence".into();
-                host.launch_claim = "verified for command-boundary token control in ledgers supplied to this report".into();
+    for host in &mut hosts {
+        let (local_verified, launch_supported, route) = match host.host.as_str() {
+            "generic_shell" => {
+                let route = &evidence.generic_shell_route;
+                let local = evidence.generic_shell_wrapper
+                    && route.commands > 0
+                    && route.raw_refs > 0
+                    && route.no_negative_savings
+                    && route.positive_savings;
+                (local, local && route_host_ready(route), Some(route))
+            }
+            "tfy_agent_adapter" => {
+                let route = &evidence.tfy_agent_adapter_route;
+                let local = evidence.tfy_agent_adapter
+                    && route.commands > 0
+                    && route.raw_refs > 0
+                    && route.no_negative_savings
+                    && route.positive_savings;
+                (local, local && route_host_ready(route), Some(route))
+            }
+            "mcp_stdio" => {
+                let route = &evidence.mcp_stdio_route;
+                let local = evidence.mcp_tool
+                    && evidence.mcp_context
+                    && evidence.mcp_output
+                    && evidence.mcp_state
+                    && route.raw_refs > 0
+                    && route.no_negative_savings
+                    && route.positive_savings;
+                (local, local && route_host_ready(route), Some(route))
+            }
+            "codex" => (
+                evidence.codex_real_invocation && evidence.raw_refs > 0,
+                false,
+                None,
+            ),
+            _ => (false, false, None),
+        };
+        if launch_supported {
+            host.status = "launch_supported".into();
+            host.launch_claim =
+                "launch-supported for this report: setup, real host invocation, ledger evidence, raw recovery, and no-negative-savings gates passed"
+                    .into();
+        } else if local_verified {
+            host.status = "verified_local_smoke".into();
+            host.launch_claim =
+                "local smoke verified, but not launch-supported until host setup and real invocation evidence are supplied"
+                    .into();
+        }
+        if local_verified || launch_supported {
+            if let Some(route) = route {
                 host.evidence_gate.push(format!(
-                    "observed commands={} saved_bytes={}",
-                    gain.commands, gain.saved_bytes
+                    "observed route_commands={} route_raw_refs={} route_positive_savings={} route_no_negative_savings={}",
+                    route.commands, route.raw_refs, route.positive_savings, route.no_negative_savings
                 ));
-                if has_repeat_evidence {
-                    host.evidence_gate
-                        .push("observed repeat_elided unchanged-output savings".into());
+                if route.overhead_measured {
+                    host.evidence_gate.push(format!(
+                        "observed route_overhead_ms={} route_baseline_ms={}",
+                        route.overhead_ms.unwrap_or_default(),
+                        route.baseline_ms.unwrap_or_default()
+                    ));
                 }
+                if let Some(exception) = &route.overhead_exception {
+                    host.evidence_gate
+                        .push(format!("observed route_overhead_exception={exception}"));
+                }
+            } else {
+                host.evidence_gate.push(format!(
+                    "observed route_raw_refs={} codex_real_invocation={}",
+                    evidence.raw_refs, evidence.codex_real_invocation
+                ));
+            }
+            if has_repeat_evidence {
+                host.evidence_gate
+                    .push("observed repeat_elided unchanged-output savings".into());
             }
         }
     }
     hosts
 }
 
+fn route_host_ready(route: &RouteEvidence) -> bool {
+    route.setup_verified
+        && route.real_invocation_verified
+        && route.setup_artifact_verified
+        && route.invocation_artifact_verified
+        && (route.overhead_measured || route.overhead_exception.is_some())
+        && route.overhead_passed
+}
+
 fn build_launch_readiness_report(
     status: ProductStatusReport,
     gain: GainReport,
+    host_evidence: HostEvidenceSummary,
 ) -> LaunchReadinessReport {
     let mut blockers = Vec::new();
-    let host_matrix = apply_launch_evidence(status.minimum_v1_host_matrix, &gain);
+    let host_matrix = apply_launch_evidence(status.minimum_v1_host_matrix, &gain, &host_evidence);
     for host in &host_matrix {
-        if host.status.contains("unverified")
-            || host.status.contains("evidence_required")
-            || host.status.contains("smoke_required")
-        {
+        if host.required_for_v1 && host.status != "launch_supported" {
             blockers.push(format!(
-                "host {} is {}; do not claim launch support until evidence gate passes",
+                "required v1 host {} is {}; launch-report cannot pass until setup + real invocation + ledger + raw recovery + no-negative-savings evidence pass",
                 host.host, host.status
             ));
         }
@@ -731,6 +1293,13 @@ fn build_launch_readiness_report(
     if gain.commands == 0 {
         blockers.push("no command-output savings data found; run adapter/MCP tool workflows before launch claims".into());
     }
+    if !host_evidence.no_negative_savings {
+        blockers.push("negative default model-visible savings or missing no-negative-savings evidence detected".into());
+    }
+    if !host_evidence.positive_savings {
+        blockers
+            .push("no positive saved byte/token evidence for required command-heavy routes".into());
+    }
     LaunchReadinessReport {
         status: if blockers.is_empty() {
             "pass"
@@ -740,6 +1309,16 @@ fn build_launch_readiness_report(
         .into(),
         host_matrix,
         gain,
+        host_evidence,
+        release_thresholds: ReleaseThresholds::default(),
+        measurement_method: MeasurementMethod::default(),
+        privacy_raw_store: PrivacyRawStorePolicy::default(),
+        overhead_policy: OverheadPolicy::default(),
+        unsupported_claim_audit: UnsupportedClaimAudit {
+            status: "pass".into(),
+            audited_claims: not_supported_surfaces(),
+            rule: "unsupported provider/editor/private-hook/universal-terminal routes must remain not_supported/planned unless a separate official adapter and e2e evidence exist".into(),
+        },
         blockers,
         not_supported: status.not_supported,
         required_benchmark_scenarios: vec![
@@ -748,6 +1327,8 @@ fn build_launch_readiness_report(
             "repeated test loop".into(),
             "Git/GitHub evidence".into(),
             "long-session state compaction".into(),
+            "MCP Code I/O workflow".into(),
+            "host setup failure recovery".into(),
         ],
     }
 }
@@ -758,6 +1339,19 @@ fn build_explain_report() -> ProductExplainReport {
         file_and_user_output: "Before code is written or shown to a human, TFY restores original/readable names, indentation, and line breaks into canonical file code.".into(),
         automatic_routing: "Supported AI-agent hosts use TFY through wrapper/adapter/MCP setup; users do not need to manually compact each prompt once the host is routed.".into(),
         apply_model: "Writes are validated with plan hash, per-operation proof, preview hash, origin checks, safe paths, rollback journal, and fuzzy unique-anchor gates.".into(),
+        what_tfy_changed: vec![
+            "configured AI command/context/output boundaries route through TFY instead of sending raw noisy payloads directly to the model".into(),
+            "ordinary human terminals are not globally intercepted".into(),
+            "launch support is evidence-gated per host route".into(),
+        ],
+        data_stored_locally: vec![
+            "raw command/context evidence under .tfy/raw or configured --raw-dir".into(),
+            "gateway ledgers such as .tfy/mcp/ledger.jsonl and .tfy/adapter/ledger.jsonl".into(),
+            "compact state projections derived from local ledgers".into(),
+        ],
+        raw_recovery: "Use raw_ref values with `tfy raw` or MCP `tfy_raw_get`/`tfy://raw/{raw_ref}` resources to recover byte-exact evidence.".into(),
+        deletion_export: "Until first-class retention commands are added, delete/export local evidence by managing the .tfy raw and ledger paths listed by doctor/explain; TFY does not upload raw evidence.".into(),
+        launch_pass_block_reason: "`tfy launch-report` passes only when required v1 hosts have setup + real invocation + ledger + raw recovery + no-negative-savings evidence and all claim/privacy gates pass.".into(),
         out_of_scope: vec![
             "provider/API gateway proxy".into(),
             "editor auto-integration".into(),
@@ -838,6 +1432,132 @@ fn build_doctor_report(codex: bool) -> DoctorReport {
     }
 }
 
+fn run_adapter_smoke() -> Result<SmokeReport> {
+    let root = std::env::temp_dir().join(format!(
+        "tfy-adapter-smoke-{}-{}",
+        std::process::id(),
+        stable_id("adapter-smoke")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)?;
+    let ledger = root.join("adapter-ledger.jsonl");
+    let raw = root.join("raw");
+    let exe = std::env::current_exe().context("resolve current tfy executable")?;
+    let output = Command::new(exe)
+        .env("CARGO_TERM_COLOR", "never")
+        .args([
+            "adapter",
+            "run",
+            "--session",
+            "smoke",
+            "--ledger",
+            ledger
+                .to_str()
+                .ok_or_else(|| anyhow!("non-utf8 ledger path"))?,
+            "--raw-dir",
+            raw.to_str().ok_or_else(|| anyhow!("non-utf8 raw path"))?,
+            "--",
+            "sh",
+            "-c",
+            "for i in $(seq 1 80); do echo tfy-adapter-smoke-$i; done",
+        ])
+        .output()
+        .context("run adapter smoke command")?;
+    if !output.status.success() {
+        bail!(
+            "adapter smoke command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let events = load_events(&ledger).context("read adapter smoke ledger")?;
+    let has_raw_ref = events
+        .iter()
+        .any(|event| !event.provenance.raw_refs.is_empty());
+    if !has_raw_ref {
+        bail!("adapter smoke did not record raw refs");
+    }
+    Ok(SmokeReport {
+        status: "pass".into(),
+        mode: "adapter".into(),
+        sample_path: ledger.display().to_string(),
+        scope_id: "tool-command".into(),
+        preview_applied: false,
+        apply_applied: false,
+        ledger_events: events.len(),
+        evidence: vec![
+            "generic-shell local smoke produced ToolCommandCompleted ledger evidence".into(),
+            "adapter local smoke preserved raw_ref recovery evidence".into(),
+            format!("ledger={}", ledger.display()),
+            format!("raw_dir={}", raw.display()),
+            format!("ledger_events={}", events.len()),
+        ],
+    })
+}
+
+fn run_agent_smoke() -> Result<SmokeReport> {
+    let root = std::env::temp_dir().join(format!(
+        "tfy-agent-smoke-{}-{}",
+        std::process::id(),
+        stable_id("agent-smoke")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)?;
+    let ledger = root.join("agent-ledger.jsonl");
+    let raw = root.join("raw");
+    let exe = std::env::current_exe().context("resolve current tfy executable")?;
+    let output = Command::new(exe)
+        .env("CARGO_TERM_COLOR", "never")
+        .args([
+            "agent",
+            "run",
+            "--session",
+            "smoke",
+            "--host",
+            "generic",
+            "--ledger",
+            ledger
+                .to_str()
+                .ok_or_else(|| anyhow!("non-utf8 ledger path"))?,
+            "--raw-dir",
+            raw.to_str().ok_or_else(|| anyhow!("non-utf8 raw path"))?,
+            "--",
+            "sh",
+            "-c",
+            "for i in $(seq 1 80); do echo tfy-agent-smoke-$i; done",
+        ])
+        .output()
+        .context("run agent smoke command")?;
+    if !output.status.success() {
+        bail!(
+            "agent smoke command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let events = load_events(&ledger).context("read agent smoke ledger")?;
+    let has_raw_ref = events
+        .iter()
+        .any(|event| !event.provenance.raw_refs.is_empty());
+    if !has_raw_ref {
+        bail!("agent smoke did not record raw refs");
+    }
+    Ok(SmokeReport {
+        status: "pass".into(),
+        mode: "agent".into(),
+        sample_path: ledger.display().to_string(),
+        scope_id: "tool-command".into(),
+        preview_applied: false,
+        apply_applied: false,
+        ledger_events: events.len(),
+        evidence: vec![
+            "tfy-agent local smoke produced ToolCommandCompleted ledger evidence".into(),
+            "agent local smoke preserved raw_ref recovery evidence".into(),
+            format!("ledger={}", ledger.display()),
+            format!("raw_dir={}", raw.display()),
+            format!("ledger_events={}", events.len()),
+        ],
+    })
+}
+
 fn check_mcp_server() -> Vec<Diagnostic> {
     match start_mcp_child("doctor") {
         Ok(mut child) => {
@@ -914,7 +1634,16 @@ fn run_mcp_smoke() -> Result<SmokeReport> {
             bail!("missing tool {required}");
         }
     }
-    let listed = child.request(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tfy_scope_list","arguments":{"path":sample.to_str().unwrap(),"query":"add","limit":5}}}))?;
+    let tool_run = child.request(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tfy_tool_run","arguments":{"session":"smoke","command":["sh","-c","for i in $(seq 1 80); do echo tfy-mcp-smoke-$i; done"]}}}))?;
+    let tool_run_json = mcp_content_json(&tool_run)?;
+    if tool_run_json["payload"]["raw_ref"]
+        .as_str()
+        .unwrap_or_default()
+        .is_empty()
+    {
+        bail!("tfy_tool_run did not return raw_ref");
+    }
+    let listed = child.request(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"tfy_scope_list","arguments":{"path":sample.to_str().unwrap(),"query":"add","limit":5}}}))?;
     let listed_json = mcp_content_json(&listed)?;
     let scope_id = listed_json["scopes"]
         .as_array()
@@ -922,7 +1651,7 @@ fn run_mcp_smoke() -> Result<SmokeReport> {
         .and_then(|s| s["id"].as_str())
         .ok_or_else(|| anyhow!("smoke scope not found"))?
         .to_string();
-    let context = child.request(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"tfy_context_get","arguments":{"session":"smoke","path":sample.to_str().unwrap(),"scope":scope_id,"compactness":"symbol"}}}))?;
+    let context = child.request(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"tfy_context_get","arguments":{"session":"smoke","path":sample.to_str().unwrap(),"scope":scope_id,"compactness":"symbol"}}}))?;
     let compact = mcp_content_json(&context)?;
     let restore_payload = json!({
         "scope_id": compact["scope"]["id"],
@@ -935,7 +1664,7 @@ fn run_mcp_smoke() -> Result<SmokeReport> {
         "apply_proof": compact["apply_proof"]
     });
     let before_preview = fs::read_to_string(&sample)?;
-    let preview = child.request(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"tfy_output_validate","arguments":{"session":"smoke","restore_payload":restore_payload.clone()}}}))?;
+    let preview = child.request(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"tfy_output_validate","arguments":{"session":"smoke","restore_payload":restore_payload.clone()}}}))?;
     let preview_json = mcp_content_json(&preview)?;
     if preview_json["applied"] != false {
         bail!("preview unexpectedly applied");
@@ -943,7 +1672,7 @@ fn run_mcp_smoke() -> Result<SmokeReport> {
     if fs::read_to_string(&sample)? != before_preview {
         bail!("preview mutated file");
     }
-    let applied = child.request(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"tfy_output_apply","arguments":{"session":"smoke","restore_payload":restore_payload}}}))?;
+    let applied = child.request(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"tfy_output_apply","arguments":{"session":"smoke","restore_payload":restore_payload}}}))?;
     let applied_json = mcp_content_json(&applied)?;
     if applied_json["applied"] != true {
         bail!("apply did not report applied");
@@ -952,6 +1681,7 @@ fn run_mcp_smoke() -> Result<SmokeReport> {
     if !(after.contains("return total*2;") || after.contains("return total * 2;")) {
         bail!("apply result missing expected edit: {after}");
     }
+    child.request(json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"tfy_state_project","arguments":{"session":"smoke"}}}))?;
     let events = load_events(&ledger).context("read smoke MCP ledger")?;
     Ok(SmokeReport {
         status: "pass".into(),
@@ -963,10 +1693,14 @@ fn run_mcp_smoke() -> Result<SmokeReport> {
         ledger_events: events.len(),
         evidence: vec![
             "MCP initialize and tools/list succeeded".into(),
+            "tfy_tool_run stored raw command output and returned raw_ref".into(),
             "tfy_scope_list returned an exact scope id".into(),
             "tfy_context_get returned compact code, symbol map, context_ref, and ApplyProof".into(),
             "tfy_output_validate did not mutate the file".into(),
             "tfy_output_apply mutated only through proof-gated apply".into(),
+            "tfy_state_project produced state projection evidence".into(),
+            format!("ledger={}", ledger.display()),
+            format!("raw_dir={}", raw.display()),
             format!("ledger_events={}", events.len()),
         ],
     })

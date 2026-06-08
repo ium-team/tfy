@@ -94,7 +94,7 @@ pub(crate) fn execute_agent(cmd: AgentCmd) -> Result<()> {
             request_id,
             trace_id,
             parent_event_id,
-            AdapterKind::Shell,
+            AdapterKind::Cli,
             Origin::agent_runtime(parse_host(&host), OriginInvocation::Wrapper),
         ),
     }
