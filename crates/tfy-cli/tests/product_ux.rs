@@ -232,7 +232,40 @@ fn smoke_mcp_exercises_code_io_workflow() {
     assert_eq!(json["status"], "pass");
     assert_eq!(json["preview_applied"], false);
     assert_eq!(json["apply_applied"], true);
-    assert!(json["ledger_events"].as_u64().unwrap() >= 3, "{json}");
+    assert!(json["ledger_events"].as_u64().unwrap() >= 4, "{json}");
+    assert!(
+        json["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e.as_str().unwrap().contains("tfy_state_project")),
+        "{json}"
+    );
+}
+
+#[test]
+fn smoke_all_produces_adapter_and_mcp_launch_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["smoke", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["status"], "pass");
+    let modes: Vec<_> = json["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["mode"].as_str().unwrap())
+        .collect();
+    assert!(modes.contains(&"adapter"), "{json}");
+    assert!(modes.contains(&"mcp"), "{json}");
 }
 
 #[test]
@@ -586,13 +619,19 @@ fn launch_report_promotes_adapter_when_gain_ledger_has_command_evidence() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|h| h["host"] == "tfy_agent_adapter")
+        .find(|h| h["host"] == "generic_shell")
         .unwrap();
-    assert_eq!(adapter["status"], "verified_command_ledger_evidence");
+    assert_eq!(adapter["status"], "verified_local_smoke");
     assert!(adapter["launch_claim"]
         .as_str()
         .unwrap()
-        .contains("verified for command-boundary token control"));
+        .contains("local smoke verified"));
+    assert_eq!(json["status"], "blocked");
+    assert!(json["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| { b.as_str().unwrap().contains("required v1 host mcp_stdio") }));
 }
 
 #[test]
@@ -606,15 +645,20 @@ fn launch_report_blocks_unverified_codex_and_exposes_v1_host_matrix() {
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["status"], "blocked");
-    assert!(json["blockers"].as_array().unwrap().iter().any(|b| {
-        b.as_str()
-            .unwrap()
-            .contains("host codex is configured_but_unverified")
-    }));
+    assert!(json["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| { b.as_str().unwrap().contains("required v1 host mcp_stdio") }));
     let hosts = json["host_matrix"].as_array().unwrap();
     assert!(hosts.iter().any(|h| h["host"] == "mcp_stdio"));
     assert!(hosts.iter().any(|h| h["host"] == "tfy_agent_adapter"));
     assert!(hosts.iter().any(|h| h["host"] == "generic_shell"));
+    assert!(hosts.iter().all(|h| h.get("normal_workflow").is_some()));
+    assert!(hosts
+        .iter()
+        .filter(|h| h["host"] != "codex")
+        .all(|h| h["required_for_v1"] == true));
     assert!(hosts
         .iter()
         .any(|h| h["host"] == "codex" && h["status"] == "configured_but_unverified"));
@@ -628,6 +672,337 @@ fn launch_report_blocks_unverified_codex_and_exposes_v1_host_matrix() {
             .as_array()
             .unwrap()
             .len()
-            >= 5
+            >= 7
     );
+    assert_eq!(json["measurement_method"]["tokenizer_exact"], false);
+    assert_eq!(json["unsupported_claim_audit"]["status"], "pass");
+}
+
+#[test]
+fn launch_report_blocks_local_smoke_without_host_evidence_and_keeps_codex_unverified() {
+    let dir = tempfile::tempdir().unwrap();
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["smoke", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    let smoke_json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
+    let evidence = smoke_json["evidence"].as_array().unwrap();
+    let mut ledgers = Vec::new();
+    for entry in evidence {
+        let text = entry.as_str().unwrap();
+        if let Some(path) = text.strip_prefix("ledger=") {
+            ledgers.push(path.to_string());
+        }
+    }
+    assert!(ledgers.len() >= 2, "{smoke_json}");
+    let mut owned_args: Vec<String> = vec!["launch-report", "--all", "--json"]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+    for ledger in &ledgers {
+        owned_args.push("--ledger".into());
+        owned_args.push(ledger.clone());
+    }
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(&owned_args)
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(json["status"], "blocked", "{json}");
+    let hosts = json["host_matrix"].as_array().unwrap();
+    for required in ["mcp_stdio", "tfy_agent_adapter", "generic_shell"] {
+        assert!(
+            hosts
+                .iter()
+                .any(|h| h["host"] == required && h["status"] == "verified_local_smoke"),
+            "{json}"
+        );
+    }
+    assert!(hosts
+        .iter()
+        .any(|h| h["host"] == "codex" && h["status"] == "configured_but_unverified"));
+    assert_eq!(json["host_evidence"]["mcp_state"], true);
+    assert_eq!(json["host_evidence"]["positive_savings"], true);
+}
+
+#[test]
+fn launch_report_passes_only_with_route_smoke_and_host_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["smoke", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    let smoke_json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
+    let evidence = smoke_json["evidence"].as_array().unwrap();
+    let mut owned_args: Vec<String> = vec!["launch-report", "--all", "--json"]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+    for entry in evidence {
+        let text = entry.as_str().unwrap();
+        if let Some(path) = text.strip_prefix("ledger=") {
+            owned_args.push("--ledger".into());
+            owned_args.push(path.to_string());
+        }
+    }
+    let setup_artifact = dir.path().join("setup-proof.txt");
+    let invocation_artifact = dir.path().join("invocation-proof.txt");
+    std::fs::write(&setup_artifact, "configured host wrapper/mcp").unwrap();
+    std::fs::write(&invocation_artifact, "real host invocation smoke observed").unwrap();
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {"host":"generic_shell","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":100,"baseline_ms":100},
+            {"host":"tfy_agent_adapter","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":100,"baseline_ms":100},
+            {"host":"mcp_stdio","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":100,"baseline_ms":100}
+          ]
+        }"#,
+    )
+    .unwrap();
+    owned_args.push("--host-evidence".into());
+    owned_args.push(host_evidence.display().to_string());
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(&owned_args)
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(json["status"], "pass", "{json}");
+    let hosts = json["host_matrix"].as_array().unwrap();
+    for required in ["mcp_stdio", "tfy_agent_adapter", "generic_shell"] {
+        let host = hosts.iter().find(|h| h["host"] == required).unwrap();
+        assert_eq!(host["status"], "launch_supported", "{json}");
+        let gates = host["evidence_gate"].as_array().unwrap();
+        assert!(
+            gates.iter().any(|gate| gate
+                .as_str()
+                .unwrap()
+                .contains("observed route_commands=1 route_raw_refs=1")),
+            "{json}"
+        );
+        assert!(
+            !gates
+                .iter()
+                .any(|gate| gate.as_str().unwrap().contains("saved_bytes=")),
+            "{json}"
+        );
+    }
+    assert!(hosts
+        .iter()
+        .any(|h| h["host"] == "codex" && h["status"] == "configured_but_unverified"));
+}
+
+#[test]
+fn launch_report_rejects_boolean_only_host_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["smoke", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    let smoke_json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
+    let mut owned_args: Vec<String> = vec!["launch-report", "--all", "--json"]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+    for entry in smoke_json["evidence"].as_array().unwrap() {
+        let text = entry.as_str().unwrap();
+        if let Some(path) = text.strip_prefix("ledger=") {
+            owned_args.push("--ledger".into());
+            owned_args.push(path.to_string());
+        }
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {"host":"generic_shell","setup_verified":true,"real_invocation_verified":true},
+            {"host":"tfy_agent_adapter","setup_verified":true,"real_invocation_verified":true},
+            {"host":"mcp_stdio","setup_verified":true,"real_invocation_verified":true}
+          ]
+        }"#,
+    )
+    .unwrap();
+    owned_args.push("--host-evidence".into());
+    owned_args.push(host_evidence.display().to_string());
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(&owned_args)
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(json["status"], "blocked", "{json}");
+    let hosts = json["host_matrix"].as_array().unwrap();
+    for required in ["mcp_stdio", "tfy_agent_adapter", "generic_shell"] {
+        assert!(
+            hosts
+                .iter()
+                .any(|h| h["host"] == required && h["status"] == "verified_local_smoke"),
+            "{json}"
+        );
+    }
+}
+
+#[test]
+fn launch_report_classifies_agent_route_without_ledger_name_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("route.jsonl");
+    let raw = dir.path().join("raw");
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "agent",
+            "run",
+            "--session",
+            "agent-s",
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--raw-dir",
+            raw.to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "for i in $(seq 1 80); do echo tfy-agent-route-$i; done",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--session",
+            "agent-s",
+            "--ledger",
+            ledger.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let hosts = json["host_matrix"].as_array().unwrap();
+    assert!(
+        hosts
+            .iter()
+            .any(|h| h["host"] == "tfy_agent_adapter" && h["status"] == "verified_local_smoke"),
+        "{json}"
+    );
+    assert_eq!(json["host_evidence"]["tfy_agent_adapter"], true);
+    assert_eq!(json["host_evidence"]["generic_shell_wrapper"], false);
+}
+
+#[test]
+fn launch_report_accepts_artifact_backed_overhead_exception() {
+    let dir = tempfile::tempdir().unwrap();
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["smoke", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    let smoke_json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
+    let mut owned_args: Vec<String> = vec!["launch-report", "--all", "--json"]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+    for entry in smoke_json["evidence"].as_array().unwrap() {
+        let text = entry.as_str().unwrap();
+        if let Some(path) = text.strip_prefix("ledger=") {
+            owned_args.push("--ledger".into());
+            owned_args.push(path.to_string());
+        }
+    }
+    std::fs::write(dir.path().join("setup-proof.txt"), "configured").unwrap();
+    std::fs::write(dir.path().join("invocation-proof.txt"), "invoked").unwrap();
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {"host":"generic_shell","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_exception":"fixture host overhead accepted by release owner"},
+            {"host":"tfy_agent_adapter","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_exception":"fixture host overhead accepted by release owner"},
+            {"host":"mcp_stdio","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_exception":"fixture host overhead accepted by release owner"}
+          ]
+        }"#,
+    )
+    .unwrap();
+    owned_args.push("--host-evidence".into());
+    owned_args.push(host_evidence.display().to_string());
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(&owned_args)
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(json["status"], "pass", "{json}");
+    let hosts = json["host_matrix"].as_array().unwrap();
+    for required in ["mcp_stdio", "tfy_agent_adapter", "generic_shell"] {
+        let host = hosts.iter().find(|h| h["host"] == required).unwrap();
+        assert_eq!(host["status"], "launch_supported", "{json}");
+        assert!(
+            host["evidence_gate"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gate| gate
+                    .as_str()
+                    .unwrap()
+                    .contains("observed route_overhead_exception=")),
+            "{json}"
+        );
+    }
 }
