@@ -94,7 +94,7 @@ Focused method-family docs:
 Reference/status docs:
 
 - `docs/PRODUCTION_STACK.md` — production stack expectations and current implementation status.
-- `docs/RUST_ONLY_MIGRATION.md` — Rust-only runtime target and completed Python retirement record.
+- `docs/RUST_ONLY_MIGRATION.md` — Python runtime retirement record and current Rust authority-path implementation history.
 - `docs/RTK_REFERENCE.md` — RTK lessons without inheriting RTK's product boundary.
 - `docs/CONVERSATION_SUMMARY.md` — superseded discussion history and final decision summary.
 
@@ -110,7 +110,7 @@ Repository/development harness:
 
 ## Implementation status
 
-The product/runtime stack is **Rust core + Rust CLI**. Python product/runtime surfaces have been retired: there is no root Python package, PyO3 binding crate, Python lockfile, or Python test suite in the release path. Python remains only a supported input language for code analysis through tree-sitter fixtures.
+The current authority-path implementation is **Rust core + Rust CLI**. TFY is Rust-first where correctness, security, deterministic command behavior, raw evidence, redaction, proof validation, and workspace apply matter. Non-core integrations may use host-native or other best-fit technologies when that improves released-product quality, provided they do not become correctness dependencies for authority-path behavior without an explicit stack decision record. Python product/runtime surfaces have been retired: there is no root Python package, PyO3 binding crate, Python lockfile, or Python test suite in the release path. Python remains only a supported input language for code analysis through tree-sitter fixtures and may be used for non-runtime evaluation or research tooling only when it is not a product/runtime dependency.
 
 Rust smoke commands:
 

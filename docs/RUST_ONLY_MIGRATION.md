@@ -1,10 +1,10 @@
-# TFY Rust-Only Stack Implementation Record
+# TFY Python Runtime Retirement and Rust Authority-Path Record
 
 ## Decision
 
-TFY's product/runtime target is **Rust core + Rust CLI**. Python is not part of the target product stack.
+TFY's current runtime authority path is **Rust core + Rust CLI**. Python is not part of the production runtime authority path.
 
-The former Python package and PyO3 binding were retired from the product/runtime path after Rust parity coverage was added for the first releasable version. Python remains only a source language TFY can analyze, not a TFY implementation stack.
+The former Python package and PyO3 binding were retired from the product/runtime path after Rust parity coverage was added for the first releasable version. Python remains a source language TFY can analyze, and may be used for non-runtime evaluation, corpus, or research tooling when it is not a product/runtime dependency.
 
 ## Why Rust
 
@@ -17,7 +17,9 @@ TFY's core work is correctness-sensitive systems work:
 - security redaction at every public summary boundary
 - benchmarked net-savings and performance evaluation
 
-Rust is the best fit for this target because it provides predictable performance, strong data contracts, safe single-binary distribution, and direct integration with tree-sitter based language analysis.
+Rust is the best fit for the current authority path because it provides predictable performance, strong data contracts, safe single-binary distribution, and direct integration with tree-sitter based language analysis.
+
+This record is not a product-wide ban on non-Rust technologies. Non-core integrations may use host-native or other best-fit stacks when that improves released-product quality. Such integrations must not become correctness dependencies for authority-path behavior without an explicit stack decision record.
 
 ## Target stack
 
@@ -28,7 +30,7 @@ Rust is the best fit for this target because it provides predictable performance
 | Language analysis | `crates/tfy-core::language` | Tree-sitter backed scope extraction and semantic skeletons. |
 | Tool feedback | `crates/tfy-core::tool_feedback` | Command capture, raw refs, generic policy registry, Git/GitHub policy. |
 | Evaluation | `crates/tfy-core::eval` | Net savings, correctness, fallback, performance gates. |
-| Optional adapters | Future Rust adapter crates | Provider/model cache adapters remain optional and cannot affect correctness. |
+| Optional adapters | Rust, host-native, or other best-fit adapter implementations | Provider/model/cache/editor adapters remain optional and cannot affect authority-path correctness without an explicit stack decision record. |
 
 ## Python retirement record
 
@@ -57,15 +59,15 @@ Rust is the best fit for this target because it provides predictable performance
 
 ## Non-negotiable gates
 
-A Rust-only release remains acceptable only while these gates pass:
+The current Rust authority-path release remains acceptable only while these gates pass:
 
 1. **Parity:** Rust output matches accepted fixtures or documents a deliberate contract improvement.
 2. **Correctness:** deterministic restore or full/raw fallback works for every compact representation.
 3. **Evidence:** errors, dirty repo state, failed checks, review blockers, and security/auth failures remain visible.
 4. **Security:** credential-bearing URLs and command strings are redacted from public summaries while originals stay local behind raw refs.
 5. **Performance:** Rust benchmark results are recorded for parse/index/compress/eval paths.
-6. **Packaging:** documented user workflows run from the Rust CLI without Python product/runtime dependencies.
+6. **Packaging:** documented user workflows run from the Rust CLI without Python product/runtime authority-path dependencies.
 
 ## Documentation rule
 
-Public docs must use Rust commands for TFY execution. Python may appear only as an analyzed source-code language, never as a TFY product/runtime dependency.
+Public docs must use Rust commands for TFY authority-path execution. Python may appear as an analyzed source-code language or non-runtime evaluation/research tooling, never as a TFY product/runtime authority-path dependency without a new explicit stack decision record.

@@ -2,11 +2,24 @@
 
 ## Purpose
 
-This document maps the final token-saving architecture to the Rust-only implementation surface for the first releasable version.
+This document maps the final token-saving architecture to the current Rust-first authority-path implementation and the product-grade technology selection policy for future surfaces.
 
-## Target stack
+## Technology selection policy
 
-The product/runtime target is **Rust-only**:
+TFY is not Rust-only as a product dogma. TFY is **Rust-first on the authority path**: the components that own correctness, security, deterministic command behavior, raw evidence, redaction, proof validation, and workspace apply should remain Rust unless an explicit stack decision proves another technology is better for released-product quality.
+
+Non-core integrations may use host-native or other best-fit technologies when that makes the released product better:
+
+- editor integrations may use the editor's native extension stack;
+- web or dashboard surfaces may use web-native technology;
+- host adapters may use the host ecosystem when it improves reliability, distribution, or user experience;
+- plugin/sandbox boundaries may use portable component technology when it improves isolation or extensibility.
+
+Development speed or prototype convenience is not sufficient justification for a product/runtime stack. Any non-Rust integration must preserve TFY's protocol, provenance, fallback, and truthful-claim contracts. Non-Rust integrations must not become correctness dependencies for authority-path behavior without an explicit stack decision record.
+
+## Current authority-path stack
+
+The current authority-path implementation is:
 
 - Core: Rust (`crates/tfy-core`)
 - CLI: Rust binary (`crates/tfy-cli`, `tfy`)
@@ -14,9 +27,9 @@ The product/runtime target is **Rust-only**:
 - Parsers: Tree-sitter grammars where available
 - Tool feedback policy: Rust policy objects under the core crate
 - Evaluation and benchmarks: Rust tests plus `criterion`
-- Optional provider/model adapters: Rust adapter crates or external integrations, never correctness dependencies
+- Optional provider/model adapters: Rust adapter crates, host-native adapters, or external integrations, never authority-path correctness dependencies without an explicit stack decision record
 
-Python is **not** a product/runtime stack. The former Python product surfaces (`src/tfy`, root `pyproject.toml`, Python tests, `bindings/tfy-python`, `pyo3`, and `uv.lock`) have been removed from the release path. Python remains only a supported source-code language for analysis fixtures through tree-sitter.
+Python is **not** part of the production runtime authority path. The former Python product surfaces (`src/tfy`, root `pyproject.toml`, Python tests, `bindings/tfy-python`, `pyo3`, and `uv.lock`) have been removed from the release path. Python remains a supported source-code language for analysis fixtures through tree-sitter and may be used for non-runtime evaluation, corpus, or research tooling only when it is not a correctness dependency.
 
 ## Required architecture primitives
 
@@ -38,7 +51,7 @@ The production core should support:
 
 - CLI-first text protocol remains canonical for model-visible output; JSON/envelopes remain explicit debug/adapter/internal surfaces.
 - Core behavior remains agent-neutral.
-- Optional adapters cannot be required for correctness.
+- Optional adapters cannot be required for authority-path correctness unless an explicit stack decision record changes that contract.
 - Parser-backed responses include confidence, parser identity, and fallback action.
 - Raw/full fallback is always available for high-risk artifacts.
 - Public model-visible output redacts secrets before pass-through or summary; original command/output bytes remain local behind raw refs.
@@ -60,7 +73,7 @@ cargo test --quiet
 
 ## Retired Python product artifacts
 
-The Rust-only implementation removed the former Python product/runtime surfaces from the release path:
+The current Rust authority-path implementation removed the former Python product/runtime surfaces from the release path:
 
 - `src/tfy/*`
 - `tests/*.py`
@@ -69,7 +82,7 @@ The Rust-only implementation removed the former Python product/runtime surfaces 
 - `bindings/tfy-python`
 - `pyo3` workspace dependency
 
-Do not reintroduce Python as a product/runtime dependency without a new explicit compatibility decision.
+Do not reintroduce Python as a product/runtime authority-path dependency without a new explicit stack decision record.
 
 ## Release readiness
 
@@ -78,14 +91,14 @@ A production surface is release-ready only when `EVALUATION_GATES.md` passes for
 
 ## Agent middleware stack direction
 
-TFY's production integration model is AI-agent I/O middleware. The Rust core owns correctness; adapters automate invocation for specific runtimes. Planned integration surfaces:
+TFY's production integration model is AI-agent I/O middleware. The Rust core owns current authority-path correctness; adapters automate invocation for specific runtimes and may use host-native stacks when that improves released-product quality. Planned integration surfaces:
 
 - Tool Gateway shell/tool proxy — first implementation target and now exposed as `tfy tool-gateway`.
 - Context Gateway adapter — routes repo/file requests through index/expand/full/decide primitives.
 - Output Gateway adapter — restores and validates structured compact patches/code before apply.
 - State Gateway ledger — event-fed compact task state from all gateways.
 
-Provider, Codex, MCP, shell, and editor integrations remain adapters around the Rust core.
+Provider, Codex, MCP, shell, and editor integrations remain adapters around the Rust core unless a future stack decision explicitly moves an authority-path responsibility.
 
 ## Implemented runtime-interception foundation
 

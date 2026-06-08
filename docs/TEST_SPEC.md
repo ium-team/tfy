@@ -110,7 +110,7 @@ Documentation gates:
 
 - Docs must not imply automatic model input/output interception is implemented before a runtime adapter exists.
 - Docs must include a gateway-to-registry crosswalk.
-- Docs must preserve the Rust-only runtime invariant.
+- Docs must preserve the Rust-first authority-path invariant while allowing best-fit non-core integrations that are not correctness dependencies without an explicit stack decision record.
 
 Tool Gateway gates:
 
