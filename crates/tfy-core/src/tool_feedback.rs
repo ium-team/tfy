@@ -1,9 +1,12 @@
 use anyhow::{bail, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,11 +17,27 @@ pub struct CommandSummary {
     pub exit_code: i32,
     pub risk: String,
     pub summary: String,
+    pub model_text: String,
+    pub rendering_kind: String,
     pub raw_ref: String,
     pub raw_chars: usize,
     pub summary_chars: usize,
     pub savings_pct: f64,
     pub evidence: Vec<String>,
+    pub command_family: String,
+    pub output_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolPolicy {
+    Auto,
+    Generic,
+    GitGithub,
+}
+
+struct StoredRaw {
+    raw_ref: String,
+    output_sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -30,9 +49,14 @@ impl RawStore {
     pub fn new(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root)?;
+        #[cfg(unix)]
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
         Ok(Self { root })
     }
     pub fn put(&self, command: &str, raw: &str, exit_code: i32) -> Result<String> {
+        self.put_bytes(command, raw.as_bytes(), exit_code)
+    }
+    pub fn put_bytes(&self, command: &str, raw: &[u8], exit_code: i32) -> Result<String> {
         for attempt in 0..16u64 {
             let nonce = now_ns().wrapping_add(attempt);
             let mut hasher = Sha256::new();
@@ -45,8 +69,19 @@ impl RawStore {
             let hex = format!("{:x}", hasher.finalize());
             let rf = format!("cmdout_{}_{nonce:016x}", &hex[..12]);
             let path = self.path_for(&rf)?;
-            let payload = serde_json::json!({"command":command,"exit_code":exit_code,"raw":raw,"created_ns":nonce});
-            match OpenOptions::new().create_new(true).write(true).open(&path) {
+            let raw_text = std::str::from_utf8(raw).ok();
+            let payload = serde_json::json!({
+                "command":command,
+                "exit_code":exit_code,
+                "raw":raw_text,
+                "raw_b64":BASE64_STANDARD.encode(raw),
+                "created_ns":nonce
+            });
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            match options.open(&path) {
                 Ok(mut f) => {
                     f.write_all(serde_json::to_string_pretty(&payload)?.as_bytes())?;
                     return Ok(rf);
@@ -77,12 +112,26 @@ impl RawStore {
         Ok(path)
     }
     pub fn raw(&self, raw_ref: &str, around: Option<&str>, context: usize) -> Result<String> {
+        let raw_bytes = self.raw_bytes(raw_ref, around, context)?;
+        Ok(String::from_utf8_lossy(&raw_bytes).to_string())
+    }
+    pub fn raw_bytes(
+        &self,
+        raw_ref: &str,
+        around: Option<&str>,
+        context: usize,
+    ) -> Result<Vec<u8>> {
         let path = self.path_for(raw_ref)?;
         let text = fs::read_to_string(path)?;
         let v: serde_json::Value = serde_json::from_str(&text)?;
-        let raw = v["raw"].as_str().unwrap_or("");
+        let raw = if let Some(raw_b64) = v["raw_b64"].as_str() {
+            BASE64_STANDARD.decode(raw_b64)?
+        } else {
+            v["raw"].as_str().unwrap_or("").as_bytes().to_vec()
+        };
         if let Some(needle) = around {
-            let lines: Vec<_> = raw.lines().collect();
+            let raw_text = std::str::from_utf8(&raw)?;
+            let lines: Vec<_> = raw_text.lines().collect();
             let mut out = Vec::new();
             for (i, _l) in lines
                 .iter()
@@ -95,10 +144,11 @@ impl RawStore {
                 out.extend_from_slice(&lines[start..end]);
             }
             if !out.is_empty() {
-                return Ok(out.join("\n") + "\n");
+                return Ok((out.join("\n") + "\n").into_bytes());
             }
+            bail!("raw range needle not found: {needle}");
         }
-        Ok(raw.to_string())
+        Ok(raw)
     }
 }
 
@@ -115,6 +165,8 @@ pub fn run_command(
             "",
             "[tfy: command launch failed] empty command\n",
             127,
+            Some(max_summary_bytes),
+            ToolPolicy::Auto,
         );
     }
     let mut cmd = Command::new(&command[0]);
@@ -126,14 +178,15 @@ pub fn run_command(
     }
     match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output() {
         Ok(out) => {
-            let mut raw = String::from_utf8_lossy(&out.stdout).to_string();
-            raw.push_str(&String::from_utf8_lossy(&out.stderr));
-            let _summary_limit = max_summary_bytes;
-            compress(
+            let mut raw = out.stdout;
+            raw.extend_from_slice(&out.stderr);
+            compress_bytes(
                 &store,
                 &command.join(" "),
                 &raw,
                 out.status.code().unwrap_or(-1),
+                Some(max_summary_bytes),
+                ToolPolicy::Auto,
             )
         }
         Err(e) => compress(
@@ -145,6 +198,8 @@ pub fn run_command(
                 e
             ),
             127,
+            Some(max_summary_bytes),
+            ToolPolicy::Auto,
         ),
     }
 }
@@ -158,62 +213,1139 @@ pub fn raw_output(
     RawStore::new(raw_dir)?.raw(raw_ref, around, context)
 }
 
-fn compress(store: &RawStore, command: &str, raw: &str, exit_code: i32) -> Result<CommandSummary> {
-    let raw_ref = store.put(command, raw, exit_code)?;
-    let evidence = evidence(raw);
-    let risk = if exit_code != 0 || is_error(raw) {
-        "critical"
-    } else if is_success(raw) || raw.trim().is_empty() {
-        "success"
-    } else {
-        "unknown"
-    };
-    let summary = match risk {
-        "critical" => critical(command, exit_code, &evidence, &raw_ref),
-        "success" => success(command, exit_code, raw, &raw_ref),
-        _ => unknown(command, exit_code, raw, &evidence, &raw_ref),
-    };
-    let savings_pct = if raw.is_empty() {
-        0.0
-    } else {
-        ((raw.len() as f64 - summary.len() as f64) / raw.len() as f64 * 10000.0).round() / 100.0
-    };
-    Ok(CommandSummary {
-        command: command.into(),
+pub fn raw_output_bytes(
+    raw_dir: impl AsRef<Path>,
+    raw_ref: &str,
+    around: Option<&str>,
+    context: usize,
+) -> Result<Vec<u8>> {
+    RawStore::new(raw_dir)?.raw_bytes(raw_ref, around, context)
+}
+
+pub fn summarize_command_output(
+    command: &str,
+    raw: &str,
+    exit_code: i32,
+    raw_dir: impl AsRef<Path>,
+) -> Result<CommandSummary> {
+    summarize_command_output_with_policy(command, raw, exit_code, raw_dir, ToolPolicy::Auto)
+}
+
+pub fn summarize_command_output_with_policy(
+    command: &str,
+    raw: &str,
+    exit_code: i32,
+    raw_dir: impl AsRef<Path>,
+    policy: ToolPolicy,
+) -> Result<CommandSummary> {
+    let store = RawStore::new(raw_dir)?;
+    compress(&store, command, raw, exit_code, None, policy)
+}
+
+fn compress(
+    store: &RawStore,
+    command: &str,
+    raw: &str,
+    exit_code: i32,
+    max_summary_bytes: Option<usize>,
+    requested_policy: ToolPolicy,
+) -> Result<CommandSummary> {
+    compress_bytes(
+        store,
+        command,
+        raw.as_bytes(),
         exit_code,
-        risk: risk.into(),
-        summary_chars: summary.len(),
-        raw_chars: raw.len(),
+        max_summary_bytes,
+        requested_policy,
+    )
+}
+
+fn compress_bytes(
+    store: &RawStore,
+    command: &str,
+    raw_bytes: &[u8],
+    exit_code: i32,
+    max_summary_bytes: Option<usize>,
+    requested_policy: ToolPolicy,
+) -> Result<CommandSummary> {
+    let raw_ref = store.put_bytes(command, raw_bytes, exit_code)?;
+    let raw = String::from_utf8_lossy(raw_bytes);
+    compress_with_raw_ref(
+        command,
+        &raw,
+        raw_bytes.len(),
+        exit_code,
+        max_summary_bytes,
+        requested_policy,
+        StoredRaw {
+            raw_ref,
+            output_sha256: sha256_hex(raw_bytes),
+        },
+    )
+}
+
+fn compress_with_raw_ref(
+    command: &str,
+    raw: &str,
+    raw_len: usize,
+    exit_code: i32,
+    max_summary_bytes: Option<usize>,
+    requested_policy: ToolPolicy,
+    stored_raw: StoredRaw,
+) -> Result<CommandSummary> {
+    let raw_ref = stored_raw.raw_ref;
+    let output_sha256 = stored_raw.output_sha256;
+    let policy = GitGithubToolPolicy::new();
+    let command_family = classify_command_family(command);
+    let is_git_github = match requested_policy {
+        ToolPolicy::Auto => policy.matches(command),
+        ToolPolicy::Generic => false,
+        ToolPolicy::GitGithub => true,
+    };
+    let evidence = if is_git_github {
+        policy.evidence(command, raw)
+    } else {
+        evidence(raw)
+    }
+    .into_iter()
+    .map(|line| redact_public(&line))
+    .collect::<Vec<_>>();
+    let risk = family_risk(
+        &command_family,
+        command,
+        raw,
+        exit_code,
+        is_git_github,
+        &policy,
+    );
+    let display_command = redact_public(command);
+    let summary_candidate = family_summary_candidate(
+        &command_family,
+        &display_command,
+        exit_code,
+        raw,
+        &evidence,
+        &raw_ref,
+        &risk,
+    )
+    .unwrap_or_else(|| match risk.as_str() {
+        "critical" => critical(&display_command, exit_code, &evidence, &raw_ref),
+        "success" => success(&display_command, exit_code, raw, &raw_ref),
+        _ => unknown(&display_command, exit_code, raw, &evidence, &raw_ref),
+    });
+    let summary_candidate =
+        cap_summary_preserving_raw_ref(summary_candidate, &raw_ref, max_summary_bytes);
+    let public_raw = public_raw_candidate(raw, &raw_ref);
+    let decision = choose_model_visible_text(&summary_candidate, &public_raw);
+    let savings_pct = savings_pct_floor(raw_len, decision.text.len());
+    Ok(CommandSummary {
+        command: display_command,
+        exit_code,
+        risk,
+        summary_chars: decision.text.len(),
+        raw_chars: raw_len,
         savings_pct,
-        summary,
+        summary: decision.text.clone(),
+        model_text: decision.text,
+        rendering_kind: decision.kind,
         raw_ref,
         evidence,
+        command_family,
+        output_sha256,
     })
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn savings_pct_floor(raw_len: usize, model_len: usize) -> f64 {
+    if raw_len == 0 || model_len >= raw_len {
+        0.0
+    } else {
+        ((raw_len as f64 - model_len as f64) / raw_len as f64 * 10000.0).round() / 100.0
+    }
+}
+
+struct ModelOutputDecision {
+    text: String,
+    kind: String,
+}
+
+fn choose_model_visible_text(
+    summary_candidate: &str,
+    public_raw: &PublicRawCandidate,
+) -> ModelOutputDecision {
+    if summary_candidate.len() < public_raw.text.len() {
+        ModelOutputDecision {
+            text: summary_candidate.to_string(),
+            kind: "summary".to_string(),
+        }
+    } else if public_raw.suppressed {
+        ModelOutputDecision {
+            text: public_raw.text.clone(),
+            kind: "suppressed".to_string(),
+        }
+    } else {
+        ModelOutputDecision {
+            text: public_raw.text.clone(),
+            kind: "pass_through".to_string(),
+        }
+    }
+}
+
+struct PublicRawCandidate {
+    text: String,
+    suppressed: bool,
+}
+
+fn public_raw_candidate(raw: &str, raw_ref: &str) -> PublicRawCandidate {
+    if is_suppressed_public_raw(raw) {
+        return PublicRawCandidate {
+            text: format!(
+                "[tfy: output suppressed; unsafe or binary-ish content stored locally; raw_ref={raw_ref}]\n"
+            ),
+            suppressed: true,
+        };
+    }
+    PublicRawCandidate {
+        text: redact_public(raw),
+        suppressed: false,
+    }
+}
+
+fn is_suppressed_public_raw(raw: &str) -> bool {
+    raw.chars()
+        .any(|c| (c.is_control() && !matches!(c, '\n' | '\r' | '\t')) || c == '\u{fffd}')
+}
+
+struct GitGithubToolPolicy {
+    command: Regex,
+    git_status: Regex,
+    git_data: Regex,
+    gh_review_data: Regex,
+    git_visible_data: Regex,
+    git_error: Regex,
+    negative: Regex,
+    file_line: Regex,
+    diff_hunk: Regex,
+    url: Regex,
+}
+
+impl GitGithubToolPolicy {
+    fn new() -> Self {
+        let generic = r"error|failed|failure|panic|traceback|exception|fatal|denied|not found|cannot|E\d{3,}|✗|FAIL";
+        let git = format!(
+            r"{generic}|conflict|rejected|non-fast-forward|rate limit|authenticate|HTTP\s+[45]\d\d|changes_requested|unresolved"
+        );
+        Self {
+            command: Regex::new(r"^(?:git|gh)(?:\s|$)").expect("valid command regex"),
+            git_status: Regex::new(r"^git\s+status(?:\s|$)").expect("valid git status regex"),
+            git_data: Regex::new(r"^git\s+(?:diff|show|log)(?:\s|$)").expect("valid git data regex"),
+            gh_review_data: Regex::new(r"^gh\s+(?:pr|issue)\s+(?:view|status)(?:\s|$)").expect("valid gh review regex"),
+            git_visible_data: Regex::new(r"^git\s+(?:diff|show|log|status)(?:\s|$)").expect("valid git visible regex"),
+            git_error: Regex::new(&format!(r"(?i)({git})")).expect("valid git error regex"),
+            negative: Regex::new(r"(?i)(not\s+successful|unsuccessful|failed|failing|cancel(?:led|ed)|timed?\s+out|action_required)").expect("valid negative regex"),
+            file_line: Regex::new(r"[\w./-]+\.(?:py|rs|js|ts|tsx|jsx|go|java|c|cpp|h|hpp|md)(?::\d+)?").expect("valid file regex"),
+            diff_hunk: Regex::new(r"^@@\s.*@@").expect("valid diff hunk regex"),
+            url: Regex::new(r#"https?://[^\s\"'<>]+"#).expect("valid url regex"),
+        }
+    }
+
+    fn matches(&self, command: &str) -> bool {
+        self.command.is_match(command.trim())
+    }
+
+    fn risk(&self, command: &str, raw: &str, exit_code: i32) -> String {
+        let output = raw.trim_matches(['\r', '\n']);
+        if exit_code != 0 {
+            return "critical".into();
+        }
+        if self.is_git_status(command) {
+            if self.is_clean_git_status(output) {
+                return "success".into();
+            }
+            if self.has_git_status_conflict_marker(output)
+                || self.has_long_git_status_blocker(output)
+            {
+                return "critical".into();
+            }
+            return if output.is_empty() {
+                "success"
+            } else {
+                "unknown"
+            }
+            .into();
+        }
+        if (self.is_git_data(command) || self.is_gh_review_data(command)) && !output.is_empty() {
+            return "unknown".into();
+        }
+        if self.git_error.is_match(raw) || self.negative.is_match(raw) {
+            return "critical".into();
+        }
+        if self.is_git_github_success(command, raw) {
+            return "success".into();
+        }
+        "unknown".into()
+    }
+
+    fn is_git_status(&self, command: &str) -> bool {
+        self.git_status.is_match(command.trim())
+    }
+    fn is_git_data(&self, command: &str) -> bool {
+        self.git_data.is_match(command.trim())
+    }
+    fn is_gh_review_data(&self, command: &str) -> bool {
+        self.gh_review_data.is_match(command.trim())
+    }
+    fn is_git_github_success(&self, command: &str, raw: &str) -> bool {
+        let text = raw.trim();
+        if text.is_empty() {
+            return true;
+        }
+        if self.is_git_status(command) {
+            return self.is_clean_git_status(text);
+        }
+        if self.git_visible_data.is_match(command.trim()) || self.negative.is_match(text) {
+            return false;
+        }
+        Regex::new(
+            r"(?i)all checks passed|checks? passed|success(?:ful)?|passed|up[ -]?to[ -]?date",
+        )
+        .expect("valid git success regex")
+        .is_match(text)
+    }
+    fn is_clean_git_status(&self, text: &str) -> bool {
+        if text.is_empty() {
+            return true;
+        }
+        let normalized = text
+            .trim()
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines: Vec<_> = normalized
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        if !lines.is_empty() && lines.iter().all(|line| line.starts_with("##")) {
+            return true;
+        }
+        if matches!(
+            normalized.as_str(),
+            "nothing to commit, working tree clean" | "nothing to commit, working tree clean."
+        ) {
+            return true;
+        }
+        Regex::new(r"(?is)^On branch .+(?:\nYour branch is up to date with .+\.)?\n\nnothing to commit, working tree clean\.?$")
+            .expect("valid clean status regex")
+            .is_match(&normalized)
+    }
+    fn looks_like_git_status_line(&self, line: &str) -> bool {
+        if line.starts_with("##") {
+            return true;
+        }
+        let bytes = line.as_bytes();
+        bytes.len() >= 3
+            && b" MADRCUT?!".contains(&bytes[0])
+            && b" MADRCUT?!".contains(&bytes[1])
+            && bytes[2].is_ascii_whitespace()
+    }
+    fn has_git_status_conflict_marker(&self, text: &str) -> bool {
+        text.lines().any(|line| {
+            Regex::new(r"^(?:UU|AA|DD|AU|UA|DU|UD)(?:\s|$)")
+                .expect("valid conflict marker regex")
+                .is_match(line.trim())
+        })
+    }
+    fn has_long_git_status_blocker(&self, text: &str) -> bool {
+        text.lines()
+            .any(|line| self.is_long_git_status_blocker_line(line))
+    }
+    fn is_long_git_status_blocker_line(&self, line: &str) -> bool {
+        Regex::new(
+            r"(?i)^(?:unmerged paths:|conflict\b|rejected\b|authentication\b|fatal\b|error\b)",
+        )
+        .expect("valid blocker regex")
+        .is_match(line.trim())
+    }
+    fn git_status_line_evidence(&self, line: &str) -> Option<String> {
+        if line.starts_with("##") || !self.looks_like_git_status_line(line) {
+            return None;
+        }
+        let path = if line.len() > 3 { line[3..].trim() } else { "" };
+        if path.is_empty() {
+            Some(format!("status={}", &line[..2]))
+        } else {
+            Some(format!("status={} path={path}", &line[..2]))
+        }
+    }
+    fn evidence(&self, command: &str, raw: &str) -> Vec<String> {
+        let is_git_status = self.is_git_status(command);
+        let is_git_data = self.is_git_data(command);
+        let mut error_lines = Vec::new();
+        let mut file_lines = Vec::new();
+        let mut hunk_lines = Vec::new();
+        let mut url_lines = Vec::new();
+        for line in raw.lines() {
+            let evidence_line = self.redact_for_summary(line);
+            let status_evidence = if is_git_status {
+                self.git_status_line_evidence(&evidence_line)
+            } else {
+                None
+            };
+            let blocker_line =
+                is_git_status && self.is_long_git_status_blocker_line(&evidence_line);
+            let error_match = if is_git_data {
+                None
+            } else {
+                self.git_error.find(&evidence_line)
+            };
+            let file_match = self.file_line.find(&evidence_line);
+            let hunk_match = self.diff_hunk.find(&evidence_line);
+            let url_match = self.url.find(&evidence_line);
+            let negative_match = if is_git_data {
+                None
+            } else {
+                self.negative.find(&evidence_line)
+            };
+            if blocker_line {
+                push(&mut error_lines, evidence_line.trim().to_string());
+            } else if let Some(status) = status_evidence {
+                push(&mut file_lines, status);
+            } else if let (Some(f), Some(e)) = (file_match, error_match) {
+                push(&mut error_lines, excerpt_multi(&evidence_line, &[f, e]));
+            } else if let Some(e) = error_match {
+                push(
+                    &mut error_lines,
+                    excerpt(&evidence_line, e.start(), e.end()),
+                );
+            } else if let Some(n) = negative_match {
+                push(
+                    &mut error_lines,
+                    excerpt(&evidence_line, n.start(), n.end()),
+                );
+            } else if let Some(u) = url_match {
+                push(&mut url_lines, excerpt(&evidence_line, u.start(), u.end()));
+            } else if let Some(h) = hunk_match {
+                push(&mut hunk_lines, excerpt(&evidence_line, h.start(), h.end()));
+            } else if let Some(f) = file_match {
+                push(&mut file_lines, excerpt(&evidence_line, f.start(), f.end()));
+            }
+        }
+        error_lines
+            .into_iter()
+            .chain(url_lines)
+            .chain(file_lines)
+            .chain(hunk_lines)
+            .take(12)
+            .collect()
+    }
+    fn redact_for_summary(&self, text: &str) -> String {
+        self.url
+            .replace_all(text, |caps: &regex::Captures| {
+                redact_url(caps.get(0).unwrap().as_str())
+            })
+            .to_string()
+    }
+}
+
+/// Return the stable command-family label used by Tool Gateway execution and adapter reports.
+///
+/// The classifier is intentionally lightweight: cheap argv/text dispatch only. Unknown or
+/// shell-wrapper commands fall back to `generic` rather than weakening evidence handling.
+pub fn classify_command_family(command: &str) -> String {
+    let cmd = command.trim();
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    if words.is_empty() {
+        return "generic".into();
+    }
+    match words.as_slice() {
+        ["sh", "-c", rest @ ..] | ["bash", "-lc", rest @ ..] | ["bash", "-c", rest @ ..] => {
+            // Preserve real wrapper classification for analytics unless the wrapped command
+            // starts with a P0 command. This keeps test/demo wrappers useful without claiming
+            // universal shell interception.
+            classify_wrapped_shell_command(&rest.join(" "))
+        }
+        _ => classify_direct_command(cmd),
+    }
+}
+
+fn classify_wrapped_shell_command(command: &str) -> String {
+    let first = command.split([';', '|']).next().unwrap_or(command).trim();
+    let first = first
+        .strip_prefix("exec ")
+        .unwrap_or(first)
+        .strip_prefix("env ")
+        .unwrap_or(first)
+        .trim();
+    classify_direct_command(first)
+}
+
+fn classify_direct_command(cmd: &str) -> String {
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    match words.as_slice() {
+        ["git", "status", ..] => "git_status".into(),
+        ["git", "diff", ..] => "git_diff".into(),
+        ["git", "log", ..] => "git_log".into(),
+        ["gh", "pr", "checks", ..] => "gh_pr_checks".into(),
+        ["cargo", "test", ..] => "cargo_test".into(),
+        ["cargo", "clippy", ..] => "cargo_clippy".into(),
+        ["cargo", "build", ..] => "cargo_build".into(),
+        ["cargo", "check", ..] => "cargo_check".into(),
+        ["cargo", "fmt", rest @ ..] if args_contain_exact(rest, "--check") => {
+            "cargo_fmt_check".into()
+        }
+        ["pytest", ..] | ["python", "-m", "pytest", ..] | ["python3", "-m", "pytest", ..] => {
+            "pytest".into()
+        }
+        ["npm", "test", ..] => "npm_test".into(),
+        ["pnpm", "test", ..] => "pnpm_test".into(),
+        ["yarn", "test", ..] => "yarn_test".into(),
+        ["go", "test", ..] => "go_test".into(),
+        ["tsc", rest @ ..]
+        | ["npx", "tsc", rest @ ..]
+        | ["pnpm", "exec", "tsc", rest @ ..]
+        | ["yarn", "tsc", rest @ ..]
+        | ["npm", "exec", "tsc", rest @ ..]
+            if tsc_no_emit_args(rest) =>
+        {
+            "tsc_check".into()
+        }
+        _ => "generic".into(),
+    }
+}
+
+fn args_contain_exact(args: &[&str], needle: &str) -> bool {
+    args.contains(&needle)
+}
+
+fn tsc_no_emit_args(args: &[&str]) -> bool {
+    args_contain_exact(args, "--noEmit") && !tsc_long_running_args(args)
+}
+
+fn tsc_long_running_args(args: &[&str]) -> bool {
+    args.iter()
+        .any(|arg| matches!(*arg, "--watch" | "-w" | "--watchFile" | "--watchDirectory"))
+}
+
+fn family_risk(
+    family: &str,
+    command: &str,
+    raw: &str,
+    exit_code: i32,
+    is_git_github: bool,
+    policy: &GitGithubToolPolicy,
+) -> String {
+    if exit_code != 0 {
+        return "critical".into();
+    }
+    match family {
+        "cargo_test" | "pytest" | "npm_test" | "pnpm_test" | "yarn_test" | "go_test" => {
+            if has_nonzero_test_failures(raw) || has_hard_failure_marker(raw) {
+                "critical".into()
+            } else if is_success(raw) || raw.trim().is_empty() || has_zero_test_failures(raw) {
+                "success".into()
+            } else {
+                "unknown".into()
+            }
+        }
+        "gh_pr_checks" => {
+            if has_nonzero_check_failures(raw) || has_hard_failure_marker(raw) {
+                "critical".into()
+            } else if Regex::new(r"(?i)(all checks passed|checks? passed|pass(?:ed|ing)?|success)")
+                .expect("valid checks success regex")
+                .is_match(raw)
+            {
+                "success".into()
+            } else {
+                "unknown".into()
+            }
+        }
+        "cargo_clippy" | "cargo_build" | "cargo_check" => {
+            if has_hard_failure_marker(raw) {
+                "critical".into()
+            } else if is_success(raw) || raw.trim().is_empty() {
+                "success".into()
+            } else {
+                "unknown".into()
+            }
+        }
+        "cargo_fmt_check" => {
+            if has_cargo_fmt_diff(raw) || has_hard_failure_marker(raw) {
+                "critical".into()
+            } else if is_success(raw) || raw.trim().is_empty() {
+                "success".into()
+            } else {
+                "unknown".into()
+            }
+        }
+        "tsc_check" => {
+            if has_typescript_diagnostics(raw) || has_hard_failure_marker(raw) {
+                "critical".into()
+            } else if is_success(raw) || raw.trim().is_empty() {
+                "success".into()
+            } else {
+                "unknown".into()
+            }
+        }
+        _ if is_git_github => policy.risk(command, raw, exit_code),
+        _ if is_error(raw) => "critical".into(),
+        _ if is_success(raw) || raw.trim().is_empty() => "success".into(),
+        _ => "unknown".into(),
+    }
+}
+
+fn has_cargo_fmt_diff(raw: &str) -> bool {
+    raw.lines().any(|line| line.starts_with("Diff in "))
+}
+
+fn has_typescript_diagnostics(raw: &str) -> bool {
+    Regex::new(r"(?m)\berror\s+TS[0-9]+:")
+        .expect("valid TypeScript diagnostic regex")
+        .is_match(raw)
+}
+
+fn has_zero_test_failures(raw: &str) -> bool {
+    Regex::new(r"(?i)\b0\s+(?:failed|failures?|failing)\b")
+        .expect("valid zero test failures regex")
+        .is_match(raw)
+}
+
+fn has_nonzero_test_failures(raw: &str) -> bool {
+    Regex::new(r"(?i)\b[1-9][0-9]*\s+(?:failed|failures?|failing)\b")
+        .expect("valid nonzero test failures regex")
+        .is_match(raw)
+}
+
+fn has_nonzero_check_failures(raw: &str) -> bool {
+    let numeric_failure = Regex::new(
+        r"(?i)\b[1-9][0-9]*\s+(?:failed|failing|cancel(?:led|ed)|timed? out|action_required)\b",
+    )
+    .expect("valid nonzero check failures regex");
+    if numeric_failure.is_match(raw) {
+        return true;
+    }
+
+    let zero_failure =
+        Regex::new(r"(?i)\b0\s+(?:failed|failing)\b").expect("valid zero check failure regex");
+    let failure_marker =
+        Regex::new(r"(?i)\b(fail(?:ed|ing)?|error|cancel(?:led|ed)|timed? out|action_required)\b")
+            .expect("valid check failure marker regex");
+    raw.lines()
+        .any(|line| failure_marker.is_match(line) && !zero_failure.is_match(line))
+}
+
+fn has_hard_failure_marker(raw: &str) -> bool {
+    Regex::new(r"(?i)(panic|traceback|exception|fatal|denied|unauthori[sz]ed|forbidden|permission\s+denied|token\s+expired|assertion failed|not\s+successful|unsuccessful)")
+        .expect("valid hard failure regex")
+        .is_match(raw)
+}
+
+fn family_summary_candidate(
+    family: &str,
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> Option<String> {
+    match family {
+        "git_status" => Some(git_status_summary(cmd, code, raw, evidence, rr, risk)),
+        "git_diff" => Some(git_diff_summary(cmd, code, raw, evidence, rr, risk)),
+        "git_log" => Some(git_log_summary(cmd, code, raw, evidence, rr, risk)),
+        "gh_pr_checks" => Some(checks_summary(
+            "gh_pr_checks",
+            cmd,
+            code,
+            raw,
+            evidence,
+            rr,
+            risk,
+        )),
+        "cargo_test" | "pytest" | "npm_test" | "pnpm_test" | "yarn_test" | "go_test" => {
+            Some(test_summary(family, cmd, code, raw, evidence, rr, risk))
+        }
+        "cargo_clippy" | "cargo_build" | "cargo_check" => {
+            Some(build_summary(family, cmd, code, raw, evidence, rr, risk))
+        }
+        "cargo_fmt_check" => Some(cargo_fmt_summary(cmd, code, raw, evidence, rr, risk)),
+        "tsc_check" => Some(tsc_summary(cmd, code, raw, evidence, rr, risk)),
+        _ => None,
+    }
+}
+
+fn git_status_summary(
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> String {
+    let changed = git_status_changed_count(raw);
+    let branch = raw
+        .lines()
+        .find(|l| l.starts_with("On branch") || l.starts_with("##"))
+        .map(redact_public);
+    let state = if raw.trim().is_empty() || raw.contains("nothing to commit, working tree clean") {
+        "clean"
+    } else if risk == "critical" {
+        "blocked"
+    } else {
+        "dirty"
+    };
+    let mut lines = vec![format!(
+        "TFY command summary: {} family=git_status exit={code} cmd={cmd}",
+        risk.to_uppercase()
+    )];
+    lines.push(format!("- state={state} changed_paths={changed}"));
+    if let Some(branch) = branch {
+        lines.push(format!("- {branch}"));
+    }
+    lines.extend(evidence.iter().take(8).map(|e| format!("- {e}")));
+    lines.push(format!("raw_ref={rr}"));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn git_status_changed_count(raw: &str) -> String {
+    let porcelain = raw
+        .lines()
+        .filter(|line| is_porcelain_status_prefix(line.trim_start()))
+        .count();
+    if porcelain > 0 {
+        return porcelain.to_string();
+    }
+    let long_status = Regex::new(
+        r"(?i)^\s*(?:modified|new file|deleted|renamed|copied|both modified|both added|both deleted|unmerged):\s+",
+    )
+    .expect("valid long git status regex");
+    let long_count = raw
+        .lines()
+        .filter(|line| long_status.is_match(line))
+        .count();
+    if long_count > 0 {
+        long_count.to_string()
+    } else if raw.trim().is_empty() || raw.contains("nothing to commit, working tree clean") {
+        "0".into()
+    } else {
+        "unknown".into()
+    }
+}
+
+fn is_porcelain_status_prefix(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    bytes.len() >= 3
+        && bytes[2].is_ascii_whitespace()
+        && matches!(
+            (bytes[0], bytes[1]),
+            (b'M', b' ')
+                | (b' ', b'M')
+                | (b'A', b' ')
+                | (b' ', b'A')
+                | (b'D', b' ')
+                | (b' ', b'D')
+                | (b'R', b' ')
+                | (b' ', b'R')
+                | (b'C', b' ')
+                | (b' ', b'C')
+                | (b'?', b'?')
+                | (b'U', b'U')
+                | (b'A', b'A')
+                | (b'D', b'D')
+                | (b'A', b'U')
+                | (b'U', b'A')
+                | (b'D', b'U')
+                | (b'U', b'D')
+        )
+}
+
+fn git_diff_summary(
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> String {
+    let patch_files = raw.lines().filter(|l| l.starts_with("diff --git ")).count();
+    let stat_files = raw
+        .lines()
+        .filter(|l| {
+            let trimmed = l.trim();
+            let starts_with_digit = trimmed
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false);
+            trimmed.contains('|') && !starts_with_digit
+        })
+        .count();
+    let files = if patch_files > 0 {
+        patch_files.to_string()
+    } else if stat_files > 0 {
+        stat_files.to_string()
+    } else if raw.trim().is_empty() {
+        "0".into()
+    } else {
+        "unknown".into()
+    };
+    let hunk_count = raw.lines().filter(|l| l.starts_with("@@ ")).count();
+    let hunks = if hunk_count > 0 || raw.trim().is_empty() {
+        hunk_count.to_string()
+    } else {
+        "unknown".into()
+    };
+    let patch_adds = raw
+        .lines()
+        .filter(|l| l.starts_with('+') && !l.starts_with("+++ "))
+        .count();
+    let patch_dels = raw
+        .lines()
+        .filter(|l| l.starts_with('-') && !l.starts_with("--- "))
+        .count();
+    let stat_insertions = stat_summary_count(raw, "insertion");
+    let stat_deletions = stat_summary_count(raw, "deletion");
+    let adds = if patch_files > 0 {
+        patch_adds.to_string()
+    } else if let Some(insertions) = stat_insertions {
+        insertions.to_string()
+    } else if raw.trim().is_empty() {
+        "0".into()
+    } else {
+        "unknown".into()
+    };
+    let dels = if patch_files > 0 {
+        patch_dels.to_string()
+    } else if let Some(deletions) = stat_deletions {
+        deletions.to_string()
+    } else if raw.trim().is_empty() {
+        "0".into()
+    } else {
+        "unknown".into()
+    };
+    let mut lines = vec![format!(
+        "TFY command summary: {} family=git_diff exit={code} cmd={cmd}",
+        risk.to_uppercase()
+    )];
+    lines.push(format!(
+        "- files_changed={files} hunks={hunks} added_lines={adds} deleted_lines={dels}"
+    ));
+    lines.extend(evidence.iter().take(8).map(|e| format!("- {e}")));
+    lines.push(format!("raw_ref={rr}"));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn stat_summary_count(raw: &str, noun: &str) -> Option<usize> {
+    let pattern = format!(r"(?i)\b([0-9]+)\s+{}s?\b", regex::escape(noun));
+    let re = Regex::new(&pattern).expect("valid git stat count regex");
+    let total = raw
+        .lines()
+        .filter_map(|line| {
+            re.captures(line)
+                .and_then(|caps| caps[1].parse::<usize>().ok())
+        })
+        .sum::<usize>();
+    if total > 0 {
+        Some(total)
+    } else {
+        None
+    }
+}
+
+fn git_log_summary(
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> String {
+    let commit_count = raw
+        .lines()
+        .filter(|l| {
+            l.starts_with("commit ")
+                || Regex::new(r"^[0-9a-f]{7,}\b")
+                    .expect("valid log regex")
+                    .is_match(l.trim())
+        })
+        .count();
+    let commits = if commit_count > 0 || raw.trim().is_empty() {
+        commit_count.to_string()
+    } else {
+        "unknown".into()
+    };
+    let first = raw
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| cap(&redact_public(l)))
+        .unwrap_or_else(|| "no commits shown".into());
+    let mut lines = vec![format!(
+        "TFY command summary: {} family=git_log exit={code} cmd={cmd}",
+        risk.to_uppercase()
+    )];
+    lines.push(format!("- commits_shown={commits}"));
+    lines.push(format!("- first={first}"));
+    lines.extend(evidence.iter().take(5).map(|e| format!("- {e}")));
+    lines.push(format!("raw_ref={rr}"));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn checks_summary(
+    family: &str,
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> String {
+    let passed = Regex::new(r"(?i)\b(pass(?:ed|ing)?|success)\b")
+        .expect("valid checks pass regex")
+        .find_iter(raw)
+        .count();
+    let failed =
+        Regex::new(r"(?i)\b(fail(?:ed|ing)?|error|cancel(?:led|ed)|timed? out|action_required)\b")
+            .expect("valid checks fail regex")
+            .find_iter(raw)
+            .count();
+    let mut lines = vec![format!(
+        "TFY command summary: {} family={family} exit={code} cmd={cmd}",
+        risk.to_uppercase()
+    )];
+    lines.push(format!(
+        "- checks_pass_like={passed} checks_fail_like={failed}"
+    ));
+    lines.extend(evidence.iter().take(10).map(|e| format!("- {e}")));
+    lines.push(format!("raw_ref={rr}"));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn test_summary(
+    family: &str,
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> String {
+    let tests = Regex::new(r"(?i)(\d+)\s+(?:tests?|passed)")
+        .expect("valid test count regex")
+        .captures_iter(raw)
+        .filter_map(|c| c.get(1).and_then(|m| m.as_str().parse::<usize>().ok()))
+        .max()
+        .unwrap_or(0);
+    let failures = Regex::new(r"(?i)(\d+)\s+(?:failed|failures?)")
+        .expect("valid failure count regex")
+        .captures_iter(raw)
+        .filter_map(|c| c.get(1).and_then(|m| m.as_str().parse::<usize>().ok()))
+        .max()
+        .unwrap_or_else(|| if risk == "critical" { 1 } else { 0 });
+    let failed_names = collect_lines(
+        raw,
+        r"(?i)(FAILED|failures:|---- .+ stdout|panic|assert|expected|got|left:|right:|Traceback|Error:)",
+        10,
+    );
+    let mut lines = vec![format!(
+        "TFY command summary: {} family={family} exit={code} cmd={cmd}",
+        risk.to_uppercase()
+    )];
+    lines.push(format!(
+        "- tests_observed={tests} failures_observed={failures}"
+    ));
+    lines.extend(failed_names.into_iter().map(|x| format!("- {x}")));
+    if risk != "success" {
+        lines.extend(evidence.iter().take(8).map(|e| format!("- evidence: {e}")));
+    }
+    lines.push(format!("raw_ref={rr}"));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn build_summary(
+    family: &str,
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> String {
+    let warnings = Regex::new(r"(?i)\bwarning[: ]")
+        .expect("valid warning regex")
+        .find_iter(raw)
+        .count();
+    let errors = Regex::new(r"(?i)\berror(?:\[|:|s?\b)")
+        .expect("valid error regex")
+        .find_iter(raw)
+        .count();
+    let finished = raw
+        .lines()
+        .find(|l| l.contains("Finished ") || l.contains("Checking ") || l.contains("Compiling "))
+        .map(|l| cap(&redact_public(l)))
+        .unwrap_or_else(|| "build output summarized".into());
+    let mut lines = vec![format!(
+        "TFY command summary: {} family={family} exit={code} cmd={cmd}",
+        risk.to_uppercase()
+    )];
+    lines.push(format!("- warnings={warnings} errors={errors}"));
+    lines.push(format!("- {finished}"));
+    lines.extend(evidence.iter().take(10).map(|e| format!("- evidence: {e}")));
+    lines.push(format!("raw_ref={rr}"));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn cargo_fmt_summary(
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> String {
+    let diff_count = raw
+        .lines()
+        .filter(|line| line.starts_with("Diff in "))
+        .count();
+    let diffs = if diff_count > 0 || raw.trim().is_empty() {
+        diff_count.to_string()
+    } else {
+        "unknown".into()
+    };
+    let diff_lines = collect_lines(raw, r"(?i)(^Diff in |rustfmt|formatted|formatting)", 10);
+    let mut lines = vec![format!(
+        "TFY command summary: {} family=cargo_fmt_check exit={code} cmd={cmd}",
+        risk.to_uppercase()
+    )];
+    lines.push(format!("- format_diffs={diffs}"));
+    lines.extend(diff_lines.into_iter().map(|x| format!("- {x}")));
+    if risk != "success" {
+        lines.extend(evidence.iter().take(8).map(|e| format!("- evidence: {e}")));
+    }
+    lines.push(format!("raw_ref={rr}"));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn tsc_summary(
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> String {
+    let diagnostics_count = Regex::new(r"(?m)\berror\s+TS[0-9]+:")
+        .expect("valid TypeScript diagnostic count regex")
+        .find_iter(raw)
+        .count();
+    let diagnostics = if diagnostics_count > 0 || raw.trim().is_empty() {
+        diagnostics_count.to_string()
+    } else {
+        "unknown".into()
+    };
+    let type_errors = collect_lines(raw, r"(?i)(error TS[0-9]+:|Found [0-9]+ errors?)", 10);
+    let mut lines = vec![format!(
+        "TFY command summary: {} family=tsc_check exit={code} cmd={cmd}",
+        risk.to_uppercase()
+    )];
+    lines.push(format!("- diagnostics={diagnostics}"));
+    lines.extend(type_errors.into_iter().map(|x| format!("- {x}")));
+    if risk != "success" {
+        lines.extend(evidence.iter().take(8).map(|e| format!("- evidence: {e}")));
+    }
+    lines.push(format!("raw_ref={rr}"));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn collect_lines(raw: &str, pattern: &str, limit: usize) -> Vec<String> {
+    let re = Regex::new(pattern).expect("valid collect regex");
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let line = redact_public(line);
+        if re.is_match(&line) {
+            push(&mut out, cap(&norm(&line)));
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+fn redact_public(text: &str) -> String {
+    redact_secret_like(&GitGithubToolPolicy::new().redact_for_summary(text))
+}
+
+fn redact_secret_like(text: &str) -> String {
+    let assignment = Regex::new(
+        r"(?i)\b([A-Z0-9_.-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token|secret|password))\s*([:=])\s*[A-Za-z0-9._~+/=-]{6,}",
+    )
+    .expect("valid secret assignment regex");
+    let bearer =
+        Regex::new(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}").expect("valid bearer secret regex");
+    let text = assignment.replace_all(text, "$1$2[REDACTED]");
+    bearer.replace_all(&text, "$1 [REDACTED]").to_string()
+}
+
+fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let stop = rest.find(['?', '#']).unwrap_or(rest.len());
+    let no_query = &rest[..stop];
+    let (authority, path) = match no_query.find('/') {
+        Some(idx) => (&no_query[..idx], &no_query[idx..]),
+        None => (no_query, ""),
+    };
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = match host_port.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            format!("{host}:{port}")
+        }
+        Some((host, _)) => host.to_string(),
+        None => host_port.to_string(),
+    };
+    format!("{scheme}://{host}{path}")
+}
+
 fn is_error(raw: &str) -> bool {
-    Regex::new(r"(?i)(error|failed|failure|panic|traceback|exception|fatal|denied|not found|cannot|E\d{3,}|FAIL)").expect("valid error regex").is_match(raw)
+    Regex::new(r"(?i)(error|failed|failure|panic|traceback|exception|fatal|denied|not found|cannot|E\d{3,}|✗|FAIL|not\s+successful|unsuccessful|failing|cancel(?:led|ed)|timed?\s+out|action_required|expired|unauthori[sz]ed|forbidden|token\s+expired|authentication|permission\s+denied)")
+        .expect("valid error regex")
+        .is_match(raw)
 }
 fn is_success(raw: &str) -> bool {
-    Regex::new(
-        r"(?i)(success|passed|ok|done|clean|up.to.date|nothing to commit|no changes|0 failures?)",
+    let success = Regex::new(
+        r"(?i)(\bpassed\b|\bok\b|\bdone\b|\bclean\b|up[ -]?to[ -]?date|nothing to commit|no changes|0 failures?|all checks passed|checks? passed|successful)",
     )
-    .expect("valid success regex")
-    .is_match(raw)
+    .expect("valid success regex");
+    success.is_match(raw)
 }
 fn evidence(raw: &str) -> Vec<String> {
-    let err = Regex::new(r"(?i)(error|failed|failure|panic|traceback|exception|fatal|denied|not found|cannot|E\d{3,}|FAIL)").expect("valid error regex");
+    let err = Regex::new(r"(?i)(error|failed|failure|panic|traceback|exception|fatal|denied|not found|cannot|E\d{3,}|✗|FAIL|not\s+successful|unsuccessful|failing|cancel(?:led|ed)|timed?\s+out|action_required|expired|unauthori[sz]ed|forbidden|token\s+expired|authentication|permission\s+denied)").expect("valid error regex");
     let file = Regex::new(r"[\w./-]+\.(?:py|rs|js|ts|tsx|jsx|go|java|c|cpp|h|hpp|md)(?::\d+)?")
         .expect("valid file reference regex");
     let mut errors = Vec::new();
     let mut files = Vec::new();
     for line in raw.lines() {
-        let em = err.find(line);
-        let fm = file.find(line);
+        let line = redact_public(line);
+        let em = err.find(&line);
+        let fm = file.find(&line);
         match (em, fm) {
-            (Some(e), Some(f)) => push(&mut errors, excerpt_multi(line, &[f, e])),
-            (Some(e), None) => push(&mut errors, excerpt(line, e.start(), e.end())),
-            (None, Some(f)) => push(&mut files, excerpt(line, f.start(), f.end())),
+            (Some(e), Some(f)) => push(&mut errors, excerpt_multi(&line, &[f, e])),
+            (Some(e), None) => push(&mut errors, excerpt(&line, e.start(), e.end())),
+            (None, Some(f)) => push(&mut files, excerpt(&line, f.start(), f.end())),
             _ => {}
         }
     }
@@ -246,8 +1378,8 @@ fn excerpt(line: &str, start: usize, end: usize) -> String {
         return norm(line);
     }
     let ctx = ((limit - (end - start).min(limit)) / 2).max(20);
-    let s = start.saturating_sub(ctx);
-    let e = (end + ctx).min(line.len());
+    let s = floor_char_boundary(line, start.saturating_sub(ctx));
+    let e = ceil_char_boundary(line, (end + ctx).min(line.len()));
     let mut out = String::new();
     if s > 0 {
         out.push('…')
@@ -258,6 +1390,23 @@ fn excerpt(line: &str, start: usize, end: usize) -> String {
     }
     norm(&out)
 }
+
+fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+    idx = idx.min(s.len());
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
+    idx = idx.min(s.len());
+    while idx < s.len() && !s.is_char_boundary(idx) {
+        idx += 1;
+    }
+    idx
+}
+
 fn norm(s: &str) -> String {
     Regex::new(r"\s+")
         .expect("valid whitespace regex")
@@ -266,12 +1415,19 @@ fn norm(s: &str) -> String {
         .to_string()
 }
 fn cap(s: &str) -> String {
-    if s.len() <= 240 {
-        s.into()
-    } else {
-        format!("{}…[tfy: line capped]", &s[..240])
+    const LIMIT: usize = 240;
+    if s.len() <= LIMIT {
+        return s.into();
     }
+    let end = s
+        .char_indices()
+        .map(|(idx, _)| idx)
+        .take_while(|idx| *idx <= LIMIT)
+        .last()
+        .unwrap_or(0);
+    format!("{}…[tfy: line capped]", &s[..end])
 }
+
 fn critical(cmd: &str, code: i32, e: &[String], rr: &str) -> String {
     let body = if e.is_empty() {
         "- critical output present; request raw for details".into()
@@ -283,21 +1439,27 @@ fn critical(cmd: &str, code: i32, e: &[String], rr: &str) -> String {
     };
     format!("TFY command summary: CRITICAL exit={code} cmd={cmd}\n{body}\nraw_ref={rr}\n")
 }
+
 fn success(cmd: &str, code: i32, raw: &str, rr: &str) -> String {
     let first = raw
         .lines()
         .find(|l| !l.trim().is_empty())
         .unwrap_or("no output");
+    let first = redact_public(first);
     format!(
         "TFY command summary: SUCCESS exit={code} cmd={cmd}; {}; raw_ref={rr}\n",
-        cap(first)
+        cap(&first)
     )
 }
+
 fn unknown(cmd: &str, code: i32, raw: &str, e: &[String], rr: &str) -> String {
     let lines: Vec<_> = raw
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| cap(&norm(l)))
+        .map(|l| {
+            let normalized = norm(l);
+            cap(&redact_public(&normalized))
+        })
         .collect();
     let mut selected = lines.iter().take(5).cloned().collect::<Vec<_>>();
     if lines.len() > 8 {
@@ -321,6 +1483,24 @@ fn unknown(cmd: &str, code: i32, raw: &str, e: &[String], rr: &str) -> String {
     };
     format!("TFY command summary: UNKNOWN exit={code} cmd={cmd}\n{body}\nraw_ref={rr}\n")
 }
+
+fn cap_summary_preserving_raw_ref(
+    summary: String,
+    raw_ref: &str,
+    max_summary_bytes: Option<usize>,
+) -> String {
+    let Some(limit) = max_summary_bytes else {
+        return summary;
+    };
+    if summary.len() <= limit {
+        return summary;
+    }
+    let suffix = format!("\n…\nraw_ref={raw_ref}\n");
+    let prefix_limit = limit.saturating_sub(suffix.len());
+    let end = floor_char_boundary(&summary, prefix_limit);
+    format!("{}{}", &summary[..end], suffix)
+}
+
 fn now_ns() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -1,23 +1,16 @@
 [package]
-name = "tfy-cli"
+name = "tfy-runtime"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "tfy"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
-clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
-tfy-core = { path = "../tfy-core" }
-tfy-runtime = { path = "../tfy-runtime" }
+thiserror.workspace = true
+time.workspace = true
 
 [dev-dependencies]
-sha2.workspace = true
 tempfile.workspace = true

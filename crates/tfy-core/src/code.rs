@@ -3,8 +3,10 @@ use crate::protocol::*;
 use anyhow::{anyhow, bail, Context, Result};
 use once_cell::sync::Lazy;
 use regex::Regex;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Parser};
 
@@ -21,6 +23,75 @@ struct ScopeInternal {
     info: ScopeInfo,
     start: usize,
     end: usize,
+}
+
+fn sha256_hex(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+fn compact_context_ref(
+    path: &str,
+    byte_start: usize,
+    byte_end: usize,
+    source_sha256: &str,
+    compactness: &str,
+    compact: &str,
+) -> String {
+    let digest = sha256_hex(&format!(
+        "{}:{}:{}:{}:{}:{}",
+        path, byte_start, byte_end, source_sha256, compactness, compact
+    ));
+    format!("tfy_{}", &digest[..16])
+}
+
+fn proof_context_ref(
+    scope: &ScopeInternal,
+    source_slice: &str,
+    compactness: &str,
+    compact: &str,
+) -> String {
+    compact_context_ref(
+        &scope.info.path,
+        scope.start,
+        scope.end,
+        &sha256_hex(source_slice),
+        compactness,
+        compact,
+    )
+}
+
+fn symbol_map_sha256(symbols: &BTreeMap<String, String>) -> String {
+    let canonical = serde_json::to_string(symbols).expect("BTreeMap symbol map serializes");
+    sha256_hex(&canonical)
+}
+
+fn build_apply_proof(
+    scope: &ScopeInternal,
+    full_source: &str,
+    selected_source: &str,
+    compactness: &str,
+    compact: &str,
+    symbols: &BTreeMap<String, String>,
+) -> ApplyProof {
+    ApplyProof {
+        path: scope.info.path.clone(),
+        scope_id: scope.info.id.clone(),
+        language: scope.info.language.clone(),
+        byte_start: scope.start,
+        byte_end: scope.end,
+        start_line: scope.info.start_line,
+        end_line: scope.info.end_line,
+        source_sha256: sha256_hex(selected_source),
+        symbol_map_sha256: symbol_map_sha256(symbols),
+        compact_code_sha256: sha256_hex(compact),
+        file_sha256: sha256_hex(full_source),
+        file_len: full_source.len(),
+        compactness: compactness.to_string(),
+        context_ref: proof_context_ref(scope, selected_source, compactness, compact),
+        parser: scope.info.parser.clone(),
+        confidence: scope.info.confidence.clone(),
+        fallback_action: scope.info.fallback_action.clone(),
+    }
 }
 
 pub fn index_path(path: impl AsRef<Path>) -> Result<IndexResponse> {
@@ -78,12 +149,14 @@ pub fn expand_scope(
     } else {
         ((raw_chars as f64 - compact_chars as f64) / raw_chars as f64 * 10000.0).round() / 100.0
     };
+    let apply_proof = build_apply_proof(&scope, &source, code, &compactness, &compact, &symbols);
     Ok(ExpandResponse {
         parser: scope.info.parser.clone(),
         confidence: scope.info.confidence.clone(),
         fallback_action: scope.info.fallback_action.clone(),
         reason: scope.info.reason.clone(),
         scope: scope.info.clone(),
+        apply_proof: Some(apply_proof),
         compactness,
         compact_code: compact,
         symbol_map: SymbolMap::new(scope.info.id.clone(), symbols),
@@ -179,6 +252,283 @@ pub fn restore_payload(payload: RestorePayload) -> Result<RestoreResponse> {
         scope_id,
         restored_code: format!("{}\n", restored.trim()),
     })
+}
+
+pub fn restore_display_payload(payload: RestorePayload) -> Result<RestoreDisplayResponse> {
+    let restored = restore_payload(payload)?;
+    let (display_code, warning) = readable_display_code(&restored.restored_code);
+    Ok(RestoreDisplayResponse {
+        scope_id: restored.scope_id,
+        restored_code: restored.restored_code,
+        display_code,
+        display_only: true,
+        authority: "display_only_not_apply_authority".into(),
+        warning,
+    })
+}
+
+pub fn restore_file_payload(payload: RestorePayload) -> Result<RestoreFileResponse> {
+    let restored = restore_payload(payload.clone())?;
+    let (file_code, warning) = readable_display_code(&restored.restored_code);
+    let audit_symbols = payload
+        .symbol_map
+        .as_ref()
+        .map(|m| &m.symbols)
+        .or(payload.symbols.as_ref());
+    Ok(RestoreFileResponse {
+        scope_id: restored.scope_id,
+        restored_code: restored.restored_code,
+        file_code: file_code.clone(),
+        canonical_for: "file_write_and_user_display".into(),
+        compact_transport_only: true,
+        symbol_audit_hash: format!(
+            "sha256:{:x}",
+            Sha256::digest(
+                serde_json::to_string(&audit_symbols)
+                    .unwrap_or_default()
+                    .as_bytes()
+            )
+        ),
+        warning,
+    })
+}
+
+pub fn restore_patch_payload(payload: RestorePayload) -> Result<RestoreFileResponse> {
+    restore_file_payload(payload)
+}
+
+fn readable_display_code(code: &str) -> (String, Option<String>) {
+    let trimmed = code.trim();
+    if trimmed.is_empty() {
+        return ("\n".into(), Some("restored code is empty".into()));
+    }
+    if trimmed.contains('\n') && !trimmed.lines().any(|line| line.len() > 160) {
+        return (format!("{}\n", trimmed), None);
+    }
+    let mut out = String::new();
+    let mut indent = 0usize;
+    let mut in_string: Option<char> = None;
+    let mut escape = false;
+    let write_indent = |out: &mut String, indent: usize| {
+        for _ in 0..indent {
+            out.push_str("  ");
+        }
+    };
+    for ch in trimmed.chars() {
+        if let Some(quote) = in_string {
+            out.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == quote {
+                in_string = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' | '`' => {
+                in_string = Some(ch);
+                out.push(ch);
+            }
+            '{' | '[' | '(' => {
+                out.push(ch);
+                out.push('\n');
+                indent += 1;
+                write_indent(&mut out, indent);
+            }
+            '}' | ']' | ')' => {
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                indent = indent.saturating_sub(1);
+                write_indent(&mut out, indent);
+                out.push(ch);
+            }
+            ';' => {
+                out.push(';');
+                out.push('\n');
+                write_indent(&mut out, indent);
+            }
+            ',' => {
+                out.push(',');
+                if indent > 0 {
+                    out.push('\n');
+                    write_indent(&mut out, indent);
+                } else {
+                    out.push(' ');
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    let display = out
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    (format!("{}\n", display.trim()), None)
+}
+
+pub fn apply_restored_payload(
+    payload: RestorePayload,
+    proof_override: Option<ApplyProof>,
+) -> Result<ApplyResult> {
+    let proof = match (payload.apply_proof.clone(), proof_override) {
+        (Some(_), Some(_)) => bail!("output-gateway apply requires exactly one apply proof source"),
+        (Some(proof), None) | (None, Some(proof)) => proof,
+        (None, None) => bail!("output-gateway apply requires content-addressed apply proof"),
+    };
+    if proof.path.is_empty() || proof.scope_id.is_empty() || proof.context_ref.is_empty() {
+        bail!("apply proof is missing required identity fields");
+    }
+    if proof.byte_start >= proof.byte_end {
+        bail!("apply proof has invalid byte range");
+    }
+    if matches!(proof.confidence, Confidence::Low)
+        || matches!(proof.fallback_action, FallbackAction::Full)
+    {
+        bail!("apply proof is not authoritative for workspace writes");
+    }
+    let payload_scope_id = payload
+        .scope_id
+        .clone()
+        .or_else(|| payload.scope.as_ref().map(|s| s.id.clone()))
+        .unwrap_or_else(|| proof.scope_id.clone());
+    if payload_scope_id != proof.scope_id {
+        bail!("restore payload scope does not match apply proof");
+    }
+    let compactness = payload
+        .compactness
+        .clone()
+        .unwrap_or_else(|| proof.compactness.clone());
+    if compactness != proof.compactness {
+        bail!("restore payload compactness does not match apply proof");
+    }
+    let language = payload
+        .language
+        .clone()
+        .or_else(|| payload.scope.as_ref().map(|s| s.language.clone()))
+        .unwrap_or_else(|| proof.language.clone());
+    if language != proof.language {
+        bail!("restore payload language does not match apply proof");
+    }
+    if proof.compactness == "symbol" {
+        let Some(symbol_map) = payload.symbol_map.as_ref() else {
+            bail!("symbol-mode apply requires a scoped symbol map");
+        };
+        if symbol_map.scope_id != proof.scope_id {
+            bail!("restore payload symbol map does not match apply proof scope");
+        }
+        if symbol_map_sha256(&symbol_map.symbols) != proof.symbol_map_sha256 {
+            bail!("restore payload symbol map does not match apply proof content");
+        }
+        if payload.symbols.is_some() || payload.reverse.is_some() {
+            bail!("symbol-mode apply requires exactly one scoped symbol_map authority");
+        }
+    }
+    let Some(payload_context_ref) = payload.context_ref.as_ref() else {
+        bail!("apply payload requires source context_ref matching apply proof");
+    };
+    if payload_context_ref != &proof.context_ref {
+        bail!("apply payload context_ref does not match apply proof");
+    }
+    let Some(base_compact_code) = payload.base_compact_code.as_ref() else {
+        bail!("apply payload requires base_compact_code matching apply proof");
+    };
+    let base_compact_sha256 = sha256_hex(base_compact_code);
+    if base_compact_sha256 != proof.compact_code_sha256 {
+        bail!("apply payload base compact code does not match apply proof");
+    }
+    let expected_context_ref = compact_context_ref(
+        &proof.path,
+        proof.byte_start,
+        proof.byte_end,
+        &proof.source_sha256,
+        &proof.compactness,
+        base_compact_code,
+    );
+    if expected_context_ref != proof.context_ref {
+        bail!("apply proof context_ref does not match base compact context");
+    }
+    let restored = restore_payload(payload)?;
+    if restored.restored_code.trim().is_empty() {
+        bail!("empty restored code is not applied; deletion semantics are not implemented");
+    }
+    let path = Path::new(&proof.path);
+    let current = fs::read_to_string(path)
+        .with_context(|| format!("read apply target {}", path.display()))?;
+    if proof.byte_end > current.len()
+        || !current.is_char_boundary(proof.byte_start)
+        || !current.is_char_boundary(proof.byte_end)
+    {
+        bail!("apply proof byte range is stale or invalid");
+    }
+    let selected = current
+        .get(proof.byte_start..proof.byte_end)
+        .ok_or_else(|| anyhow!("apply proof byte range is not valid utf-8 boundary"))?;
+    if sha256_hex(selected) != proof.source_sha256 {
+        bail!("apply proof source hash is stale");
+    }
+    // Whole-file hash/length in ApplyProof are supplemental stale signals.
+    // The authoritative write gate is the captured byte range plus selected-source hash.
+    let lang = LanguageKind::from_path(path);
+    ensure_supported_parse(&current, lang, "current file")?;
+    let mut next =
+        String::with_capacity(current.len() - selected.len() + restored.restored_code.len());
+    next.push_str(&current[..proof.byte_start]);
+    next.push_str(&restored.restored_code);
+    next.push_str(&current[proof.byte_end..]);
+    ensure_supported_parse(&next, lang, "restored file")?;
+
+    let before_sha256 = sha256_hex(&current);
+    let after_sha256 = sha256_hex(&next);
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("read apply target metadata {}", path.display()))?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("create temp file in {}", parent.display()))?;
+    tmp.write_all(next.as_bytes())?;
+    tmp.flush()?;
+    tmp.as_file_mut().sync_all()?;
+    fs::set_permissions(tmp.path(), metadata.permissions())
+        .with_context(|| format!("preserve permissions for {}", path.display()))?;
+    tmp.persist(path)
+        .map_err(|e| anyhow!("persist apply target {}: {}", path.display(), e.error))?;
+    let restored_len = restored.restored_code.len();
+    let patch_ref = format!("tfy_{}", &sha256_hex(&restored.restored_code)[..16]);
+    Ok(ApplyResult {
+        scope_id: proof.scope_id,
+        path: proof.path,
+        restored_code: restored.restored_code,
+        applied: true,
+        byte_start: proof.byte_start,
+        byte_end: proof.byte_start + restored_len,
+        before_sha256,
+        after_sha256,
+        patch_ref,
+        context_ref: proof.context_ref,
+    })
+}
+
+fn ensure_supported_parse(source: &str, lang: LanguageKind, label: &str) -> Result<()> {
+    let Some(ts_lang) = lang.tree_sitter() else {
+        bail!("{label} uses unsupported language for authoritative apply");
+    };
+    let mut parser = Parser::new();
+    parser
+        .set_language(&ts_lang)
+        .context("set tree-sitter language")?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| anyhow!("parse failed"))?;
+    if tree.root_node().has_error() {
+        bail!("{label} does not parse cleanly after apply");
+    }
+    Ok(())
 }
 
 fn aggregate_meta(scopes: &[ScopeInternal], root: &Path) -> ParserMetadata {
@@ -352,6 +702,8 @@ fn file_scope_with_meta(
             language: lang.name().into(),
             start_line: 1,
             end_line: line_for_byte(text, text.len()),
+            byte_start: 0,
+            byte_end: text.len(),
             kind: "file".into(),
             parser: meta.parser,
             confidence: meta.confidence,
@@ -392,6 +744,8 @@ fn collect_scopes(node: Node, ctx: &ScopeWalkCtx<'_>, out: &mut Vec<ScopeInterna
                     language: ctx.lang.name().into(),
                     start_line: line,
                     end_line: node.end_position().row + 1,
+                    byte_start: start,
+                    byte_end: end,
                     kind: node.kind().into(),
                     parser: scope_meta.parser,
                     confidence: scope_meta.confidence,

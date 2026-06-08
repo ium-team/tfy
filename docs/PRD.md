@@ -1,207 +1,147 @@
-# PRD: TFY Standalone Product Definition
+# PRD: TFY Whole-Workflow Token-Saving Service
 
 ## Goal
 
-Build TFY as an independent token-efficient AI work interface.
+Build TFY as a release-ready token-saving service for AI coding work. TFY should reduce tokens across the full loop: code, docs, tool feedback, CI, Git/GitHub work, task state, patches, repeated provider context, and audit recovery.
 
-TFY should reduce tokens across:
+The product is documented as the final architecture now. Future methods are expected and are added through the method registry.
 
-1. code context
-2. AI code output
-3. command/tool feedback
-4. raw/full context expansion
-5. human-readable restoration
+## Product requirements
 
-The target is not a throwaway MVP. The first public shape should be planned as a release-grade product surface with measurable savings, correctness safeguards, raw fallback, and agent-tool compatibility from the beginning.
+### Whole-workflow coverage
 
-## Product Constraints
+TFY must support token-saving methods for:
 
-- **Independent identity:** TFY may study RTK, especially for command-output filtering, but the TFY product boundary is wider than RTK and must not be described as an RTK fork.
-- **Broad language support:** TFY should aim for as many programming languages as practical by using parser/indexer abstractions and language adapters rather than a single-language-only design.
-- **Agent-tool compatibility:** TFY should work regardless of which AI coding agent/tool the user runs. The interface should expose compact context, expansion requests, compact patches, command summaries, and raw refs in a tool-neutral way.
-- **No AI guessing for restoration:** symbol maps, name restoration, and formatting are deterministic TFY responsibilities.
-- **Safety over savings:** if compact context risks hiding needed code or important command output, TFY expands context/raw output.
+- source code and symbols
+- project documentation and planning context
+- command/tool output
+- test/CI/Git/GitHub evidence
+- AI patch/output representation
+- conversation/task state
+- repeated provider/model context through optional adapters
+- raw/full fallback and audit recovery
 
-## In Scope
+### Method registry
 
-- semantic name index
-- compact code representation
-- deterministic scope-aware 1:1 symbol maps
-- on-demand code expansion
-- compact AI output / patch format
-- readable code restoration
-- risk-aware command output compression
-- raw command output references and expansion
-- token savings evaluation
-- AI performance degradation evaluation
+Every method must declare:
 
-## Out of Scope
+- target artifact type
+- mechanism
+- prerequisites
+- core vs optional-adapter status
+- savings metric
+- performance cost
+- correctness/evidence risk
+- fallback trigger
+- validation gate
 
-- Becoming a direct RTK fork/clone as the whole product identity.
-- Using AI to guess symbol maps or restoration.
-- Hiding important errors just to save tokens.
-- Assuming compact context is always enough.
+### Agent-neutral protocol
 
-## Product Modes
+TFY core must work through CLI/text surfaces that any agent can call. The default model-facing surface is plain text chosen by net-savings policy; JSON/envelopes are explicit debug/adapter/internal surfaces and must not be required for correctness.
 
-### Code Context Mode
+### Safety and recovery
 
-AI receives semantic names first, then selected compact code and maps.
+TFY must preserve raw/full or deterministic recovery for high-risk artifacts and outputs. It must not hide decision-critical evidence to save tokens.
 
-### Tool Feedback Mode
+### Evaluation
 
-AI receives compressed command feedback first, then raw output on demand.
+Release claims must report net token savings, correctness against baseline, fallback frequency, missed-needed-context failures, missed-evidence failures, restoration/audit success, and local overhead.
 
-### Safe Fallback Mode
+Command raw refs are opaque append-only local evidence handles, not stable content-addressed IDs.
 
-TFY provides full code context or raw output when ambiguity/risk is high.
+## Initial method registry
 
-## RALPLAN-DR Summary
+This is not a loose feature list. It is the first compact registry view; the full schema is defined in `TOKEN_SAVING_ARCHITECTURE.md`. Each row states target, status, main mechanism, and release gate.
 
-### Principles
+| Method | Target | Status | Mechanism | Release gate |
+|---|---|---|---|---|
+| semantic index and skeletons | code/docs | core | structure before body text | skeleton vs full baseline |
+| compact code and symbol maps | code | core | safe shortening + deterministic maps | roundtrip + task baseline |
+| content-addressed artifact refs | repeated non-command artifacts | core | hash/ref instead of repeated content | ref recovery test |
+| incremental deltas | artifact state | core | changed artifacts only | snapshot replay |
+| compact schemas | machine payloads | core | short keys with debug schema | decode/roundtrip test |
+| dependency-neighborhood slicing | code context | core | graph/locality-selected context | missed-context eval |
+| patch/edit-script outputs | AI output | core | structured edits instead of full files | patch restore/diff test |
+| boilerplate/generated suppression | repo artifacts | core | metadata/fingerprint for repeated regions | classifier + expansion eval |
+| task-state compaction | conversation/workflow | core | ledger instead of raw transcript | transcript-vs-ledger audit |
+| risk-aware tool feedback | command output | core | raw local store + redacted pass-through or shorter summary | fixture + raw recovery |
+| output fingerprinting | repeated commands | core | status/hash/ref for unchanged output | repeat-output replay |
+| error clustering | diagnostics | core | group duplicate failures | representative + raw refs |
+| retrieval budget planner | context selection | core | cheapest safe ladder level | full-context comparison |
+| adaptive compactness | all representations | core | risk-based light/symbol/skeleton/full | compactness A/B eval |
+| local memoization | parser/hash/eval work | core | reuse validated cache | invalidation test |
+| Test/CI selective evidence | verification output | specialized-core | preserve failures, elide passing noise | CI fixture replay |
+| redaction with local refs | sensitive/long values | specialized-core | placeholder/ref for recoverable redaction | redaction recovery test |
+| provider cache layouts | provider prompts | optional-adapter | stable prefix/cache-aware layout | neutral parity + usage evidence |
 
-1. Reduce tokens without hiding decision-critical evidence.
-2. Keep semantic meaning recoverable through deterministic, scope-aware maps.
-3. Prefer names-first and summaries-first context before body/raw expansion.
-4. Stay tool-neutral and language-adapter-friendly.
-5. Preserve TFY's broader identity instead of collapsing into RTK-like command filtering.
+## Non-goals
 
-### Decision Drivers
+- Do not require a single AI vendor or agent runtime.
+- Do not treat provider cache behavior as core correctness.
+- Do not accept irreversible lossy transforms where audit/restoration matters.
+- Do not hide errors, review blockers, dirty repo state, or failed checks.
+- Do not claim a method is release-ready without evaluation evidence.
+- Do not frame TFY as only code minification, only command-output filtering, or a phased roadmap.
 
-1. **Net token savings:** savings must remain positive after map/context/raw expansions.
-2. **Correctness retention:** AI task success must not degrade beyond an explicit measured threshold.
-3. **Recoverability:** every compact artifact must have a deterministic path back to readable code or raw evidence.
+## Acceptance criteria
 
-### Viable Options
-
-#### Option A: TFY as a full AI work-context protocol
-
-- Pros: covers code input, code output, tool feedback, restoration, and evaluation in one product identity.
-- Cons: larger architecture and more surfaces to validate.
-
-#### Option B: TFY as command-output compression first
-
-- Pros: easier to ground from RTK and easier to ship quickly.
-- Cons: contradicts the user's broader idea and risks becoming an RTK clone.
-
-#### Option C: TFY as code-minifier/restorer only
-
-- Pros: focuses on the novel compact-code idea.
-- Cons: misses command/tool token waste and agent workflow integration.
-
-#### Option D: Names-first selective context with lightly compacted readable bodies
-
-- Pros: less AI comprehension loss than aggressive `f1/a/b` symbol shortening; easier debugging and early validation.
-- Cons: lower token savings than the user's more aggressive compact-code proposal.
-
-Chosen direction: **Option A**, while using Option B/RTK as a reference lane for the tool feedback subsystem and Option C as the code representation subsystem.
-
-Within Option A, TFY should support multiple compactness levels:
-
-1. **Light compact:** preserve readable names where useful, remove only obvious formatting/noise.
-2. **Symbol compact:** use short symbols such as `f1`, `a`, `b` with deterministic maps.
-3. **Fallback/full:** restore readable names or provide full context when comprehension risk rises.
-
-## Acceptance Criteria
-
-- TFY can represent code in compact form.
-- TFY can provide original semantic names via index/map.
-- TFY can restore compact output to readable code.
-- TFY can compress command output by risk tier.
-- TFY can expose raw command output by reference.
-- TFY can measure token savings and correctness impact.
-- TFY clearly remains independent from RTK while using RTK as a reference for command-output compression.
-- TFY documents release-grade expectations rather than an MVP-only shortcut.
-- TFY documents broad language and agent-tool compatibility as first-class constraints.
-
-## Risk Mitigation
-
-### Token Savings vs AI Performance Degradation
-
-- Measure net token savings after symbol maps, requested expansions, and raw output requests.
-- Compare AI task success against a full-context baseline for the same tasks.
-- Treat savings as invalid if compact mode causes unacceptable correctness degradation, even when token counts improve.
-- Allow policy tuning by compactness level: light compact -> symbol compact -> fallback/full.
-
-### Missing Needed Code
-
-Fallback triggers:
-
-- AI asks for symbols/scopes not present in current compact body.
-- Patch touches unresolved identifiers or external call sites.
-- Static analysis/test failure points outside selected scopes.
-- The selected function depends on non-local state, side effects, inheritance, macros, generated code, or dynamic dispatch.
-
-Mitigation:
-
-- expand related neighborhood first
-- then expand file/module
-- then provide full context when ambiguity remains
-
-### Missed Command Error
-
-Fallback/raw expansion triggers:
-
-- non-zero exit code
-- stderr content
-- stack traces, test failures, compiler diagnostics, file/line references
-- unknown command family or unknown output format
-- summary confidence below policy threshold
-
-Mitigation:
-
-- preserve actionable error evidence in the compact view
-- keep `raw_ref` for every command output
-- allow full raw or range raw expansion
-
-### Deterministic Restoration
-
-Validation steps:
-
-- resolve compact symbols only through the stored scope-aware map
-- reject unmapped or ambiguous compact identifiers
-- restore original names before formatting
-- parse restored code when parser support exists
-- compare no-op roundtrips and semantic diffs before accepting patch output
+- Canonical docs describe the final architecture and method registry.
+- Focused docs link back to the architecture spine.
+- Every initial method family has a target, mechanism, risk, fallback, and evaluation gate.
+- Provider adapters are optional and isolated.
+- Implementation status is truthful: target architecture is not overclaimed as fully implemented.
+- Test/evaluation docs define net savings and correctness gates.
 
 ## ADR
 
 ### Decision
 
-Define TFY as a standalone AI work-context protocol and representation system.
+Adopt the final whole-workflow token-saving architecture with an extensible method registry.
 
 ### Drivers
 
-- Reduce token usage beyond command outputs.
-- Preserve AI understanding through semantic indexes and maps.
-- Preserve correctness through expansion/fallback.
-- Use RTK only as a reference for command-output compression.
+- The user wants TFY to save tokens in every part of AI work.
+- Future token-saving methods should be expected, not bolted on.
+- Safety and correctness require raw/full fallback and evaluation.
+- Provider cache features are useful but unstable and vendor-specific.
+
+### Alternatives rejected
+
+- **Appendix-only method list:** rejected because it preserves the older narrow product center.
+- **Phased roadmap docs:** rejected because the requested docs should be final-state now.
+- **RTK-style command filter only:** rejected because TFY covers more than command output.
+- **Provider-cache-centric product:** rejected because it would break the agent-neutral core.
 
 ### Consequences
 
-- TFY needs architecture for code indexing, compact representation, maps, restoration, tool feedback, and evaluation.
-- TFY can borrow lessons from RTK but should not inherit RTK's narrower identity.
-- TFY must evaluate both compression ratio and AI work quality; token reduction alone is insufficient.
+- Docs and future code should organize around the registry schema.
+- Specialized docs stay useful but must not redefine TFY narrowly.
+- Future implementation planning can derive work from registry entries and evaluation gates.
 
-### Alternatives Considered
 
-- **RTK-style command-output filter only:** rejected because it does not include compact code, semantic maps, on-demand source expansion, or readable restoration.
-- **Pure code minifier:** rejected because command/tool outputs are also a major token source.
-- **AI-generated summaries/maps:** rejected because restoration must be deterministic and auditable.
+## Agent middleware requirements
 
-### Follow-ups
+TFY is primarily consumed by AI-agent runtimes. Public docs and future implementation must distinguish:
 
-- Define language adapter interface.
-- Define agent-neutral context/expansion protocol.
-- Define raw output storage/reference protocol.
-- Build benchmark harness for token savings and correctness degradation.
+- implemented Rust CLI/core primitives,
+- implemented Tool Gateway CLI entrypoint,
+- planned automatic runtime adapters.
 
-## Available Agent Types / Follow-up Staffing Guidance
+Required gateway boundaries:
 
-- `architect`: refine protocol boundaries, language-adapter abstractions, and recovery paths.
-- `dependency-expert`: evaluate parser/indexer libraries for multi-language support.
-- `executor`: implement bounded prototypes after this plan exits ralplan.
-- `test-engineer`: build savings/correctness benchmark harness.
-- `verifier`: confirm docs, tests, and benchmark evidence before release.
+1. Tool Gateway — ordinary command execution is proxied through TFY and returns plain model-visible text: redacted raw pass-through for tiny/no-savings cases, or compact summary plus recovery ref only when shorter.
+2. Context Gateway — runtime context requests choose skeleton/compact/related/full representations.
+3. Output Gateway — structured compact code/patch outputs are restored and validated before apply.
+4. State Gateway — task/conversation state is compacted into an event-fed ledger.
 
-Recommended execution path after planning: `$ultragoal` for durable sequential productization, optionally with `$team` for parallel lanes (`language adapters`, `tool feedback`, `benchmark harness`, `docs`). `$ralph` is only a fallback for a single-owner completion loop if explicitly selected.
+The representation ladder and method registry remain the internal source of truth; gateways are integration boundaries.
+
+## Full agent-runtime interception foundation status
+
+The runtime-interception foundation now exists in Rust:
+
+- `tfy-runtime` owns versioned runtime envelopes, adapter capabilities, negotiation, provenance, validation status, gateway events, and state projection.
+- CLI gateway surfaces expose Tool, Shell, Context, Output preview/validate plus proof-gated single-file selected-scope apply, and State ledger/projection paths.
+- Local shell/tool wrapping can be configured by an agent runtime to route command execution through TFY.
+
+Product status remains honest: this is not yet a Codex/MCP/provider automatic hook. Those are adapter packages that must pass their own e2e gates before being marked implemented.

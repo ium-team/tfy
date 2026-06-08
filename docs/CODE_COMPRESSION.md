@@ -1,96 +1,98 @@
-# TFY Code Compression, Symbol Maps, and Restoration
+# TFY Code and Context Method Family
 
-## Problem
+This document specializes the final architecture for code, symbols, docs, and project context. It does not define TFY by itself; see `TOKEN_SAVING_ARCHITECTURE.md` for the canonical architecture.
 
-Human-friendly code costs tokens:
+## Registry entries
 
-- long semantic names
-- indentation
-- newlines
-- repeated boilerplate
-- whole-file context sent when only one function matters
+### Semantic index and skeletons
 
-But semantic names help AI understand code. TFY therefore separates compact transport from semantic meaning.
+- **Target:** code files, docs, module structure.
+- **Mechanism:** expose names, signatures, imports, public API, type shapes, doc headings, and call/reference hints before full bodies.
+- **Savings:** avoids whole-file/repo context.
+- **Cost:** parser/index work.
+- **Risk:** incomplete or stale skeleton.
+- **Fallback:** selected body, related neighborhood, full file/module.
 
-## Compact Code
+### Compact code and symbol maps
 
-AI-facing code can remove unnecessary formatting and shorten identifiers.
+- **Target:** selected scopes.
+- **Mechanism:** shorten safe identifiers and compact whitespace while preserving deterministic maps.
+- **Savings:** selected code bodies become smaller.
+- **Cost:** parser/tokenization and map storage.
+- **Risk:** model loses semantic hints or restoration accepts ambiguity.
+- **Fallback:** readable-light compactness or full source.
 
-Human-readable source:
+### Dependency-neighborhood slicing
 
-```js
-function calculateUserDiscount(userProfile, orderItems) {
-  const membershipLevel = getMembershipLevel(userProfile);
-  return applyDiscount(membershipLevel, orderItems);
-}
+- **Target:** related code context.
+- **Mechanism:** expand by graph/locality: selected scope -> callers/callees/types/tests -> module -> full.
+- **Savings:** avoids full repo dumps.
+- **Cost:** graph/index work.
+- **Risk:** missing dynamic relation.
+- **Fallback:** full file/module or full context.
+
+### Patch/edit-script outputs
+
+- **Target:** AI code output.
+- **Mechanism:** emit compact patches, edit scripts, or scope replacements instead of full files.
+- **Savings:** output tokens drop sharply.
+- **Cost:** patch validation.
+- **Risk:** ambiguous application.
+- **Fallback:** full restored patch with diff evidence.
+
+## Representation ladder for code
+
+```text
+file/ref fingerprint
+-> semantic index
+-> skeleton/signature/imports
+-> selected compact scope + local map
+-> related neighborhood
+-> full file/module
+-> full repo fallback when required
 ```
 
-TFY compact form:
+## Deterministic symbol maps
 
-```js
-f1(a,b){c=f2(a);return f3(c,b)}
-```
-
-## 1:1 Symbol Map
-
-TFY provides a deterministic mapping when needed:
+Symbol maps are TFY-owned artifacts:
 
 ```json
 {
-  "f1": "calculateUserDiscount",
-  "a": "userProfile",
-  "b": "orderItems",
-  "c": "membershipLevel",
-  "f2": "getMembershipLevel",
-  "f3": "applyDiscount"
+  "scope_id": "src/cart.ts:calculateUserDiscount:12",
+  "symbols": {
+    "calculateUserDiscount": "f1",
+    "userProfile": "a",
+    "orderItems": "b"
+  },
+  "reverse": {
+    "f1": "calculateUserDiscount",
+    "a": "userProfile",
+    "b": "orderItems"
+  }
 }
 ```
 
-This map is produced by TFY, not invented by AI.
+AI must not invent or guess maps.
 
-## Names-First Discovery
-
-Instead of sending all code, TFY first sends semantic names:
+## Restoration contract
 
 ```text
-Available functions:
-- calculateUserDiscount
-- validatePaymentMethod
-- createOrderSummary
-- syncInventoryAfterOrder
-```
-
-AI picks likely relevant scopes by name.
-
-Then TFY sends only selected compact bodies and the local mapping.
-
-## Expansion Ladder
-
-```text
-semantic names
--> signatures / structure
--> selected compact bodies + local map
--> related callers/callees/types/tests
--> full file/module
--> full context fallback
-```
-
-## Restoration
-
-Restoration means converting AI compact output back into human/project-readable source.
-
-```text
-AI compact patch
--> resolve f1/a/b via symbol map
+compact patch
+-> validate compact symbols against map
+-> restore names
 -> apply to original scope/file
--> restore original names
--> run formatter
--> validate parse/diff
--> readable code output
+-> run formatter/parser when available
+-> compare diff
+-> produce human/project-readable output
 ```
 
-Restoration is deterministic. AI should not be responsible for guessing original names or formatting.
+Reject unmapped, ambiguous, public/unsafe, or non-renamable symbol changes unless policy explicitly allows them.
 
-## Important Rule
+## Code fallback triggers
 
-Full context fallback is not a failure. It is a safety mechanism when compact context is insufficient.
+- unresolved identifier diagnostics
+- unmapped compact symbols
+- dependency outside selected scope
+- public API, reflection, macro, serialization, generated code, dynamic dispatch, or global side-effect involvement
+- failed parse/restore/diff validation
+- user/agent requests full context

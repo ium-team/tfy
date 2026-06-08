@@ -33,6 +33,8 @@ pub struct ScopeInfo {
     pub language: String,
     pub start_line: usize,
     pub end_line: usize,
+    pub byte_start: usize,
+    pub byte_end: usize,
     pub kind: String,
     pub parser: String,
     pub confidence: Confidence,
@@ -81,6 +83,8 @@ pub struct Metrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExpandResponse {
     pub scope: ScopeInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apply_proof: Option<ApplyProof>,
     pub compactness: String,
     pub compact_code: String,
     pub symbol_map: SymbolMap,
@@ -102,23 +106,82 @@ pub struct FullResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplyProof {
+    pub path: String,
+    pub scope_id: String,
+    pub language: String,
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub source_sha256: String,
+    pub symbol_map_sha256: String,
+    pub compact_code_sha256: String,
+    pub file_sha256: String,
+    pub file_len: usize,
+    pub compactness: String,
+    pub context_ref: String,
+    pub parser: String,
+    pub confidence: Confidence,
+    pub fallback_action: FallbackAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplyResult {
+    pub scope_id: String,
+    pub path: String,
+    pub restored_code: String,
+    pub applied: bool,
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub before_sha256: String,
+    pub after_sha256: String,
+    pub patch_ref: String,
+    pub context_ref: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestorePayload {
     pub scope_id: Option<String>,
     pub scope: Option<ScopeInfo>,
     pub compactness: Option<String>,
     pub compact_code: Option<String>,
+    pub base_compact_code: Option<String>,
+    pub context_ref: Option<String>,
     pub code: Option<String>,
     pub patch: Option<String>,
     pub language: Option<String>,
     pub symbols: Option<BTreeMap<String, String>>,
     pub reverse: Option<BTreeMap<String, String>>,
     pub symbol_map: Option<SymbolMap>,
+    pub apply_proof: Option<ApplyProof>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreResponse {
     pub scope_id: String,
     pub restored_code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreDisplayResponse {
+    pub scope_id: String,
+    pub restored_code: String,
+    pub display_code: String,
+    pub display_only: bool,
+    pub authority: String,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreFileResponse {
+    pub scope_id: String,
+    pub restored_code: String,
+    pub file_code: String,
+    pub canonical_for: String,
+    pub compact_transport_only: bool,
+    pub symbol_audit_hash: String,
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
