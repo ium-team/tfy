@@ -174,6 +174,17 @@ pub struct RestoreDisplayResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreFileResponse {
+    pub scope_id: String,
+    pub restored_code: String,
+    pub file_code: String,
+    pub canonical_for: String,
+    pub compact_transport_only: bool,
+    pub symbol_audit_hash: String,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextDecision {
     pub action: FallbackAction,
     pub reason: String,

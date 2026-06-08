@@ -470,3 +470,388 @@ fn workspace_exact_delete_rename_move_are_gated() {
 "
     );
 }
+
+#[test]
+fn restore_file_writes_readable_canonical_code_not_compact_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let payload_path = dir.path().join("restore.json");
+    let output_path = dir.path().join("out.js");
+    std::fs::write(
+        &payload_path,
+        serde_json::to_string(&serde_json::json!({
+            "scope_id":"scope-calc",
+            "language":"javascript",
+            "compactness":"symbol",
+            "compact_code":"function f0(a,b){const c=a+b;return c;}",
+            "symbols":{"calculateTotal":"f0","left":"a","right":"b","total":"c"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "restore-file",
+            "--payload",
+            payload_path.to_str().unwrap(),
+            "--output",
+            output_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["canonical_for"], "file_write_and_user_display");
+    assert_eq!(json["compact_transport_only"], true);
+    let file = std::fs::read_to_string(&output_path).unwrap();
+    assert!(file.contains("calculateTotal"), "{file}");
+    assert!(file.contains("left"), "{file}");
+    assert!(file.contains("right"), "{file}");
+    assert!(file.contains("total"), "{file}");
+    assert!(!file.contains("f0"), "{file}");
+    assert!(file.contains('\n'), "{file}");
+}
+
+#[test]
+fn workspace_apply_restores_compact_payload_before_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = "function calculateTotal(left, right) {\n  return left + right;\n}\n";
+    std::fs::write(dir.path().join("calc.js"), old).unwrap();
+    let expected = "function calculateTotal(\n  left,\n  right\n){\n  const total=left+right;\n  return total;\n}\n";
+    let plan_path = dir.path().join("restore-plan.json");
+    let mut plan = serde_json::json!({
+        "plan_id":"restore-plan",
+        "origin":{"kind":"agent_runtime","host":"generic","invocation":"wrapper","intercepted":true,"user_shell_mutated":false},
+        "operations":[{
+            "op_id":"m1",
+            "kind":"modify_exact",
+            "path_before":"calc.js",
+            "base_file_hash":sha256_hex(old),
+            "restore_payload":{
+                "scope_id":"scope-calc",
+                "language":"javascript",
+                "compactness":"symbol",
+                "compact_code":"function f0(a,b){const c=a+b;return c;}",
+                "symbols":{"calculateTotal":"f0","left":"a","right":"b","total":"c"}
+            },
+            "restored_preview_hash":sha256_hex(expected),
+            "full_file_scope":true,
+            "per_op_proof":proof("proof-restore", Some(&sha256_hex(old)), Some(&sha256_hex(expected)))
+        }]
+    });
+    std::fs::write(&plan_path, serde_json::to_string(&plan).unwrap()).unwrap();
+    let validate = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "workspace",
+            "validate",
+            "--payload",
+            plan_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        validate.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&validate.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&validate.stdout).unwrap();
+    let plan_hash = report["plan_hash"].as_str().unwrap().to_string();
+    plan["validation_status"] = serde_json::json!("valid");
+    plan["validation_proof"] = serde_json::json!(plan_hash.clone());
+    std::fs::write(&plan_path, serde_json::to_string(&plan).unwrap()).unwrap();
+    let apply = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "workspace",
+            "apply",
+            "--payload",
+            plan_path.to_str().unwrap(),
+            "--plan-hash",
+            &plan_hash,
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        apply.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("calc.js")).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn workspace_fuzzy_apply_unique_anchor_and_rejects_ambiguous() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = "alpha\nneedle\nomega\n";
+    let new = "alpha\nreplacement\nomega\n";
+    std::fs::write(dir.path().join("a.txt"), old).unwrap();
+    let plan_path = dir.path().join("fuzzy.json");
+    let mut plan = serde_json::json!({
+        "plan_id":"fuzzy",
+        "origin":{"kind":"agent_runtime","host":"generic","invocation":"wrapper","intercepted":true,"user_shell_mutated":false},
+        "policy":{"allow_fuzzy_apply":true,"fuzzy_confidence_threshold":0.95},
+        "operations":[{
+            "op_id":"f1","kind":"modify_fuzzy","path_before":"a.txt","base_file_hash":sha256_hex(old),"anchor_before":"needle","replacement":"replacement","expected_occurrences":1,"confidence":0.99,
+            "restored_preview_hash":sha256_hex(new),"full_file_scope":true,
+            "per_op_proof":proof("proof-fuzzy", Some(&sha256_hex(old)), Some(&sha256_hex(new)))
+        }]
+    });
+    std::fs::write(&plan_path, serde_json::to_string(&plan).unwrap()).unwrap();
+    let validate = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "workspace",
+            "validate",
+            "--payload",
+            plan_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        validate.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&validate.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&validate.stdout).unwrap();
+    let plan_hash = report["plan_hash"].as_str().unwrap().to_string();
+    plan["validation_status"] = serde_json::json!("valid");
+    plan["validation_proof"] = serde_json::json!(plan_hash.clone());
+    std::fs::write(&plan_path, serde_json::to_string(&plan).unwrap()).unwrap();
+    let apply = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "workspace",
+            "apply",
+            "--payload",
+            plan_path.to_str().unwrap(),
+            "--plan-hash",
+            &plan_hash,
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        apply.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        new
+    );
+
+    std::fs::write(dir.path().join("ambiguous.txt"), "needle\nneedle\n").unwrap();
+    let ambiguous = dir.path().join("ambiguous.json");
+    std::fs::write(&ambiguous, serde_json::to_string(&serde_json::json!({
+        "plan_id":"ambiguous",
+        "origin":{"kind":"agent_runtime","host":"generic","invocation":"wrapper","intercepted":true,"user_shell_mutated":false},
+        "policy":{"allow_fuzzy_apply":true},
+        "operations":[{"op_id":"f2","kind":"modify_fuzzy","path_before":"ambiguous.txt","base_file_hash":sha256_hex("needle\nneedle\n"),"anchor_before":"needle","replacement":"x","expected_occurrences":1,"confidence":0.99,"restored_preview_hash":sha256_hex("x\nneedle\n"),"full_file_scope":true,"per_op_proof":proof("proof-fuzzy2", Some(&sha256_hex("needle\nneedle\n")), Some(&sha256_hex("x\nneedle\n")))}]
+    })).unwrap()).unwrap();
+    let bad = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "workspace",
+            "validate",
+            "--payload",
+            ambiguous.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("ambiguous anchor"));
+}
+
+#[test]
+fn workspace_conflict_overlap_rejected_and_refactor_plan_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "abcdef\n").unwrap();
+    let conflict_path = dir.path().join("conflict.json");
+    std::fs::write(&conflict_path, serde_json::to_string(&serde_json::json!({
+        "plan_id":"conflict",
+        "origin":{"kind":"agent_runtime","host":"generic","invocation":"wrapper","intercepted":true,"user_shell_mutated":false},
+        "operations":[
+            {"op_id":"m1","kind":"modify_exact","path_before":"a.txt","base_file_hash":sha256_hex("abcdef\n"),"content":"one\n","selected_range":{"byte_start":0,"byte_end":3},"per_op_proof":proof("p1", Some(&sha256_hex("abcdef\n")), None)},
+            {"op_id":"m2","kind":"modify_exact","path_before":"a.txt","base_file_hash":sha256_hex("abcdef\n"),"content":"two\n","selected_range":{"byte_start":2,"byte_end":5},"per_op_proof":proof("p2", Some(&sha256_hex("abcdef\n")), None)}
+        ]
+    })).unwrap()).unwrap();
+    let conflict = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "workspace",
+            "validate",
+            "--payload",
+            conflict_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("both mutate"));
+
+    let refactor_path = dir.path().join("refactor.json");
+    std::fs::write(&refactor_path, serde_json::to_string(&serde_json::json!({
+        "plan_id":"refactor",
+        "origin":{"kind":"agent_runtime","host":"generic","invocation":"wrapper","intercepted":true,"user_shell_mutated":false},
+        "operations":[
+            {"op_id":"a1","kind":"add","path_after":"a1.txt","content":"1\n","restored_preview_hash":sha256_hex("1\n"),"full_file_scope":true,"per_op_proof":proof("pa1", None, Some(&sha256_hex("1\n")))},
+            {"op_id":"a2","kind":"add","path_after":"a2.txt","content":"2\n","restored_preview_hash":sha256_hex("2\n"),"full_file_scope":true,"per_op_proof":proof("pa2", None, Some(&sha256_hex("2\n")))},
+            {"op_id":"a3","kind":"add","path_after":"a3.txt","content":"3\n","restored_preview_hash":sha256_hex("3\n"),"full_file_scope":true,"per_op_proof":proof("pa3", None, Some(&sha256_hex("3\n")))}
+        ]
+    })).unwrap()).unwrap();
+    let refactor = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "workspace",
+            "refactor-plan",
+            "--payload",
+            refactor_path.to_str().unwrap(),
+            "--chunk-size",
+            "2",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        refactor.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&refactor.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&refactor.stdout).unwrap();
+    assert_eq!(json["chunk_count"], 2);
+    assert_eq!(
+        json["chunks"][0]["operation_ids"].as_array().unwrap().len(),
+        2
+    );
+}
+
+#[test]
+fn workspace_fuzzy_requires_base_and_preview_proofs() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = "alpha\nneedle\nomega\n";
+    let new = "alpha\nreplacement\nomega\n";
+    std::fs::write(dir.path().join("a.txt"), old).unwrap();
+
+    let missing_preview = dir.path().join("missing-preview.json");
+    std::fs::write(&missing_preview, serde_json::to_string(&serde_json::json!({
+        "plan_id":"missing-preview",
+        "origin":{"kind":"agent_runtime","host":"generic","invocation":"wrapper","intercepted":true,"user_shell_mutated":false},
+        "policy":{"allow_fuzzy_apply":true},
+        "operations":[{"op_id":"f1","kind":"modify_fuzzy","path_before":"a.txt","base_file_hash":sha256_hex(old),"anchor_before":"needle","replacement":"replacement","expected_occurrences":1,"confidence":0.99,"full_file_scope":true,"per_op_proof":proof("pf", Some(&sha256_hex(old)), None)}]
+    })).unwrap()).unwrap();
+    let bad_preview = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "workspace",
+            "validate",
+            "--payload",
+            missing_preview.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!bad_preview.status.success());
+    assert!(String::from_utf8_lossy(&bad_preview.stderr).contains("requires restored_preview_hash"));
+
+    let missing_base = dir.path().join("missing-base.json");
+    std::fs::write(&missing_base, serde_json::to_string(&serde_json::json!({
+        "plan_id":"missing-base",
+        "origin":{"kind":"agent_runtime","host":"generic","invocation":"wrapper","intercepted":true,"user_shell_mutated":false},
+        "policy":{"allow_fuzzy_apply":true},
+        "operations":[{"op_id":"f2","kind":"modify_fuzzy","path_before":"a.txt","anchor_before":"needle","replacement":"replacement","expected_occurrences":1,"confidence":0.99,"restored_preview_hash":sha256_hex(new),"full_file_scope":true,"per_op_proof":proof("pf2", None, Some(&sha256_hex(new)))}]
+    })).unwrap()).unwrap();
+    let bad_base = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "workspace",
+            "validate",
+            "--payload",
+            missing_base.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!bad_base.status.success());
+    assert!(String::from_utf8_lossy(&bad_base.stderr).contains("requires base_file_hash"));
+}
+
+#[test]
+fn workspace_rejects_multiple_same_file_mutations_until_range_apply_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = "abcdef\n";
+    std::fs::write(dir.path().join("a.txt"), old).unwrap();
+    let plan_path = dir.path().join("same-file.json");
+    std::fs::write(&plan_path, serde_json::to_string(&serde_json::json!({
+        "plan_id":"same-file",
+        "origin":{"kind":"agent_runtime","host":"generic","invocation":"wrapper","intercepted":true,"user_shell_mutated":false},
+        "operations":[
+            {"op_id":"m1","kind":"modify_exact","path_before":"a.txt","base_file_hash":sha256_hex(old),"content":"one\n","selected_range":{"byte_start":0,"byte_end":2},"per_op_proof":proof("p1", Some(&sha256_hex(old)), None)},
+            {"op_id":"m2","kind":"modify_exact","path_before":"a.txt","base_file_hash":sha256_hex(old),"content":"two\n","selected_range":{"byte_start":3,"byte_end":5},"per_op_proof":proof("p2", Some(&sha256_hex(old)), None)}
+        ]
+    })).unwrap()).unwrap();
+    let bad = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "workspace",
+            "validate",
+            "--payload",
+            plan_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("both mutate"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        old
+    );
+}
+
+#[test]
+fn restore_patch_restores_compact_patch_text_without_apply_authority() {
+    let mut payload = tempfile::NamedTempFile::new().unwrap();
+    write!(
+        payload,
+        "{}",
+        serde_json::json!({
+            "scope_id":"patch-scope",
+            "language":"javascript",
+            "compactness":"symbol",
+            "patch":"--- old/sum.js\n+++ new/sum.js\n@@\n-function f0(u,v){return u+v;}\n+function f0(u,v){const w=u+v;return w;}\n",
+            "symbols":{"calculateTotal":"f0","left":"u","right":"v","total":"w"}
+        })
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "restore-patch",
+            "--payload",
+            payload.path().to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["canonical_for"], "file_write_and_user_display");
+    let restored = json["file_code"].as_str().unwrap();
+    assert!(restored.contains("--- old/sum.js"), "{restored}");
+    assert!(restored.contains("+++ new/sum.js"), "{restored}");
+    assert!(restored.contains("calculateTotal"), "{restored}");
+    assert!(restored.contains("left"), "{restored}");
+    assert!(restored.contains("right"), "{restored}");
+    assert!(restored.contains("total"), "{restored}");
+}

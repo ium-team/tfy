@@ -267,6 +267,36 @@ pub fn restore_display_payload(payload: RestorePayload) -> Result<RestoreDisplay
     })
 }
 
+pub fn restore_file_payload(payload: RestorePayload) -> Result<RestoreFileResponse> {
+    let restored = restore_payload(payload.clone())?;
+    let (file_code, warning) = readable_display_code(&restored.restored_code);
+    let audit_symbols = payload
+        .symbol_map
+        .as_ref()
+        .map(|m| &m.symbols)
+        .or(payload.symbols.as_ref());
+    Ok(RestoreFileResponse {
+        scope_id: restored.scope_id,
+        restored_code: restored.restored_code,
+        file_code: file_code.clone(),
+        canonical_for: "file_write_and_user_display".into(),
+        compact_transport_only: true,
+        symbol_audit_hash: format!(
+            "sha256:{:x}",
+            Sha256::digest(
+                serde_json::to_string(&audit_symbols)
+                    .unwrap_or_default()
+                    .as_bytes()
+            )
+        ),
+        warning,
+    })
+}
+
+pub fn restore_patch_payload(payload: RestorePayload) -> Result<RestoreFileResponse> {
+    restore_file_payload(payload)
+}
+
 fn readable_display_code(code: &str) -> (String, Option<String>) {
     let trimmed = code.trim();
     if trimmed.is_empty() {

@@ -7,7 +7,7 @@ pub mod tool_feedback;
 
 pub use code::{
     apply_restored_payload, expand_scope, full_scope, index_path, restore_display_payload,
-    restore_payload,
+    restore_file_payload, restore_patch_payload, restore_payload,
 };
 pub use context::decide_context_need;
 pub use eval::evaluate_code;

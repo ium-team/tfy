@@ -10,6 +10,7 @@ TFY exposes an agent-neutral protocol so any AI agent, editor, shell wrapper, or
 - `tfy decide-context` — selected/related/full fallback decision from payload and diagnostics.
 - `tfy restore` — deterministic readable restoration from compact payload.
 - `tfy restore-display` — display-only readable formatting/restoration for human UX; not apply authority.
+- `tfy restore-file` / `tfy restore-patch` — restore compact AI transport into canonical readable code for file writes and user display.
 - `tfy tool-gateway -- <command...>` — runtime-facing Tool Gateway entrypoint for command interception; default output is plain model-visible text, not JSON.
 - `tfy run -- <command...>` — compatibility/debug spelling for risk-aware compact command feedback.
 - `tfy raw <raw_ref>` — full or ranged raw command output.
@@ -24,7 +25,7 @@ TFY exposes an agent-neutral protocol so any AI agent, editor, shell wrapper, or
 - `tfy agent run --session <id> -- <command...>` — AI-runtime command wrapper that marks origin as agent runtime while leaving ordinary human terminals untouched.
 - `tfy mcp capabilities` — supported MCP tools/resources and support-boundary report.
 - `tfy mcp serve --session <id>` — MCP stdio JSON-RPC server; stdout is JSON-RPC only. Exposes Tool/Context/Output/State tools, including host-routed Code I/O tools for bounded scope listing, compact context, preview validation, restore-display, WorkspaceApplyPlan validation, and proof-gated apply.
-- `tfy workspace validate --payload plan.json` / `tfy workspace apply --payload plan.json --plan-hash <hash>` — explicit multi-file WorkspaceApplyPlan validation and exact apply for modify/add/delete/rename/move operations, gated by origin/provenance, per-op proof, base hashes, and plan hash. Fuzzy mutation remains fail-closed/preview-only.
+- `tfy workspace validate --payload plan.json` / `tfy workspace apply --payload plan.json --plan-hash <hash>` — explicit multi-file WorkspaceApplyPlan validation and exact apply for modify/add/delete/rename/move operations, gated by origin/provenance, per-op proof, base hashes, and plan hash. Conservative `modify_fuzzy` is supported only with `allow_fuzzy_apply`, confidence threshold, unique anchor, base hash, preview hash, and per-op proof gates; ambiguous fuzzy edits fail closed. Multiple same-file mutations are rejected until range-aware application exists; callers must merge them into one full-file candidate.
 - `tfy mcp install --target codex --dry-run` — concrete Codex MCP command/TOML setup snippet without mutating config.
 
 ## Final protocol capabilities
@@ -99,7 +100,7 @@ The CLI is both a manual debug surface and the contract used by adapters. Produc
 - Output Gateway: `tfy output-gateway` structured preview/validate API over `restore`; `--apply` supports local single-file selected-scope replacement only when a content-addressed `ApplyProof` validates the exact path, byte range, source hash, compactness, language, and parser confidence. Parent event ids alone are not authoritative; apply payloads must also carry the captured source context_ref and base compact code so TFY can bind the proposed edit to the proven context.
 - State Gateway: `tfy state-append` / `tfy state-project` ledger/ref API fed by gateway events.
 
-Do not overclaim automatic interception: today the Rust CLI/core primitives, `tfy-runtime`, local Tool/Shell/Context/Output-preview-and-proof-gated-apply/State gateway surfaces, generic-shell adapter, configured AI-agent wrapper, and MCP stdio tool/resource server exist. MCP supports host-routed Code I/O with snapshot-stable scope ids, compact context, preview validation, restore-display, WorkspaceApplyPlan validation, proof-gated single-file selected-scope apply, and proof-gated exact multi-file workspace apply. Codex private hooks, editor hooks, provider gateway, fuzzy mutation, and universal shell interception remain separate adapters/features until they pass e2e gates.
+Do not overclaim automatic interception: today the Rust CLI/core primitives, `tfy-runtime`, local Tool/Shell/Context/Output-preview-and-proof-gated-apply/State gateway surfaces, generic-shell adapter, configured AI-agent wrapper, and MCP stdio tool/resource server exist. MCP supports host-routed Code I/O with snapshot-stable scope ids, compact context, preview validation, restore-display, WorkspaceApplyPlan validation, proof-gated single-file selected-scope apply, and proof-gated exact multi-file workspace apply. Private/hidden Codex hooks and universal human-shell interception are not claimed. Editor auto-integration and provider/API gateway proxying are out of scope. Conservative fuzzy mutation is supported only through explicit proof-gated WorkspaceApplyPlan operations.
 
 ## Runtime envelope protocol
 
@@ -143,6 +144,9 @@ tfy init --uninstall --codex --project --apply
 tfy doctor --codex
 tfy smoke --mcp
 tfy smoke --codex
+tfy setup --ai --codex --dry-run
+tfy status --json
+tfy explain
 tfy gain # no-data until command-output savings events exist
 tfy mcp capabilities
 tfy mcp serve --session <id> --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw
@@ -150,7 +154,10 @@ tfy mcp install --target codex --dry-run
 tfy context-gateway <path> <scope> [--diagnostics ...]
 tfy output-gateway --payload payload.json
 tfy restore-display --payload payload.json
+tfy restore-file --payload payload.json --output restored.js
+tfy restore-patch --payload payload.json
 tfy workspace validate --payload workspace-plan.json
+tfy workspace refactor-plan --payload workspace-plan.json --chunk-size 5
 tfy workspace apply --payload workspace-plan.json --plan-hash <hash>
 tfy state-append --payload event.json
 tfy state-project

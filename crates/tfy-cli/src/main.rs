@@ -11,15 +11,18 @@ use adapter::{execute_adapter, AdapterCmd};
 use agent::{execute_agent, AgentCmd};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use display::{execute_restore_display, RestoreDisplayCmd};
+use display::{
+    execute_restore_display, execute_restore_file, execute_restore_patch, RestoreDisplayCmd,
+    RestoreFileCmd, RestorePatchCmd,
+};
 use gateways::{
     context_decision_from_value, execute_context_gateway, execute_output_gateway,
     execute_plain_tool_gateway, execute_structured_tool_gateway,
 };
 use mcp::{execute_mcp, McpCmd};
 use product::{
-    execute_doctor, execute_gain, execute_init, execute_smoke, DoctorCmd, GainCmd, InitCmd,
-    SmokeCmd,
+    execute_doctor, execute_explain, execute_gain, execute_init, execute_setup, execute_smoke,
+    execute_status, DoctorCmd, ExplainCmd, GainCmd, InitCmd, SetupCmd, SmokeCmd, StatusCmd,
 };
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -60,6 +63,12 @@ enum Cmd {
     Smoke(SmokeCmd),
     /// Report measured TFY savings from adapter/MCP ledgers.
     Gain(GainCmd),
+    /// Easy setup for supported AI-agent host routing; never intercepts ordinary terminals.
+    Setup(SetupCmd),
+    /// Show which TFY routing/apply/restore surfaces are active, configured, or out of scope.
+    Status(StatusCmd),
+    /// Explain the compact-AI/readable-file TFY model in user-facing terms.
+    Explain(ExplainCmd),
     Index {
         path: PathBuf,
     },
@@ -79,6 +88,10 @@ enum Cmd {
     },
     /// Restore compact code into human-readable display text. Display-only, not apply authority.
     RestoreDisplay(RestoreDisplayCmd),
+    /// Restore compact AI transport into canonical readable file code, optionally writing it.
+    RestoreFile(RestoreFileCmd),
+    /// Restore compact AI patch/output into canonical readable patch/code before validation/apply.
+    RestorePatch(RestorePatchCmd),
     DecideContext {
         #[arg(long)]
         payload: Option<PathBuf>,
@@ -239,6 +252,9 @@ fn main() -> Result<()> {
         Cmd::Doctor(cmd) => execute_doctor(cmd)?,
         Cmd::Smoke(cmd) => execute_smoke(cmd)?,
         Cmd::Gain(cmd) => execute_gain(cmd)?,
+        Cmd::Setup(cmd) => execute_setup(cmd)?,
+        Cmd::Status(cmd) => execute_status(cmd)?,
+        Cmd::Explain(cmd) => execute_explain(cmd)?,
         Cmd::Index { path } => print_json(&index_path(path)?)?,
         Cmd::Expand {
             path,
@@ -252,6 +268,8 @@ fn main() -> Result<()> {
             print_json(&restore_payload(p)?)?;
         }
         Cmd::RestoreDisplay(cmd) => execute_restore_display(cmd)?,
+        Cmd::RestoreFile(cmd) => execute_restore_file(cmd)?,
+        Cmd::RestorePatch(cmd) => execute_restore_patch(cmd)?,
         Cmd::DecideContext { payload } => {
             let text = read_payload(payload)?;
             let v: serde_json::Value = serde_json::from_str(&text)?;

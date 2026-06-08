@@ -327,3 +327,65 @@ fn gain_empty_and_adapter_ledger_report_real_data() {
     assert!(json["raw_bytes"].as_u64().unwrap() > 0);
     assert!(json["model_bytes"].as_u64().unwrap() > 0);
 }
+
+#[test]
+fn setup_status_and_explain_make_supported_boundaries_obvious() {
+    let dir = tempfile::tempdir().unwrap();
+    let setup = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["setup", "--ai", "--codex", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        setup.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+    let text = String::from_utf8_lossy(&setup.stdout);
+    assert!(text.contains("supported_host_routing=true"), "{text}");
+    assert!(
+        text.contains("ordinary_terminal_interception=false"),
+        "{text}"
+    );
+    assert!(text.contains("provider_gateway=false"), "{text}");
+    assert!(text.contains("editor_integration=false"), "{text}");
+    assert!(!dir.path().join("AGENTS.md").exists());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["status"], "active");
+    let surfaces = json["surfaces"].as_array().unwrap();
+    assert!(surfaces
+        .iter()
+        .any(|s| s["name"] == "compact_code_restore" && s["status"] == "active"));
+    assert!(surfaces
+        .iter()
+        .any(|s| s["name"] == "provider_api_gateway" && s["status"] == "not_supported"));
+    assert!(surfaces
+        .iter()
+        .any(|s| s["name"] == "editor_integration" && s["status"] == "not_supported"));
+    assert!(surfaces
+        .iter()
+        .any(|s| s["name"] == "private_codex_hook" && s["status"] == "not_supported"));
+
+    let explain = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["explain"])
+        .output()
+        .unwrap();
+    assert!(explain.status.success());
+    let explain_text = String::from_utf8_lossy(&explain.stdout);
+    assert!(explain_text.contains("function f0(a,b)"), "{explain_text}");
+    assert!(
+        explain_text.contains("restores original/readable names"),
+        "{explain_text}"
+    );
+    assert!(
+        explain_text.contains("provider/API gateway proxy"),
+        "{explain_text}"
+    );
+}

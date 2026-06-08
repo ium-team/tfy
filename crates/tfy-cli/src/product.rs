@@ -78,6 +78,34 @@ pub(crate) struct GainCmd {
     pub json: bool,
 }
 
+#[derive(Args, Clone)]
+pub(crate) struct SetupCmd {
+    /// Prepare TFY for supported AI-agent host routing. Does not touch ordinary terminals.
+    #[arg(long)]
+    pub ai: bool,
+    /// Print Codex MCP/instruction setup guidance.
+    #[arg(long)]
+    pub codex: bool,
+    #[arg(long)]
+    pub dry_run: bool,
+    #[arg(long)]
+    pub apply: bool,
+    #[arg(long, default_value = "local-session")]
+    pub session: String,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct StatusCmd {
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct ExplainCmd {
+    #[arg(long)]
+    pub json: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScopeTarget {
     Project,
@@ -125,6 +153,30 @@ struct Diagnostic {
 struct DoctorReport {
     status: String,
     diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Serialize)]
+struct SurfaceStatus {
+    name: String,
+    status: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct ProductStatusReport {
+    status: String,
+    surfaces: Vec<SurfaceStatus>,
+    not_supported: Vec<String>,
+    truthfulness_boundary: String,
+}
+
+#[derive(Serialize)]
+struct ProductExplainReport {
+    ai_transport: String,
+    file_and_user_output: String,
+    automatic_routing: String,
+    apply_model: String,
+    out_of_scope: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -214,6 +266,57 @@ pub(crate) fn execute_smoke(cmd: SmokeCmd) -> Result<()> {
         for e in &report.evidence {
             println!("✓ {e}");
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn execute_setup(cmd: SetupCmd) -> Result<()> {
+    if !(cmd.ai || cmd.codex) {
+        bail!("setup requires --ai and/or --codex; use `tfy setup --ai --codex --dry-run`");
+    }
+    if cmd.ai {
+        println!("TFY setup ai: supported_host_routing=true ordinary_terminal_interception=false provider_gateway=false editor_integration=false");
+        println!("AI reads compact transport through TFY context/tool/MCP surfaces; files and user output are restored to readable canonical code.");
+    }
+    if cmd.codex {
+        execute_init(InitCmd {
+            codex: true,
+            show: false,
+            uninstall: false,
+            project: true,
+            global: false,
+            dry_run: cmd.dry_run || !cmd.apply,
+            apply: cmd.apply,
+            session: cmd.session,
+        })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn execute_status(cmd: StatusCmd) -> Result<()> {
+    let report = build_product_status_report();
+    if cmd.json {
+        print_json(&report)?;
+    } else {
+        println!("TFY status: {}", report.status);
+        for surface in &report.surfaces {
+            println!("{}: {} — {}", surface.name, surface.status, surface.message);
+        }
+        println!("not_supported: {}", report.not_supported.join(", "));
+    }
+    Ok(())
+}
+
+pub(crate) fn execute_explain(cmd: ExplainCmd) -> Result<()> {
+    let report = build_explain_report();
+    if cmd.json {
+        print_json(&report)?;
+    } else {
+        println!("AI transport: {}", report.ai_transport);
+        println!("Files/user output: {}", report.file_and_user_output);
+        println!("Automatic routing: {}", report.automatic_routing);
+        println!("Apply: {}", report.apply_model);
+        println!("Out of scope: {}", report.out_of_scope.join(", "));
     }
     Ok(())
 }
@@ -427,6 +530,46 @@ fn marker_present(text: &str) -> bool {
     text.contains(TFY_CODEX_START) && text.contains(TFY_CODEX_END)
 }
 
+fn build_product_status_report() -> ProductStatusReport {
+    ProductStatusReport {
+        status: "active".into(),
+        surfaces: vec![
+            SurfaceStatus { name: "command_output".into(), status: "active".into(), message: "AI-origin commands can route through tfy agent/adapter/MCP; normal human terminal commands are not intercepted.".into() },
+            SurfaceStatus { name: "context_compacting".into(), status: "active".into(), message: "AI can list scopes and request exact compact function/file scopes instead of whole files.".into() },
+            SurfaceStatus { name: "compact_code_restore".into(), status: "active".into(), message: "Compact one-line/short-symbol transport is restored to readable canonical code for files and user display.".into() },
+            SurfaceStatus { name: "workspace_apply".into(), status: "active".into(), message: "Multi-file add/modify/delete/rename/move apply is proof-gated and rollback-journaled.".into() },
+            SurfaceStatus { name: "fuzzy_refactor_apply".into(), status: "active".into(), message: "Fuzzy edits require unique anchors, confidence threshold, restored preview hashes, and conflict checks.".into() },
+            SurfaceStatus { name: "codex_host_routing".into(), status: "configured_but_unverified".into(), message: "TFY can install Codex MCP/instruction guidance; host invocation must be verified by smoke/ledger evidence.".into() },
+            SurfaceStatus { name: "ordinary_human_terminal".into(), status: "not_supported".into(), message: "TFY intentionally does not intercept regular terminal use.".into() },
+            SurfaceStatus { name: "provider_api_gateway".into(), status: "not_supported".into(), message: "OpenAI/provider request proxying is outside TFY scope.".into() },
+            SurfaceStatus { name: "editor_integration".into(), status: "not_supported".into(), message: "Editor auto-connection is outside TFY scope.".into() },
+            SurfaceStatus { name: "private_codex_hook".into(), status: "not_supported".into(), message: "No private or hidden Codex prompt interception is claimed.".into() },
+        ],
+        not_supported: vec![
+            "provider_api_gateway".into(),
+            "editor_integration".into(),
+            "private_codex_hook".into(),
+            "ordinary_human_terminal_interception".into(),
+        ],
+        truthfulness_boundary: "supported AI-host routing only; no provider proxy, editor hook, private Codex hook, or universal shell interception".into(),
+    }
+}
+
+fn build_explain_report() -> ProductExplainReport {
+    ProductExplainReport {
+        ai_transport: "AI sees compact scope/function-level code such as `function f0(a,b){const c=a+b;return c;}` when that saves tokens.".into(),
+        file_and_user_output: "Before code is written or shown to a human, TFY restores original/readable names, indentation, and line breaks into canonical file code.".into(),
+        automatic_routing: "Supported AI-agent hosts use TFY through wrapper/adapter/MCP setup; users do not need to manually compact each prompt once the host is routed.".into(),
+        apply_model: "Writes are validated with plan hash, per-operation proof, preview hash, origin checks, safe paths, rollback journal, and fuzzy unique-anchor gates.".into(),
+        out_of_scope: vec![
+            "provider/API gateway proxy".into(),
+            "editor auto-integration".into(),
+            "private hidden Codex prompt hook".into(),
+            "ordinary human terminal interception".into(),
+        ],
+    }
+}
+
 fn build_doctor_report(codex: bool) -> DoctorReport {
     let mut diagnostics = Vec::new();
     diagnostics.push(Diagnostic {
@@ -472,6 +615,18 @@ fn build_doctor_report(codex: bool) -> DoctorReport {
             status: "warn".into(),
             message: "P0 does not mutate ~/.codex/config.toml; verify Codex MCP config manually or with `codex mcp list`.".into(),
         });
+        for name in [
+            "private_codex_hook",
+            "provider_api_gateway",
+            "editor_integration",
+            "ordinary_human_terminal_interception",
+        ] {
+            diagnostics.push(Diagnostic {
+                name: name.into(),
+                status: "pass".into(),
+                message: "intentionally not claimed or intercepted by TFY".into(),
+            });
+        }
     }
     let status = if diagnostics.iter().any(|d| d.status == "fail") {
         "fail"

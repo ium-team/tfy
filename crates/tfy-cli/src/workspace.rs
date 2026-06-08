@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use tfy_core::{restore_file_payload, RestorePayload};
 use tfy_runtime::{Origin, OriginKind, ValidationStatus};
 
 #[derive(Subcommand)]
@@ -14,6 +15,8 @@ pub(crate) enum WorkspaceCmd {
     Validate(WorkspaceValidateCmd),
     /// Apply a previously validated WorkspaceApplyPlan using plan hash + per-op proofs.
     Apply(WorkspaceApplyCmd),
+    /// Split a larger refactor plan into deterministic verification chunks without mutating.
+    RefactorPlan(WorkspaceRefactorCmd),
 }
 
 #[derive(Args, Clone)]
@@ -30,6 +33,16 @@ pub(crate) struct WorkspaceApplyCmd {
     pub payload: Option<PathBuf>,
     #[arg(long = "plan-hash")]
     pub plan_hash: String,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct WorkspaceRefactorCmd {
+    #[arg(long)]
+    pub payload: Option<PathBuf>,
+    #[arg(long, default_value_t = 5)]
+    pub chunk_size: usize,
     #[arg(long)]
     pub json: bool,
 }
@@ -53,6 +66,8 @@ pub(crate) struct WorkspaceApplyPlan {
 pub(crate) struct WorkspacePolicy {
     #[serde(default)]
     pub allow_fuzzy_apply: bool,
+    #[serde(default = "default_fuzzy_confidence")]
+    pub fuzzy_confidence_threshold: f64,
     #[serde(default = "default_rollback")]
     pub rollback_strategy: String,
 }
@@ -61,6 +76,7 @@ impl Default for WorkspacePolicy {
     fn default() -> Self {
         Self {
             allow_fuzzy_apply: false,
+            fuzzy_confidence_threshold: default_fuzzy_confidence(),
             rollback_strategy: default_rollback(),
         }
     }
@@ -68,6 +84,10 @@ impl Default for WorkspacePolicy {
 
 fn default_rollback() -> String {
     "journal".into()
+}
+
+fn default_fuzzy_confidence() -> f64 {
+    0.95
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +103,14 @@ pub(crate) struct WorkspaceOperation {
     #[serde(default)]
     pub content: Option<String>,
     #[serde(default)]
+    pub restore_payload: Option<RestorePayload>,
+    #[serde(default)]
+    pub anchor_before: Option<String>,
+    #[serde(default)]
+    pub replacement: Option<String>,
+    #[serde(default = "default_expected_occurrences")]
+    pub expected_occurrences: usize,
+    #[serde(default)]
     pub per_op_proof: Option<OperationProof>,
     #[serde(default)]
     pub restored_preview_hash: Option<String>,
@@ -94,6 +122,10 @@ pub(crate) struct WorkspaceOperation {
     pub full_file_scope: bool,
     #[serde(default)]
     pub confidence: Option<f64>,
+}
+
+fn default_expected_occurrences() -> usize {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +189,23 @@ pub(crate) struct WorkspaceApplyReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct RefactorPlanReport {
+    pub status: String,
+    pub plan_id: String,
+    pub chunk_size: usize,
+    pub chunk_count: usize,
+    pub chunks: Vec<RefactorChunk>,
+    pub verification: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RefactorChunk {
+    pub chunk_id: String,
+    pub operation_ids: Vec<String>,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct RollbackEntry {
     pub path: String,
     pub existed_before: bool,
@@ -184,6 +233,21 @@ pub(crate) fn execute_workspace(cmd: WorkspaceCmd) -> Result<()> {
                     "applied {} operation(s) plan_hash={}",
                     report.applied_operations, report.plan_hash
                 );
+            }
+        }
+        WorkspaceCmd::RefactorPlan(cmd) => {
+            let plan = read_plan(cmd.payload)?;
+            let report = refactor_plan(&plan, cmd.chunk_size)?;
+            if cmd.json {
+                print_json(&report)?;
+            } else {
+                println!(
+                    "refactor plan {}: {} chunk(s)",
+                    report.plan_id, report.chunk_count
+                );
+                for chunk in report.chunks {
+                    println!("{} {}", chunk.chunk_id, chunk.operation_ids.join(","));
+                }
             }
         }
     }
@@ -327,6 +391,91 @@ fn validate_scope_authority(op: &WorkspaceOperation) -> Result<()> {
     Ok(())
 }
 
+fn operation_content(op: &WorkspaceOperation) -> Result<Option<String>> {
+    if let Some(payload) = &op.restore_payload {
+        return Ok(Some(restore_file_payload(payload.clone())?.file_code));
+    }
+    Ok(op.content.clone())
+}
+
+fn validate_conflicts(plan: &WorkspaceApplyPlan) -> Result<()> {
+    for (idx, left) in plan.operations.iter().enumerate() {
+        for right in plan.operations.iter().skip(idx + 1) {
+            if let Some(path_before) = left
+                .path_before
+                .as_ref()
+                .filter(|_| left.path_before == right.path_before)
+            {
+                bail!(
+                    "workspace conflict: operations {} and {} both mutate {}; merge same-file mutations into one full-file candidate",
+                    left.op_id,
+                    right.op_id,
+                    path_before.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_fuzzy_candidate(
+    plan: &WorkspaceApplyPlan,
+    op: &WorkspaceOperation,
+    path: &Path,
+) -> Result<String> {
+    if !plan.policy.allow_fuzzy_apply {
+        bail!("modify_fuzzy requires policy.allow_fuzzy_apply=true");
+    }
+    let confidence = op.confidence.unwrap_or(0.0);
+    if confidence < plan.policy.fuzzy_confidence_threshold {
+        bail!(
+            "modify_fuzzy {} confidence {confidence:.2} below threshold {:.2}",
+            op.op_id,
+            plan.policy.fuzzy_confidence_threshold
+        );
+    }
+    let anchor = op
+        .anchor_before
+        .as_deref()
+        .ok_or_else(|| anyhow!("modify_fuzzy {} requires anchor_before", op.op_id))?;
+    let restored_replacement = operation_content(op)?;
+    let replacement = restored_replacement
+        .as_deref()
+        .or(op.replacement.as_deref())
+        .or(op.content.as_deref())
+        .ok_or_else(|| {
+            anyhow!(
+                "modify_fuzzy {} requires restore_payload/replacement/content",
+                op.op_id
+            )
+        })?;
+    let text = fs::read_to_string(path)?;
+    let expected_base = op
+        .base_file_hash
+        .as_deref()
+        .ok_or_else(|| anyhow!("modify_fuzzy {} requires base_file_hash", op.op_id))?;
+    let actual_base = sha256_hex(&text);
+    if actual_base != expected_base {
+        bail!("modify_fuzzy {} stale base hash", op.op_id);
+    }
+    let occurrences = text.match_indices(anchor).count();
+    if occurrences != op.expected_occurrences || occurrences != 1 {
+        bail!(
+            "modify_fuzzy {} ambiguous anchor occurrences={occurrences}",
+            op.op_id
+        );
+    }
+    let candidate = text.replacen(anchor, replacement, 1);
+    let expected_preview = op
+        .restored_preview_hash
+        .as_deref()
+        .ok_or_else(|| anyhow!("modify_fuzzy {} requires restored_preview_hash", op.op_id))?;
+    if sha256_hex(&candidate) != expected_preview {
+        bail!("modify_fuzzy {} restored preview hash mismatch", op.op_id);
+    }
+    Ok(candidate)
+}
+
 pub(crate) fn validate_plan(plan: &WorkspaceApplyPlan) -> Result<WorkspaceValidationReport> {
     if plan.plan_id.trim().is_empty() {
         bail!("workspace plan requires plan_id");
@@ -335,6 +484,7 @@ pub(crate) fn validate_plan(plan: &WorkspaceApplyPlan) -> Result<WorkspaceValida
         bail!("workspace plan requires at least one operation");
     }
     validate_origin(&plan.origin)?;
+    validate_conflicts(plan)?;
     let mut previews = Vec::new();
     let mut diff = String::new();
     let mut destinations = BTreeMap::<PathBuf, String>::new();
@@ -353,12 +503,14 @@ pub(crate) fn validate_plan(plan: &WorkspaceApplyPlan) -> Result<WorkspaceValida
             WorkspaceOpKind::ModifyExact => {
                 let path = before
                     .ok_or_else(|| anyhow!("modify_exact {} requires path_before", op.op_id))?;
-                let content = op
-                    .content
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("modify_exact {} requires content", op.op_id))?;
+                let content = operation_content(op)?.ok_or_else(|| {
+                    anyhow!(
+                        "modify_exact {} requires content or restore_payload",
+                        op.op_id
+                    )
+                })?;
                 if let Some(expected_preview) = op.restored_preview_hash.as_deref() {
-                    if sha256_hex(content) != expected_preview {
+                    if sha256_hex(&content) != expected_preview {
                         bail!("modify_exact {} restored preview hash mismatch", op.op_id);
                     }
                 }
@@ -382,31 +534,29 @@ pub(crate) fn validate_plan(plan: &WorkspaceApplyPlan) -> Result<WorkspaceValida
                 previews.push(preview(op, "exact file modification validated"));
             }
             WorkspaceOpKind::ModifyFuzzy => {
-                if plan.policy.allow_fuzzy_apply {
-                    bail!("modify_fuzzy mutation is not enabled in this P1/P2 gate; use preview-only until strict confidence tests exist");
-                }
                 let path = before
                     .ok_or_else(|| anyhow!("modify_fuzzy {} requires path_before", op.op_id))?;
                 if !path.exists() {
                     bail!("modify_fuzzy {} target missing", op.op_id);
                 }
+                let candidate = validate_fuzzy_candidate(plan, op, path)?;
                 diff.push_str(&format!(
-                    "--- {}\n+++ {}\n@@ fuzzy preview only\n",
+                    "--- {}\n+++ {}\n@@ fuzzy unique-anchor replace\n{}\n",
                     path.display(),
-                    path.display()
+                    path.display(),
+                    candidate
                 ));
-                previews.push(preview(op, "fuzzy modification preview-only validated"));
+                previews.push(preview(op, "fuzzy unique-anchor modification validated"));
             }
             WorkspaceOpKind::Add => {
                 let path = after.ok_or_else(|| anyhow!("add {} requires path_after", op.op_id))?;
                 if path.exists() {
                     bail!("add {} destination already exists", op.op_id);
                 }
-                if let Some(content) = op.content.as_deref() {
-                    if let Some(expected_preview) = op.restored_preview_hash.as_deref() {
-                        if sha256_hex(content) != expected_preview {
-                            bail!("add {} restored preview hash mismatch", op.op_id);
-                        }
+                let add_content = operation_content(op)?.unwrap_or_default();
+                if let Some(expected_preview) = op.restored_preview_hash.as_deref() {
+                    if sha256_hex(&add_content) != expected_preview {
+                        bail!("add {} restored preview hash mismatch", op.op_id);
                     }
                 }
                 if destinations
@@ -418,7 +568,7 @@ pub(crate) fn validate_plan(plan: &WorkspaceApplyPlan) -> Result<WorkspaceValida
                 diff.push_str(&format!(
                     "--- /dev/null\n+++ {}\n{}\n",
                     path.display(),
-                    op.content.as_deref().unwrap_or("")
+                    add_content
                 ));
                 previews.push(preview(op, "add validated"));
             }
@@ -502,13 +652,6 @@ pub(crate) fn apply_plan(
     if report.plan_hash != expected_hash {
         bail!("workspace plan hash mismatch");
     }
-    if plan
-        .operations
-        .iter()
-        .any(|op| op.kind == WorkspaceOpKind::ModifyFuzzy)
-    {
-        bail!("modify_fuzzy apply is not implemented; validate preview only");
-    }
     let mut rollback = Vec::<(PathBuf, Option<String>)>::new();
     let mut journal = Vec::<RollbackEntry>::new();
     for op in &plan.operations {
@@ -532,7 +675,7 @@ pub(crate) fn apply_plan(
             match op.kind {
                 WorkspaceOpKind::ModifyExact => fs::write(
                     op.path_before.as_ref().unwrap(),
-                    op.content.as_deref().unwrap_or(""),
+                    operation_content(op)?.unwrap_or_default(),
                 )?,
                 WorkspaceOpKind::Add => {
                     if let Some(parent) = op.path_after.as_ref().unwrap().parent() {
@@ -542,7 +685,7 @@ pub(crate) fn apply_plan(
                     }
                     fs::write(
                         op.path_after.as_ref().unwrap(),
-                        op.content.as_deref().unwrap_or(""),
+                        operation_content(op)?.unwrap_or_default(),
                     )?;
                 }
                 WorkspaceOpKind::Delete => fs::remove_file(op.path_before.as_ref().unwrap())?,
@@ -557,7 +700,11 @@ pub(crate) fn apply_plan(
                         op.path_after.as_ref().unwrap(),
                     )?;
                 }
-                WorkspaceOpKind::ModifyFuzzy => bail!("modify_fuzzy apply is not implemented"),
+                WorkspaceOpKind::ModifyFuzzy => {
+                    let path = op.path_before.as_ref().unwrap();
+                    let candidate = validate_fuzzy_candidate(plan, op, path)?;
+                    fs::write(path, candidate)?;
+                }
             }
         }
         Ok(())
@@ -586,5 +733,45 @@ pub(crate) fn apply_plan(
         plan_hash: report.plan_hash,
         applied_operations: plan.operations.len(),
         rollback_journal: journal,
+    })
+}
+
+pub(crate) fn refactor_plan(
+    plan: &WorkspaceApplyPlan,
+    chunk_size: usize,
+) -> Result<RefactorPlanReport> {
+    if chunk_size == 0 {
+        bail!("chunk_size must be greater than zero");
+    }
+    let validation = validate_plan(plan)?;
+    let mut chunks = Vec::new();
+    for (idx, ops) in plan.operations.chunks(chunk_size).enumerate() {
+        let mut paths = BTreeMap::<String, ()>::new();
+        for op in ops {
+            if let Some(path) = &op.path_before {
+                paths.insert(path.display().to_string(), ());
+            }
+            if let Some(path) = &op.path_after {
+                paths.insert(path.display().to_string(), ());
+            }
+        }
+        chunks.push(RefactorChunk {
+            chunk_id: format!("chunk-{:03}", idx + 1),
+            operation_ids: ops.iter().map(|op| op.op_id.clone()).collect(),
+            paths: paths.into_keys().collect(),
+        });
+    }
+    Ok(RefactorPlanReport {
+        status: "planned".into(),
+        plan_id: validation.plan_id,
+        chunk_size,
+        chunk_count: chunks.len(),
+        chunks,
+        verification: vec![
+            "validate all chunks before writes".into(),
+            "apply one chunk at a time".into(),
+            "run targeted verification after each chunk".into(),
+            "rollback or stop on first conflict/failure".into(),
+        ],
     })
 }
