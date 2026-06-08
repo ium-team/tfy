@@ -80,8 +80,38 @@ pub(crate) fn execute_adapter(cmd: AdapterCmd) -> Result<()> {
                 },
                 {
                     "target": "codex",
-                    "status": "planned",
-                    "automatic_interception": "not_claimed_without_host_e2e_tests"
+                    "status": "config_snippet_available",
+                    "automatic_interception": "mcp_host_routing_required_not_private_hook",
+                    "claim_gate": "real_host_invocation_plus_ledger_raw_no_negative_savings_evidence"
+                },
+                {
+                    "target": "claude-code",
+                    "status": "config_snippet_available",
+                    "automatic_interception": "mcp_host_routing_required_not_private_hook",
+                    "claim_gate": "real_host_invocation_plus_ledger_raw_no_negative_savings_evidence"
+                },
+                {
+                    "target": "cursor",
+                    "status": "config_snippet_available",
+                    "automatic_interception": "mcp_host_routing_required_not_private_hook",
+                    "claim_gate": "real_host_invocation_plus_ledger_raw_no_negative_savings_evidence"
+                },
+                {
+                    "target": "opencode",
+                    "status": "config_snippet_available",
+                    "automatic_interception": "mcp_host_routing_required_not_private_hook",
+                    "claim_gate": "real_host_invocation_plus_ledger_raw_no_negative_savings_evidence"
+                },
+                {
+                    "target": "hermes",
+                    "status": "config_snippet_available",
+                    "automatic_interception": "mcp_host_routing_required_not_private_hook",
+                    "claim_gate": "real_host_invocation_plus_ledger_raw_no_negative_savings_evidence"
+                },
+                {
+                    "target": "openclaw",
+                    "status": "planned_discovery",
+                    "automatic_interception": "not_claimed_without_official_route_evidence"
                 },
                 {
                     "target": "mcp",

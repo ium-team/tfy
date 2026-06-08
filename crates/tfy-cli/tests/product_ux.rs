@@ -284,6 +284,223 @@ fn smoke_codex_is_checklist_only() {
 }
 
 #[test]
+fn setup_named_hosts_emit_truthful_mcp_snippets_without_claiming_savings() {
+    let cases = [
+        ("codex", "codex mcp add tfy"),
+        ("claude-code", "claude mcp add tfy"),
+        ("cursor", "\"mcpServers\""),
+        ("opencode", "\"mcp\""),
+        ("hermes", "mcp_servers:"),
+    ];
+    for (host, expected) in cases {
+        let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+            .args(["setup", "--ai", "--host", host, "--dry-run"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "host={host} stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains(expected), "host={host} stdout={text}");
+        assert!(
+            text.contains("setup_success_is_not_savings_success=true"),
+            "host={host} stdout={text}"
+        );
+        assert!(
+            text.contains("no private hidden hooks"),
+            "host={host} stdout={text}"
+        );
+    }
+}
+
+#[test]
+fn setup_openclaw_remains_planned_discovery() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["setup", "--ai", "--host", "openclaw", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("planned_discovery"), "{text}");
+    assert!(text.contains("no setup/apply/smoke support"), "{text}");
+}
+
+#[test]
+fn mcp_install_supports_named_host_dry_runs_and_blocks_non_codex_output() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["mcp", "install", "--target", "hermes", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("TFY MCP Hermes setup dry-run"), "{text}");
+    assert!(text.contains("mcp_servers:"), "{text}");
+    assert!(
+        text.contains("Setup success is not token-savings success"),
+        "{text}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cursor.json");
+    let blocked = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "mcp",
+            "install",
+            "--target",
+            "cursor",
+            "--output",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!blocked.status.success());
+    assert!(!path.exists());
+    assert!(
+        String::from_utf8_lossy(&blocked.stderr).contains("Codex TOML only"),
+        "stderr={}",
+        String::from_utf8_lossy(&blocked.stderr)
+    );
+}
+
+#[test]
+fn status_json_exposes_canonical_named_host_taxonomy() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let hosts = json["minimum_v1_host_matrix"].as_array().unwrap();
+    let find = |name: &str| {
+        hosts
+            .iter()
+            .find(|host| host["host"] == name)
+            .unwrap_or_else(|| panic!("missing host {name}: {json}"))
+    };
+    assert_eq!(find("codex")["status"], "config_snippet_available");
+    assert_eq!(find("claude-code")["status"], "config_snippet_available");
+    assert_eq!(find("cursor")["status"], "config_snippet_available");
+    assert_eq!(find("opencode")["status"], "config_snippet_available");
+    assert_eq!(find("hermes")["status"], "config_snippet_available");
+    assert_eq!(find("openclaw")["status"], "planned_discovery");
+}
+
+#[test]
+fn launch_report_keeps_named_host_setup_evidence_below_launch_supported() {
+    let dir = tempfile::tempdir().unwrap();
+    let setup = dir.path().join("setup.txt");
+    let invocation = dir.path().join("invoke.txt");
+    std::fs::write(&setup, "configured").unwrap();
+    std::fs::write(&invocation, "called").unwrap();
+    let evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &evidence,
+        r#"{"hosts":[{"host":"cursor","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup.txt","invocation_artifact":"invoke.txt","overhead_ms":10,"baseline_ms":10}]}"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "cursor")
+        .unwrap();
+    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert!(
+        json["blockers"].as_array().unwrap().iter().any(|b| b
+            .as_str()
+            .unwrap()
+            .contains("no command-output savings data")),
+        "{json}"
+    );
+}
+
+#[test]
+fn launch_report_caps_named_host_even_with_unrelated_mcp_savings() {
+    let dir = tempfile::tempdir().unwrap();
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["smoke", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    let smoke_json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
+    let mut owned_args: Vec<String> = vec!["launch-report", "--all", "--json"]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+    for entry in smoke_json["evidence"].as_array().unwrap() {
+        let text = entry.as_str().unwrap();
+        if let Some(path) = text.strip_prefix("ledger=") {
+            owned_args.push("--ledger".into());
+            owned_args.push(path.to_string());
+        }
+    }
+    std::fs::write(dir.path().join("setup-proof.txt"), "configured").unwrap();
+    std::fs::write(dir.path().join("invocation-proof.txt"), "invoked").unwrap();
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {"host":"cursor","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":10,"baseline_ms":10}
+          ]
+        }"#,
+    )
+    .unwrap();
+    owned_args.push("--host-evidence".into());
+    owned_args.push(host_evidence.display().to_string());
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(&owned_args)
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(json["host_evidence"]["positive_savings"], true, "{json}");
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "cursor")
+        .unwrap();
+    assert_eq!(cursor["status"], "verified_host_invocation", "{json}");
+    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert!(
+        cursor["evidence_gate"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gate| gate
+                .as_str()
+                .unwrap()
+                .contains("observed route_commands=0 route_raw_refs=0")),
+        "{json}"
+    );
+}
+
+#[test]
 fn smoke_codex_with_mcp_json_keeps_stdout_machine_readable() {
     let dir = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
@@ -621,7 +838,7 @@ fn launch_report_promotes_adapter_when_gain_ledger_has_command_evidence() {
         .iter()
         .find(|h| h["host"] == "generic_shell")
         .unwrap();
-    assert_eq!(adapter["status"], "verified_local_smoke");
+    assert_eq!(adapter["status"], "verified_local_mcp");
     assert!(adapter["launch_claim"]
         .as_str()
         .unwrap()
@@ -657,11 +874,12 @@ fn launch_report_blocks_unverified_codex_and_exposes_v1_host_matrix() {
     assert!(hosts.iter().all(|h| h.get("normal_workflow").is_some()));
     assert!(hosts
         .iter()
-        .filter(|h| h["host"] != "codex")
+        .filter(|h| ["mcp_stdio", "tfy_agent_adapter", "generic_shell"]
+            .contains(&h["host"].as_str().unwrap()))
         .all(|h| h["required_for_v1"] == true));
     assert!(hosts
         .iter()
-        .any(|h| h["host"] == "codex" && h["status"] == "configured_but_unverified"));
+        .any(|h| h["host"] == "codex" && h["status"] == "config_snippet_available"));
     assert!(json["not_supported"]
         .as_array()
         .unwrap()
@@ -726,13 +944,13 @@ fn launch_report_blocks_local_smoke_without_host_evidence_and_keeps_codex_unveri
         assert!(
             hosts
                 .iter()
-                .any(|h| h["host"] == required && h["status"] == "verified_local_smoke"),
+                .any(|h| h["host"] == required && h["status"] == "verified_local_mcp"),
             "{json}"
         );
     }
     assert!(hosts
         .iter()
-        .any(|h| h["host"] == "codex" && h["status"] == "configured_but_unverified"));
+        .any(|h| h["host"] == "codex" && h["status"] == "config_snippet_available"));
     assert_eq!(json["host_evidence"]["mcp_state"], true);
     assert_eq!(json["host_evidence"]["positive_savings"], true);
 }
@@ -814,7 +1032,7 @@ fn launch_report_passes_only_with_route_smoke_and_host_evidence() {
     }
     assert!(hosts
         .iter()
-        .any(|h| h["host"] == "codex" && h["status"] == "configured_but_unverified"));
+        .any(|h| h["host"] == "codex" && h["status"] == "config_snippet_available"));
 }
 
 #[test]
@@ -873,7 +1091,7 @@ fn launch_report_rejects_boolean_only_host_evidence() {
         assert!(
             hosts
                 .iter()
-                .any(|h| h["host"] == required && h["status"] == "verified_local_smoke"),
+                .any(|h| h["host"] == required && h["status"] == "verified_local_mcp"),
             "{json}"
         );
     }
@@ -929,7 +1147,7 @@ fn launch_report_classifies_agent_route_without_ledger_name_hint() {
     assert!(
         hosts
             .iter()
-            .any(|h| h["host"] == "tfy_agent_adapter" && h["status"] == "verified_local_smoke"),
+            .any(|h| h["host"] == "tfy_agent_adapter" && h["status"] == "verified_local_mcp"),
         "{json}"
     );
     assert_eq!(json["host_evidence"]["tfy_agent_adapter"], true);

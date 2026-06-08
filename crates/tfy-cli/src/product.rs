@@ -50,6 +50,9 @@ pub(crate) struct InitCmd {
 pub(crate) struct DoctorCmd {
     #[arg(long)]
     pub codex: bool,
+    /// Named AI-agent host to diagnose (codex, claude-code, cursor, opencode, hermes, openclaw).
+    #[arg(long = "host")]
+    pub host: Vec<String>,
     #[arg(long)]
     pub json: bool,
 }
@@ -66,6 +69,9 @@ pub(crate) struct SmokeCmd {
     pub json: bool,
     #[arg(long)]
     pub all: bool,
+    /// Named AI-agent host checklist/smoke target.
+    #[arg(long = "host")]
+    pub host: Vec<String>,
 }
 
 #[derive(Args, Clone)]
@@ -88,6 +94,9 @@ pub(crate) struct SetupCmd {
     /// Print Codex MCP/instruction setup guidance.
     #[arg(long)]
     pub codex: bool,
+    /// Named AI-agent host to configure (codex, claude-code, cursor, opencode, hermes, openclaw).
+    #[arg(long = "host")]
+    pub host: Vec<String>,
     #[arg(long)]
     pub dry_run: bool,
     #[arg(long)]
@@ -198,6 +207,21 @@ struct HostReadiness {
     normal_workflow: String,
     evidence_gate: Vec<String>,
     launch_claim: String,
+}
+
+#[derive(Clone)]
+struct HostIntegration {
+    id: &'static str,
+    display: &'static str,
+    status: &'static str,
+    required_for_v1: bool,
+    config: &'static str,
+    transport: &'static str,
+    official_source: &'static str,
+    setup: &'static str,
+    normal_workflow: &'static str,
+    launch_claim: &'static str,
+    evidence_gate: &'static [&'static str],
 }
 
 #[derive(Serialize)]
@@ -374,6 +398,7 @@ struct HostEvidenceSummary {
     mcp_output: bool,
     mcp_state: bool,
     codex_real_invocation: bool,
+    named_hosts: BTreeMap<String, RouteEvidence>,
     evidence_notes: Vec<String>,
 }
 
@@ -443,13 +468,32 @@ pub(crate) fn execute_init(cmd: InitCmd) -> Result<()> {
 }
 
 pub(crate) fn execute_doctor(cmd: DoctorCmd) -> Result<()> {
-    let report = build_doctor_report(cmd.codex);
+    let report = build_doctor_report(cmd.codex || !cmd.host.is_empty());
+    let host_reports: Vec<_> = cmd
+        .host
+        .iter()
+        .map(|host| host_doctor_report(host))
+        .collect::<Result<_>>()?;
     if cmd.json {
-        print_json(&report)?;
+        if host_reports.is_empty() {
+            print_json(&report)?;
+        } else {
+            print_json(&json!({
+                "status": report.status,
+                "diagnostics": report.diagnostics,
+                "hosts": host_reports
+            }))?;
+        }
     } else {
         println!("TFY doctor: {}", report.status);
         for d in &report.diagnostics {
             println!("{} {} — {}", status_icon(&d.status), d.name, d.message);
+        }
+        for host in &host_reports {
+            println!(
+                "host {}: {} — {}",
+                host["host"], host["status"], host["message"]
+            );
         }
     }
     if report.status == "fail" {
@@ -459,6 +503,28 @@ pub(crate) fn execute_doctor(cmd: DoctorCmd) -> Result<()> {
 }
 
 pub(crate) fn execute_smoke(cmd: SmokeCmd) -> Result<()> {
+    if !cmd.host.is_empty() {
+        let host_reports: Vec<_> = cmd
+            .host
+            .iter()
+            .map(|host| host_smoke_report(host))
+            .collect::<Result<_>>()?;
+        if cmd.json {
+            print_json(&json!({
+                "status": if host_reports.iter().all(|h| h["status"] != "unsupported") {"pass"} else {"warn"},
+                "mode": "host",
+                "hosts": host_reports
+            }))?;
+        } else {
+            for host in host_reports {
+                println!(
+                    "TFY smoke host {}: {} — {}",
+                    host["host"], host["status"], host["message"]
+                );
+            }
+        }
+        return Ok(());
+    }
     if cmd.all {
         let mut reports = Vec::new();
         let mut evidence = Vec::new();
@@ -526,8 +592,8 @@ pub(crate) fn execute_smoke(cmd: SmokeCmd) -> Result<()> {
 }
 
 pub(crate) fn execute_setup(cmd: SetupCmd) -> Result<()> {
-    if !(cmd.ai || cmd.codex) {
-        bail!("setup requires --ai and/or --codex; use `tfy setup --ai --codex --dry-run`");
+    if !(cmd.ai || cmd.codex || !cmd.host.is_empty()) {
+        bail!("setup requires --ai, --codex, and/or --host <host>; use `tfy setup --ai --host codex --dry-run`");
     }
     if cmd.ai {
         println!("TFY setup ai: supported_host_routing=true ordinary_terminal_interception=false provider_gateway=false editor_integration=false");
@@ -542,8 +608,17 @@ pub(crate) fn execute_setup(cmd: SetupCmd) -> Result<()> {
             global: false,
             dry_run: cmd.dry_run || !cmd.apply,
             apply: cmd.apply,
-            session: cmd.session,
+            session: cmd.session.clone(),
         })?;
+    }
+    for host in &cmd.host {
+        let integration = host_integration(host)?;
+        print_host_setup(
+            integration,
+            &cmd.session,
+            cmd.dry_run || !cmd.apply,
+            cmd.apply,
+        )?;
     }
     Ok(())
 }
@@ -644,6 +719,243 @@ pub(crate) fn execute_gain(cmd: GainCmd) -> Result<()> {
         println!("fallback_frequency={:.2}", report.fallback_frequency);
     }
     Ok(())
+}
+
+fn host_registry() -> Vec<HostIntegration> {
+    vec![
+        HostIntegration {
+            id: "codex",
+            display: "Codex",
+            status: "config_snippet_available",
+            required_for_v1: false,
+            config: "codex mcp add tfy -- tfy mcp serve ... or ~/.codex/config.toml [mcp_servers.tfy]",
+            transport: "MCP stdio",
+            official_source: "https://developers.openai.com/learn/docs-mcp",
+            setup: "project AGENTS.md guidance plus Codex MCP command/TOML snippet",
+            normal_workflow: "Codex may call TFY MCP tools after host MCP routing is configured; setup alone is not token-savings proof",
+            launch_claim: "not launch-supported until real Codex invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
+            evidence_gate: &[
+                "official OpenAI MCP setup source pinned",
+                "local TFY MCP initialize/tools-list smoke",
+                "real Codex invocation artifact",
+                "raw/model byte ledger with no-negative-savings proof",
+                "overhead baseline or explicit exception",
+            ],
+        },
+        HostIntegration {
+            id: "claude-code",
+            display: "Claude Code",
+            status: "config_snippet_available",
+            required_for_v1: false,
+            config: "claude mcp add ... or project .mcp.json mcpServers.tfy",
+            transport: "MCP stdio/http per Claude support",
+            official_source: "https://code.claude.com/docs/en/agent-sdk/mcp",
+            setup: "Claude MCP command and .mcp.json snippet; hooks are follow-up only when official/tested",
+            normal_workflow: "Claude Code uses TFY only through configured MCP tools; setup alone is not token-savings proof",
+            launch_claim: "not launch-supported until real Claude invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
+            evidence_gate: &[
+                "official Claude MCP source pinned",
+                "local TFY MCP initialize/tools-list smoke",
+                "real Claude invocation artifact",
+                "raw/model byte ledger with no-negative-savings proof",
+                "overhead baseline or explicit exception",
+            ],
+        },
+        HostIntegration {
+            id: "cursor",
+            display: "Cursor",
+            status: "config_snippet_available",
+            required_for_v1: false,
+            config: "~/.cursor/mcp.json or project .cursor/mcp.json mcpServers.tfy",
+            transport: "MCP host routing",
+            official_source: "https://docs.cursor.com/context/model-context-protocol",
+            setup: "Cursor ~/.cursor/mcp.json or project .cursor/mcp.json snippet plus rule/instruction guidance",
+            normal_workflow: "Cursor agent can use TFY MCP tools after MCP server is enabled; setup alone is not token-savings proof",
+            launch_claim: "not launch-supported until real Cursor invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
+            evidence_gate: &[
+                "Cursor/OpenAI MCP setup source pinned",
+                "local TFY MCP initialize/tools-list smoke",
+                "real Cursor invocation artifact",
+                "raw/model byte ledger with no-negative-savings proof",
+                "overhead baseline or explicit exception",
+            ],
+        },
+        HostIntegration {
+            id: "opencode",
+            display: "OpenCode",
+            status: "config_snippet_available",
+            required_for_v1: false,
+            config: "opencode.json(c) mcp.tfy local server entry",
+            transport: "MCP local server",
+            official_source: "https://opencode.ai/docs/mcp-servers",
+            setup: "OpenCode opencode.json(c) MCP snippet; JSONC apply remains dry-run until comment-preserving writer exists",
+            normal_workflow: "OpenCode can discover TFY MCP tools from config; setup alone is not token-savings proof",
+            launch_claim: "not launch-supported until real OpenCode invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
+            evidence_gate: &[
+                "official OpenCode MCP setup source pinned",
+                "local TFY MCP initialize/tools-list smoke",
+                "real OpenCode invocation artifact",
+                "raw/model byte ledger with no-negative-savings proof",
+                "overhead baseline or explicit exception",
+            ],
+        },
+        HostIntegration {
+            id: "hermes",
+            display: "Hermes",
+            status: "config_snippet_available",
+            required_for_v1: false,
+            config: "~/.hermes/config.yaml mcp_servers.tfy or hermes mcp add tfy ... with tools.include filtering",
+            transport: "MCP stdio/http per Hermes support",
+            official_source: "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp",
+            setup: "Nous Hermes mcp_servers YAML / hermes mcp add guidance with least-surface tool include list",
+            normal_workflow: "Hermes discovers TFY MCP tools at startup/reload; setup alone is not token-savings proof",
+            launch_claim: "not launch-supported until real Hermes invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
+            evidence_gate: &[
+                "official Nous Hermes MCP source pinned",
+                "local TFY MCP initialize/tools-list smoke",
+                "real Hermes invocation artifact",
+                "raw/model byte ledger with no-negative-savings proof",
+                "overhead baseline or explicit exception",
+            ],
+        },
+        HostIntegration {
+            id: "openclaw",
+            display: "OpenClaw",
+            status: "planned_discovery",
+            required_for_v1: false,
+            config: "unknown; no TFY-consumable host route accepted yet",
+            transport: "unknown",
+            official_source: "none accepted yet",
+            setup: "no setup/apply/smoke support until official docs or installed CLI proof shows a route",
+            normal_workflow: "discovery-only; TFY must not claim OpenClaw automatic routing",
+            launch_claim: "unsupported/planned until official/current evidence proves a safe route",
+            evidence_gate: &[
+                "official docs or installed local CLI proof required",
+                "route-specific setup and invocation artifacts required before support",
+            ],
+        },
+    ]
+}
+
+fn host_integration(host: &str) -> Result<HostIntegration> {
+    let normalized = host.trim().to_ascii_lowercase().replace('_', "-");
+    host_registry()
+        .into_iter()
+        .find(|candidate| {
+            candidate.id == normalized
+                || (candidate.id == "claude-code" && normalized == "claude")
+                || (candidate.id == "opencode" && normalized == "open-code")
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "unknown host '{host}'; supported hosts: {}",
+                host_registry()
+                    .iter()
+                    .map(|h| h.id)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+}
+
+fn host_mcp_args(session: &str) -> String {
+    format!(
+        "[\"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"]"
+    )
+}
+
+fn host_setup_snippet(host: &HostIntegration, session: &str) -> String {
+    let args = host_mcp_args(session);
+    match host.id {
+        "codex" => format!(
+            "codex mcp add tfy -- tfy mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw\n\n[mcp_servers.tfy]\ncommand = \"tfy\"\nargs = {args}\n"
+        ),
+        "claude-code" => format!(
+            "claude mcp add tfy -- tfy mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw\n\n{{\n  \"mcpServers\": {{\n    \"tfy\": {{\n      \"command\": \"tfy\",\n      \"args\": {args}\n    }}\n  }}\n}}\n"
+        ),
+        "cursor" => format!(
+            "{{\n  \"mcpServers\": {{\n    \"tfy\": {{\n      \"command\": \"tfy\",\n      \"args\": {args}\n    }}\n  }}\n}}\n"
+        ),
+        "opencode" => format!(
+            "{{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"mcp\": {{\n    \"tfy\": {{\n      \"type\": \"local\",\n      \"command\": [\"tfy\", \"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"],\n      \"enabled\": true\n    }}\n  }}\n}}\n"
+        ),
+        "hermes" => format!(
+            "hermes mcp add tfy --command tfy --args mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw\n\nmcp_servers:\n  tfy:\n    command: \"tfy\"\n    args: [\"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"]\n    enabled: true\n    tools:\n      include: [tfy_tool_run, tfy_raw_get, tfy_scope_list, tfy_context_get, tfy_output_validate, tfy_output_apply, tfy_state_project, tfy_adapter_report]\n"
+        ),
+        "openclaw" => "OpenClaw is planned_discovery only; no TFY setup snippet is emitted until official/current evidence proves a safe route.\n".into(),
+        _ => unreachable!("host registry returned unknown host"),
+    }
+}
+
+fn print_host_setup(
+    host: HostIntegration,
+    session: &str,
+    dry_run: bool,
+    apply: bool,
+) -> Result<()> {
+    if host.status == "planned_discovery" {
+        println!("TFY setup host={} status=planned_discovery", host.id);
+        println!("source={}", host.official_source);
+        println!("{}", host.setup);
+        println!("{}", host.launch_claim);
+        return Ok(());
+    }
+    if apply {
+        bail!(
+            "automatic --apply for host '{}' is not implemented safely yet; rerun with --dry-run and apply the printed reversible host config manually",
+            host.id
+        );
+    }
+    println!("TFY setup host={} status={}", host.id, host.status);
+    println!("display={}", host.display);
+    println!("transport={}", host.transport);
+    println!("official_source={}", host.official_source);
+    println!("config={}", host.config);
+    println!("dry_run={dry_run} applied=false");
+    println!("setup_success_is_not_savings_success=true");
+    println!("--- snippet ---");
+    print!("{}", host_setup_snippet(&host, session));
+    println!("--- boundary ---");
+    println!("MCP host routing only; no private hidden hooks, provider prompt mutation, editor auto-integration, or universal human-shell interception.");
+    println!("{}", host.launch_claim);
+    Ok(())
+}
+
+fn host_doctor_report(host: &str) -> Result<serde_json::Value> {
+    let host = host_integration(host)?;
+    Ok(json!({
+        "host": host.id,
+        "display": host.display,
+        "status": host.status,
+        "message": if host.status == "planned_discovery" {
+            host.setup
+        } else {
+            "config snippet available; local MCP doctor checks prove TFY server health, not real host invocation"
+        },
+        "transport": host.transport,
+        "config": host.config,
+        "official_source": host.official_source,
+        "evidence_gate": host.evidence_gate,
+        "setup_success_is_not_savings_success": true,
+        "launch_claim": host.launch_claim,
+    }))
+}
+
+fn host_smoke_report(host: &str) -> Result<serde_json::Value> {
+    let host = host_integration(host)?;
+    Ok(json!({
+        "host": host.id,
+        "display": host.display,
+        "status": if host.status == "planned_discovery" { "unsupported" } else { "checklist" },
+        "message": if host.status == "planned_discovery" {
+            host.setup
+        } else {
+            "host smoke is checklist/evidence collection until the named host actually invokes TFY; run `tfy smoke --mcp --json` for local MCP proof"
+        },
+        "local_mcp_command": "tfy smoke --mcp --json",
+        "required_host_evidence": host.evidence_gate,
+        "setup_success_is_not_savings_success": true,
+    }))
 }
 
 fn selected_targets(project: bool, global: bool) -> Vec<ScopeTarget> {
@@ -845,7 +1157,7 @@ fn build_product_status_report() -> ProductStatusReport {
             SurfaceStatus { name: "compact_code_restore".into(), status: "active".into(), message: "Compact one-line/short-symbol transport is restored to readable canonical code for files and user display.".into() },
             SurfaceStatus { name: "workspace_apply".into(), status: "active".into(), message: "Multi-file add/modify/delete/rename/move apply is proof-gated and rollback-journaled.".into() },
             SurfaceStatus { name: "fuzzy_refactor_apply".into(), status: "active".into(), message: "Fuzzy edits require unique anchors, confidence threshold, restored preview hashes, and conflict checks.".into() },
-            SurfaceStatus { name: "codex_host_routing".into(), status: "configured_but_unverified".into(), message: "TFY can install Codex MCP/instruction guidance; host invocation must be verified by smoke/ledger evidence.".into() },
+            SurfaceStatus { name: "codex_host_routing".into(), status: "config_snippet_available".into(), message: "TFY can install Codex MCP/instruction guidance; host invocation must be verified by smoke/ledger evidence.".into() },
             SurfaceStatus { name: "ordinary_human_terminal".into(), status: "not_supported".into(), message: "TFY intentionally does not intercept regular terminal use.".into() },
             SurfaceStatus { name: "provider_api_gateway".into(), status: "not_supported".into(), message: "OpenAI/provider request proxying is outside TFY scope.".into() },
             SurfaceStatus { name: "editor_integration".into(), status: "not_supported".into(), message: "Editor auto-connection is outside TFY scope.".into() },
@@ -858,10 +1170,10 @@ fn build_product_status_report() -> ProductStatusReport {
 }
 
 fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
-    vec![
+    let mut hosts = vec![
         HostReadiness {
             host: "mcp_stdio".into(),
-            status: "configurable_local_smoke_required".into(),
+            status: "not_configured".into(),
             required_for_v1: true,
             setup: "tfy mcp serve configured by the host".into(),
             normal_workflow: "host agent calls normal MCP tools/resources; user does not manually compact, paste refs, or edit raw ledgers on the happy path".into(),
@@ -874,7 +1186,7 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
         },
         HostReadiness {
             host: "tfy_agent_adapter".into(),
-            status: "configurable_evidence_required".into(),
+            status: "not_configured".into(),
             required_for_v1: true,
             setup: "tfy agent or tfy adapter run wraps AI-origin command execution".into(),
             normal_workflow: "agent still requests ordinary commands; configured TFY wrapper preserves exit/status semantics while compacting model-visible feedback".into(),
@@ -887,7 +1199,7 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
         },
         HostReadiness {
             host: "generic_shell".into(),
-            status: "configurable_wrapper_evidence_required".into(),
+            status: "not_configured".into(),
             required_for_v1: true,
             setup: "tfy adapter install --target generic-shell".into(),
             normal_workflow: "only the configured agent command executor is wrapped; ordinary human terminals are never globally intercepted".into(),
@@ -901,7 +1213,7 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
         },
         HostReadiness {
             host: "codex".into(),
-            status: "configured_but_unverified".into(),
+            status: "config_snippet_available".into(),
             required_for_v1: false,
             setup: "Codex MCP config plus TFY AGENTS.md guidance".into(),
             normal_workflow: "Codex remains normal only after official/configurable MCP or hook routing proves real host invocation; checklist-only guidance is not launch support".into(),
@@ -910,9 +1222,28 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
                 "ledger events from Codex session".into(),
                 "raw recovery and no-negative-savings".into(),
             ],
-            launch_claim: "not launch-supported until host invocation evidence exists".into(),
+            launch_claim: "not launch-supported until real Codex invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists".into(),
         },
-    ]
+    ];
+    for host in host_registry()
+        .into_iter()
+        .filter(|host| host.id != "codex")
+    {
+        hosts.push(HostReadiness {
+            host: host.id.into(),
+            status: host.status.into(),
+            required_for_v1: host.required_for_v1,
+            setup: host.setup.into(),
+            normal_workflow: host.normal_workflow.into(),
+            evidence_gate: host
+                .evidence_gate
+                .iter()
+                .map(|item| (*item).into())
+                .collect(),
+            launch_claim: host.launch_claim.into(),
+        });
+    }
+    hosts
 }
 
 fn not_supported_surfaces() -> Vec<String> {
@@ -1157,6 +1488,55 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     overhead_measured,
                     overhead_passed
                 ));
+            } else if host_integration(&host.host).is_ok() {
+                let setup_artifact_verified = host
+                    .setup_artifact
+                    .as_ref()
+                    .is_some_and(|artifact| host_artifact_exists(base, artifact));
+                let invocation_artifact_verified = host
+                    .invocation_artifact
+                    .as_ref()
+                    .is_some_and(|artifact| host_artifact_exists(base, artifact));
+                let overhead_measured = host.overhead_ms.is_some() && host.baseline_ms.is_some();
+                let overhead_passed = match (host.overhead_ms, host.baseline_ms) {
+                    (Some(overhead), Some(baseline)) => {
+                        overhead <= baseline.saturating_mul(2)
+                            && overhead <= baseline.saturating_add(5_000)
+                    }
+                    _ => false,
+                } || host
+                    .overhead_exception
+                    .as_deref()
+                    .is_some_and(|exception| !exception.trim().is_empty());
+                let route = summary
+                    .named_hosts
+                    .entry(host.host.clone())
+                    .or_insert_with(|| RouteEvidence {
+                        no_negative_savings: true,
+                        ..Default::default()
+                    });
+                route.setup_artifact_verified |= setup_artifact_verified;
+                route.invocation_artifact_verified |= invocation_artifact_verified;
+                route.setup_verified |= host.setup_verified && setup_artifact_verified;
+                route.real_invocation_verified |=
+                    host.real_invocation_verified && invocation_artifact_verified;
+                route.overhead_measured |= overhead_measured;
+                route.overhead_passed |= overhead_passed;
+                route.overhead_ms = route.overhead_ms.or(host.overhead_ms);
+                route.baseline_ms = route.baseline_ms.or(host.baseline_ms);
+                if route.overhead_exception.is_none() {
+                    route.overhead_exception = host.overhead_exception;
+                }
+                summary.evidence_notes.push(format!(
+                    "named_host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={}",
+                    host.host,
+                    host.setup_verified,
+                    setup_artifact_verified,
+                    host.real_invocation_verified,
+                    invocation_artifact_verified,
+                    overhead_measured,
+                    overhead_passed
+                ));
             }
         }
     }
@@ -1213,12 +1593,22 @@ fn apply_launch_evidence(
                     && route.positive_savings;
                 (local, local && route_host_ready(route), Some(route))
             }
-            "codex" => (
-                evidence.codex_real_invocation && evidence.raw_refs > 0,
-                false,
-                None,
-            ),
-            _ => (false, false, None),
+            "codex" => {
+                let named = evidence.named_hosts.get("codex");
+                let local = named
+                    .is_some_and(|route| route.setup_verified || route.real_invocation_verified);
+                // Named-host setup/invocation artifacts are not enough to claim token-saving launch
+                // support. Keep named hosts capped below launch_supported until TFY records
+                // host-bound ledger/raw/no-negative-savings evidence for that specific host.
+                (local, false, named)
+            }
+            other => {
+                let named = evidence.named_hosts.get(other);
+                let local = named
+                    .is_some_and(|route| route.setup_verified || route.real_invocation_verified);
+                // Do not borrow shared MCP savings as proof for a named host.
+                (local, false, named)
+            }
         };
         if launch_supported {
             host.status = "launch_supported".into();
@@ -1226,9 +1616,16 @@ fn apply_launch_evidence(
                 "launch-supported for this report: setup, real host invocation, ledger evidence, raw recovery, and no-negative-savings gates passed"
                     .into();
         } else if local_verified {
-            host.status = "verified_local_smoke".into();
+            host.status = if route.is_some_and(|route| route.real_invocation_verified) {
+                "verified_host_invocation"
+            } else if route.is_some_and(|route| route.setup_verified) {
+                "applied_unverified"
+            } else {
+                "verified_local_mcp"
+            }
+            .into();
             host.launch_claim =
-                "local smoke verified, but not launch-supported until host setup and real invocation evidence are supplied"
+                "local smoke verified, but not launch-supported until host setup, real invocation, and route-bound TFY ledger/raw/no-negative/positive-savings evidence are supplied"
                     .into();
         }
         if local_verified || launch_supported {

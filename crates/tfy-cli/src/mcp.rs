@@ -63,7 +63,7 @@ fn mcp_capabilities() -> serde_json::Value {
         "stdout_contract": "json_rpc_only",
         "logs": "stderr_or_file_only",
         "automatic_interception": "mcp_host_routing_required_not_private_hook",
-        "supported_targets": ["mcp-stdio", "codex-setup-snippet"],
+        "supported_targets": ["mcp-stdio", "codex-setup-snippet", "claude-code-setup-snippet", "cursor-setup-snippet", "opencode-setup-snippet", "hermes-setup-snippet", "openclaw-planned-discovery"],
         "not_claimed": ["private_codex_hook", "provider_prompt_gateway", "universal_shell_interception"],
         "tools": mcp_tools(),
         "resource_templates": mcp_resource_templates(),
@@ -76,17 +76,15 @@ pub(crate) fn execute_mcp_install(
     output: Option<PathBuf>,
     session: &str,
 ) -> Result<()> {
-    if target != "codex" {
-        bail!("mcp install target '{target}' is not implemented; supported target: codex");
+    if output.is_some() && target != "codex" {
+        bail!("--output writes Codex TOML only today; use --dry-run for target '{target}' and apply the printed reversible host config manually");
     }
-    let command_line = format!(
-        "codex mcp add tfy -- tfy mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw"
-    );
+    let text = mcp_install_text(target, session)?;
     let toml = format!(
         "[mcp_servers.tfy]\ncommand = \"tfy\"\nargs = [\"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"]\n"
     );
-    let text = format!(
-        "TFY MCP Codex setup dry-run\n\n{command_line}\n\n# Equivalent ~/.codex/config.toml snippet\n{toml}\nNo files changed by this dry-run. Apply manually with the command above or copy the TOML snippet. Remove/revert by deleting the tfy MCP server entry from Codex config. This is MCP tool/resource integration, not private Codex hook interception, provider prompt interception, or universal shell command interception.\n"
+    let command_line = format!(
+        "codex mcp add tfy -- tfy mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw"
     );
     if let Some(path) = output {
         if dry_run {
@@ -107,6 +105,35 @@ pub(crate) fn execute_mcp_install(
         print!("{text}");
     }
     Ok(())
+}
+
+fn mcp_install_text(target: &str, session: &str) -> Result<String> {
+    let args = format!(
+        "[\"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"]"
+    );
+    let boundary = "No files changed by this dry-run. Setup success is not token-savings success. Launch support requires real host invocation plus TFY ledger/raw/no-negative-savings evidence. This is MCP tool/resource integration, not private Codex hook interception, provider prompt interception, editor auto-integration, or universal shell command interception.";
+    let body = match target {
+        "codex" => format!(
+            "TFY MCP Codex setup dry-run\n\ncodex mcp add tfy -- tfy mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw\n\n# Equivalent ~/.codex/config.toml snippet\n[mcp_servers.tfy]\ncommand = \"tfy\"\nargs = {args}\n\n{boundary}\n"
+        ),
+        "claude-code" | "claude" => format!(
+            "TFY MCP Claude Code setup dry-run\n\nclaude mcp add tfy -- tfy mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw\n\n# Project .mcp.json snippet\n{{\n  \"mcpServers\": {{\n    \"tfy\": {{\"command\": \"tfy\", \"args\": {args}}}\n  }}\n}}\n\n{boundary}\n"
+        ),
+        "cursor" => format!(
+            "TFY MCP Cursor setup dry-run\n\n# ~/.cursor/mcp.json or project .cursor/mcp.json snippet\n{{\n  \"mcpServers\": {{\n    \"tfy\": {{\"command\": \"tfy\", \"args\": {args}}}\n  }}\n}}\n\n{boundary}\n"
+        ),
+        "opencode" | "open-code" => format!(
+            "TFY MCP OpenCode setup dry-run\n\n# opencode.json(c) snippet; JSONC apply is dry-run only until comment-preserving writer exists\n{{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"mcp\": {{\n    \"tfy\": {{\"type\": \"local\", \"command\": [\"tfy\", \"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"], \"enabled\": true}}\n  }}\n}}\n\n{boundary}\n"
+        ),
+        "hermes" => format!(
+            "TFY MCP Hermes setup dry-run\n\nhermes mcp add tfy --command tfy --args mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw\n\n# ~/.hermes/config.yaml snippet\nmcp_servers:\n  tfy:\n    command: \"tfy\"\n    args: [\"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"]\n    enabled: true\n    tools:\n      include: [tfy_tool_run, tfy_raw_get, tfy_scope_list, tfy_context_get, tfy_output_validate, tfy_output_apply, tfy_state_project, tfy_adapter_report]\n\n{boundary}\n"
+        ),
+        "openclaw" => format!(
+            "TFY MCP OpenClaw setup dry-run\n\nstatus=planned_discovery\nNo setup snippet is emitted until official/current evidence proves a TFY-consumable MCP or wrapper route.\n\n{boundary}\n"
+        ),
+        _ => bail!("mcp install target '{target}' is not implemented; supported targets: codex, claude-code, cursor, opencode, hermes, openclaw"),
+    };
+    Ok(body)
 }
 
 fn serve_mcp(
