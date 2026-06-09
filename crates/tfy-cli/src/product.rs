@@ -2039,7 +2039,6 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
     }
 }
 
-
 fn non_empty_opt(value: &Option<String>) -> bool {
     value
         .as_deref()
@@ -2054,7 +2053,10 @@ fn named_host_route_type_allowed(value: &Option<String>) -> bool {
 }
 
 fn named_host_route_is_hook(value: &Option<String>) -> bool {
-    matches!(value.as_deref(), Some("official_host_hook" | "host_hook" | "hook"))
+    matches!(
+        value.as_deref(),
+        Some("official_host_hook" | "host_hook" | "hook")
+    )
 }
 
 fn route_evidence_has_allowed_launch_route(route: &RouteEvidence) -> bool {

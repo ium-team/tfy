@@ -2013,6 +2013,82 @@ fn launch_report_promotes_claims_only_from_route_bound_evidence_tiers() {
 }
 
 #[test]
+fn launch_report_refuses_named_host_unsupported_route_type_even_with_artifacts_and_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    for file in [
+        "setup-proof.txt",
+        "invocation-proof.txt",
+        "cursor-config.json",
+        "cursor-ledger.jsonl",
+        "cursor-raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "proof").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "host_id":"cursor",
+              "host_version":"test",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup-proof.txt",
+              "invocation_artifact":"invocation-proof.txt",
+              "config_scope":"project",
+              "config_path":"cursor-config.json",
+              "route_type":"provider_api_prompt_proxy",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"cursor-raw.txt",
+              "smoke_id":"cursor-provider-proxy-smoke",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "redacted_public_bytes":1000,
+              "model_visible_bytes":100,
+              "overhead_ms":10,
+              "baseline_ms":10
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["host"] == "cursor")
+        .unwrap();
+    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert!(!cursor["evidence_tiers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tier| tier == "route_evidence_recorded"));
+    assert!(json["not_supported"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|surface| surface == "provider_api_prompt_proxy"));
+}
+
+#[test]
 fn launch_report_refuses_official_hook_promotion_without_supported_hook_authority() {
     let dir = tempfile::tempdir().unwrap();
     for file in [

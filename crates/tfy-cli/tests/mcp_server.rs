@@ -403,6 +403,15 @@ fn mcp_tool_run_repeated_output_uses_shared_elision_policy() {
         .as_str()
         .unwrap()
         .contains("previous_raw_ref="));
+    assert_eq!(
+        second_payload["route"]["model_bytes"],
+        second_payload["payload"]["model_text"]
+            .as_str()
+            .unwrap()
+            .len()
+    );
+    assert_eq!(second_payload["route"]["positive_savings_proven"], true);
+    assert_eq!(second_payload["route"]["claim_tier"], "savings_verified");
 
     let report = mcp.request(json!({"jsonrpc":"2.0","id":42,"method":"resources/read","params":{"uri":"tfy://report/mcp-repeat"}}));
     let report_text = report["result"]["contents"][0]["text"].as_str().unwrap();

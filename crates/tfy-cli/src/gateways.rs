@@ -269,15 +269,25 @@ pub(crate) fn apply_repeated_output_elision(
     if repeated_text.len() >= raw_size {
         return;
     }
+    let repeated_model_bytes = repeated_text.len();
     *rendering_kind = "repeat_elided".into();
-    *model_bytes = repeated_text.len();
-    *model_chars = repeated_text.len();
-    *summary_chars = repeated_text.len();
+    *model_bytes = repeated_model_bytes;
+    *model_chars = repeated_model_bytes;
+    *summary_chars = repeated_model_bytes;
     *savings_pct = if raw_size == 0 {
         0.0
     } else {
-        ((raw_size as f64 - repeated_text.len() as f64) / raw_size as f64 * 10000.0).round() / 100.0
+        ((raw_size as f64 - repeated_model_bytes as f64) / raw_size as f64 * 10000.0).round()
+            / 100.0
     };
+    event.route = event
+        .route
+        .clone()
+        .with_sizes(raw_size, repeated_model_bytes);
+    response.route = response
+        .route
+        .clone()
+        .with_sizes(raw_size, repeated_model_bytes);
     if let GatewayResponse::ToolCommand {
         summary,
         model_text,
