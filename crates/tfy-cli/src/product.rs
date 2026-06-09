@@ -1942,7 +1942,7 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     .host_id
                     .as_deref()
                     .is_none_or(|host_id| host_id == host.host);
-                let route_type_valid = non_empty_opt(&host.route_type);
+                let route_type_allowed = named_host_route_type_allowed(&host.route_type);
                 let config_scope_valid = non_empty_opt(&host.config_scope);
                 let smoke_id_valid = non_empty_opt(&host.smoke_id);
                 let timestamp_valid = non_empty_opt(&host.timestamp);
@@ -1968,17 +1968,14 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                             (true, false)
                         }
                     };
-                let hook_route = matches!(
-                    host.route_type.as_deref(),
-                    Some("official_host_hook" | "host_hook" | "hook")
-                );
+                let hook_route = named_host_route_is_hook(&host.route_type);
                 let hook_authorized = !hook_route
                     || (host.official_docs_backed == Some(true)
                         && host.kill_switch_available == Some(true)
                         && host.uninstall_available == Some(true)
                         && host_official_hook_launch_supported(&host.host));
                 let host_bound = host_id_matches
-                    && route_type_valid
+                    && route_type_allowed
                     && config_scope_valid
                     && config_path_verified
                     && ledger_artifact_verified
@@ -2042,10 +2039,30 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
     }
 }
 
+
 fn non_empty_opt(value: &Option<String>) -> bool {
     value
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn named_host_route_type_allowed(value: &Option<String>) -> bool {
+    matches!(
+        value.as_deref(),
+        Some("mcp" | "mcp_stdio" | "official_host_hook" | "host_hook" | "hook")
+    )
+}
+
+fn named_host_route_is_hook(value: &Option<String>) -> bool {
+    matches!(value.as_deref(), Some("official_host_hook" | "host_hook" | "hook"))
+}
+
+fn route_evidence_has_allowed_launch_route(route: &RouteEvidence) -> bool {
+    matches!(route.route_type.as_deref(), Some("mcp" | "mcp_stdio"))
+        || (named_host_route_is_hook(&route.route_type)
+            && route.official_docs_backed
+            && route.kill_switch_available
+            && route.uninstall_available)
 }
 
 fn host_accepts_launch_evidence(host: &str) -> bool {
@@ -2245,6 +2262,7 @@ fn host_observed_evidence_tiers(host: &str, route: &RouteEvidence) -> Vec<String
 
 fn named_host_ready(route: &RouteEvidence) -> bool {
     route_host_ready(route)
+        && route_evidence_has_allowed_launch_route(route)
         && route.host_bound_evidence
         && route.commands > 0
         && route.raw_refs > 0
