@@ -291,6 +291,7 @@ fn mcp_tools_call(
                 None,
                 AdapterKind::Mcp,
                 Origin::mcp_host(OriginHost::Generic),
+                RouteEvidence::mcp_tool(OriginHost::Generic),
             )
             .map_err(|e| (-32000, e.to_string()))?;
             apply_repeated_output_elision(ledger, &mut event, &mut response);
@@ -635,6 +636,10 @@ fn mcp_output_apply(
         .map(serde_json::from_value::<ApplyProof>)
         .transpose()
         .map_err(|e| (-32602, e.to_string()))?;
+    let authority_proof = match (payload.apply_proof.as_ref(), proof_override.as_ref()) {
+        (Some(proof), None) | (None, Some(proof)) => Some(proof.clone()),
+        _ => None,
+    };
     if parent_event_id.is_some() && proof_override.is_none() && payload.apply_proof.is_none() {
         return Err((
             -32602,
@@ -692,6 +697,7 @@ fn mcp_output_apply(
                 .as_str()
                 .unwrap_or_default()
                 .to_string()],
+            apply_authority: authority_proof.map(apply_authority_from_proof),
             validation_status: Some(ValidationStatus::Valid),
             ..Default::default()
         },
@@ -725,7 +731,25 @@ fn mcp_event_envelope(
     );
     envelope.provenance = provenance;
     envelope.origin = Origin::mcp_host(OriginHost::Generic);
+    envelope.route = RouteEvidence::mcp_tool(OriginHost::Generic);
     envelope
+}
+
+fn apply_authority_from_proof(proof: ApplyProof) -> ApplyAuthorityEvidence {
+    ApplyAuthorityEvidence {
+        context_ref: Some(proof.context_ref),
+        base_content_hash: Some(proof.source_sha256),
+        proof_id: Some(stable_id(&format!(
+            "{}:{}:{}:{}",
+            proof.path, proof.scope_id, proof.byte_start, proof.byte_end
+        ))),
+        proof_hash: Some(proof.compact_code_sha256),
+        byte_range: Some(format!("{}..{}", proof.byte_start, proof.byte_end)),
+        unique_anchors: vec![proof.scope_id],
+        workspace_scope: Some(proof.path),
+        validate_succeeded: true,
+        parent_event_id_only: false,
+    }
 }
 
 fn mcp_tool_content(value: serde_json::Value) -> serde_json::Value {

@@ -598,6 +598,22 @@ fn status_json_exposes_canonical_named_host_taxonomy() {
     assert_eq!(find("codex")["claim_tier"], "configurable");
     assert_eq!(find("cursor")["claim_tier"], "configurable");
     assert_eq!(find("openclaw")["claim_tier"], "planned_discovery");
+    assert!(json["claim_evidence_ladder"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tier| tier == "verified_host_hook"));
+    assert_eq!(find("codex")["next_evidence_tier"], "config_written");
+    assert!(find("codex")["supported_ingress"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|ingress| ingress == "mcp_stdio"));
+    assert!(find("codex")["unsupported_ingress"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|ingress| ingress == "private_codex_hook_interception"));
 }
 
 #[test]
@@ -1901,4 +1917,176 @@ fn launch_report_accepts_artifact_backed_overhead_exception() {
             "{json}"
         );
     }
+}
+
+#[test]
+fn launch_report_promotes_claims_only_from_route_bound_evidence_tiers() {
+    let dir = tempfile::tempdir().unwrap();
+    for file in [
+        "setup-proof.txt",
+        "invocation-proof.txt",
+        "cursor-config.json",
+        "cursor-ledger.jsonl",
+        "cursor-raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "proof").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "host_id":"cursor",
+              "host_version":"test",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup-proof.txt",
+              "invocation_artifact":"invocation-proof.txt",
+              "config_scope":"project",
+              "config_path":"cursor-config.json",
+              "route_type":"mcp_stdio",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"cursor-raw.txt",
+              "smoke_id":"cursor-mcp-smoke",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "redacted_public_bytes":1000,
+              "model_visible_bytes":100,
+              "overhead_ms":10,
+              "baseline_ms":10
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["host"] == "cursor")
+        .unwrap();
+    assert_eq!(cursor["status"], "launch_supported", "{json}");
+    for tier in [
+        "config_written",
+        "host_launched",
+        "verified_host_mcp_invocation",
+        "route_evidence_recorded",
+        "savings_verified",
+        "launch_supported",
+    ] {
+        assert!(
+            cursor["evidence_tiers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|observed| observed == tier),
+            "missing {tier}: {json}"
+        );
+    }
+    assert_eq!(cursor["next_evidence_tier"], "complete", "{json}");
+    assert!(json["unsupported_claim_audit"]["rule"]
+        .as_str()
+        .unwrap()
+        .contains("private Codex hook interception"));
+    assert!(json["not_supported"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|surface| surface == "provider_api_prompt_proxy"));
+}
+
+#[test]
+fn launch_report_refuses_official_hook_promotion_without_supported_hook_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    for file in [
+        "setup-proof.txt",
+        "invocation-proof.txt",
+        "cursor-config.json",
+        "cursor-ledger.jsonl",
+        "cursor-raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "proof").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "host_id":"cursor",
+              "host_version":"test",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup-proof.txt",
+              "invocation_artifact":"invocation-proof.txt",
+              "config_scope":"project",
+              "config_path":"cursor-config.json",
+              "route_type":"official_host_hook",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"cursor-raw.txt",
+              "smoke_id":"cursor-hook-smoke",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "redacted_public_bytes":1000,
+              "model_visible_bytes":100,
+              "official_docs_backed":true,
+              "kill_switch_available":true,
+              "uninstall_available":true,
+              "overhead_ms":10,
+              "baseline_ms":10
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["host"] == "cursor")
+        .unwrap();
+    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert!(!cursor["evidence_tiers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tier| tier == "verified_host_hook"));
+    assert!(json["host_evidence"]["evidence_notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("hook_authorized=false")));
 }

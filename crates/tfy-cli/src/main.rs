@@ -2,6 +2,7 @@ mod adapter;
 mod agent;
 mod display;
 mod gateways;
+mod hook;
 mod mcp;
 mod product;
 mod util;
@@ -18,7 +19,9 @@ use display::{
 use gateways::{
     context_decision_from_value, execute_context_gateway, execute_output_gateway,
     execute_plain_tool_gateway, execute_structured_tool_gateway,
+    execute_structured_tool_gateway_with_origin,
 };
+use hook::{execute_hook, HookCmd};
 use mcp::{execute_mcp, McpCmd};
 use product::{
     execute_doctor, execute_explain, execute_gain, execute_init, execute_launch_report,
@@ -55,6 +58,11 @@ enum Cmd {
     Mcp {
         #[command(subcommand)]
         cmd: McpCmd,
+    },
+    /// Optional official-host hook shims. Thin routers to shared TFY gateways, disabled unless configured.
+    Hook {
+        #[command(subcommand)]
+        cmd: HookCmd,
     },
     /// Product-facing setup lifecycle for Codex/MCP guidance. Bare `tfy init` is a safe dry-run.
     Init(InitCmd),
@@ -251,6 +259,7 @@ fn main() -> Result<()> {
         Cmd::Agent { cmd } => execute_agent(cmd)?,
         Cmd::Adapter { cmd } => execute_adapter(cmd)?,
         Cmd::Mcp { cmd } => execute_mcp(cmd)?,
+        Cmd::Hook { cmd } => execute_hook(cmd)?,
         Cmd::Init(cmd) => execute_init(cmd)?,
         Cmd::Doctor(cmd) => execute_doctor(cmd)?,
         Cmd::Smoke(cmd) => execute_smoke(cmd)?,
@@ -295,18 +304,6 @@ fn main() -> Result<()> {
             trace_id,
             parent_event_id,
             command,
-        }
-        | Cmd::Shell {
-            raw_dir,
-            max_summary_bytes,
-            json,
-            jsonl,
-            ledger,
-            session_id,
-            request_id,
-            trace_id,
-            parent_event_id,
-            command,
         } => execute_structured_tool_gateway(
             command,
             raw_dir,
@@ -318,6 +315,32 @@ fn main() -> Result<()> {
             request_id,
             trace_id,
             parent_event_id,
+        )?,
+        Cmd::Shell {
+            raw_dir,
+            max_summary_bytes,
+            json,
+            jsonl,
+            ledger,
+            session_id,
+            request_id,
+            trace_id,
+            parent_event_id,
+            command,
+        } => execute_structured_tool_gateway_with_origin(
+            command,
+            raw_dir,
+            max_summary_bytes,
+            json,
+            jsonl,
+            ledger,
+            session_id,
+            request_id,
+            trace_id,
+            parent_event_id,
+            AdapterKind::Shell,
+            Origin::agent_runtime(OriginHost::Generic, OriginInvocation::Wrapper),
+            RouteEvidence::generic_shell_adapter(),
         )?,
         Cmd::RuntimeCapabilities => print_json(&AdapterCapabilities::cli_default())?,
         Cmd::RuntimeNegotiate {

@@ -14,6 +14,7 @@ struct EnvelopeMeta<'a> {
     provenance: ProvenanceRefs,
     adapter_kind: AdapterKind,
     origin: Origin,
+    route: RouteEvidence,
 }
 
 pub(crate) fn execute_plain_tool_gateway(
@@ -53,6 +54,7 @@ pub(crate) fn execute_structured_tool_gateway(
         parent_event_id,
         AdapterKind::Cli,
         Origin::human_cli(),
+        RouteEvidence::cli_gateway(),
     )
 }
 
@@ -70,6 +72,7 @@ pub(crate) fn execute_structured_tool_gateway_with_origin(
     parent_event_id: Option<String>,
     adapter_kind: AdapterKind,
     origin: Origin,
+    route: RouteEvidence,
 ) -> Result<()> {
     let (mut event, mut response, exit_code) = tool_gateway_envelopes(
         command,
@@ -81,6 +84,7 @@ pub(crate) fn execute_structured_tool_gateway_with_origin(
         parent_event_id,
         adapter_kind,
         origin,
+        route,
     )?;
     apply_repeated_output_elision(&ledger, &mut event, &mut response);
     if let Err(err) = append_event(ledger, &event) {
@@ -111,6 +115,7 @@ pub(crate) fn tool_gateway_envelopes(
     parent_event_id: Option<String>,
     adapter_kind: AdapterKind,
     origin: Origin,
+    route: RouteEvidence,
 ) -> Result<(
     RuntimeEnvelope<GatewayEvent>,
     RuntimeEnvelope<GatewayResponse>,
@@ -124,8 +129,12 @@ pub(crate) fn tool_gateway_envelopes(
         ))
     });
     let trace_id = trace_id.unwrap_or_else(|| request_id.clone());
+    let raw_bytes = summary.raw_chars;
+    let model_bytes = summary.model_text.len();
+    let route = route.with_sizes(raw_bytes, model_bytes);
     let provenance = ProvenanceRefs {
         raw_refs: vec![summary.raw_ref.clone()],
+        route_refs: route.route_id.clone().into_iter().collect(),
         source_event_ids: vec![request_id.clone()],
         validation_status: Some(ValidationStatus::Valid),
         ..Default::default()
@@ -151,6 +160,7 @@ pub(crate) fn tool_gateway_envelopes(
             provenance: provenance.clone(),
             adapter_kind: adapter_kind.clone(),
             origin: origin.clone(),
+            route: route.clone(),
         },
     );
     let event = gateway_event_envelope(
@@ -160,11 +170,11 @@ pub(crate) fn tool_gateway_envelopes(
             risk: summary.risk,
             command_family: summary.command_family,
             raw_ref: summary.raw_ref,
-            raw_bytes: summary.raw_chars,
-            model_bytes: summary.model_text.len(),
+            raw_bytes,
+            model_bytes,
             raw_chars: summary.raw_chars,
             summary_chars: summary.summary_chars,
-            model_chars: summary.model_text.len(),
+            model_chars: model_bytes,
             savings_pct: summary.savings_pct,
             negative_savings_avoided: summary.rendering_kind == "pass_through"
                 && summary.raw_chars <= summary.summary_chars,
@@ -179,6 +189,7 @@ pub(crate) fn tool_gateway_envelopes(
             provenance,
             adapter_kind,
             origin,
+            route,
         },
     );
     let exit_code = match &response.payload {
@@ -303,6 +314,7 @@ fn gateway_event_envelope(
     envelope.parent_event_id = meta.parent_event_id;
     envelope.provenance = meta.provenance;
     envelope.origin = meta.origin;
+    envelope.route = meta.route;
     envelope
 }
 
@@ -327,6 +339,7 @@ fn gateway_response_envelope(
     envelope.parent_event_id = meta.parent_event_id;
     envelope.provenance = meta.provenance;
     envelope.origin = meta.origin;
+    envelope.route = meta.route;
     envelope
 }
 
@@ -426,6 +439,10 @@ pub(crate) fn execute_output_gateway(
             .transpose()?
             .map(|text| serde_json::from_str::<ApplyProof>(&text))
             .transpose()?;
+        let authority_proof = match (restore_body.apply_proof.as_ref(), proof_override.as_ref()) {
+            (Some(proof), None) | (None, Some(proof)) => Some(proof.clone()),
+            _ => None,
+        };
         if parent_event_id.is_some()
             && proof_override.is_none()
             && restore_body.apply_proof.is_none()
@@ -440,6 +457,20 @@ pub(crate) fn execute_output_gateway(
         let provenance = ProvenanceRefs {
             context_refs: vec![applied.context_ref.clone()],
             patch_refs: vec![applied.patch_ref.clone()],
+            apply_authority: authority_proof.map(|proof| ApplyAuthorityEvidence {
+                context_ref: Some(proof.context_ref),
+                base_content_hash: Some(proof.source_sha256),
+                proof_id: Some(stable_id(&format!(
+                    "{}:{}:{}:{}",
+                    proof.path, proof.scope_id, proof.byte_start, proof.byte_end
+                ))),
+                proof_hash: Some(proof.compact_code_sha256),
+                byte_range: Some(format!("{}..{}", proof.byte_start, proof.byte_end)),
+                unique_anchors: vec![proof.scope_id],
+                workspace_scope: Some(proof.path),
+                validate_succeeded: true,
+                parent_event_id_only: false,
+            }),
             validation_status: Some(ValidationStatus::Valid),
             ..Default::default()
         };
@@ -480,6 +511,11 @@ pub(crate) fn execute_output_gateway(
     };
     let provenance = ProvenanceRefs {
         patch_refs: vec![patch_ref.clone()],
+        apply_authority: Some(ApplyAuthorityEvidence {
+            validate_succeeded: false,
+            parent_event_id_only: parent_event_id.is_some(),
+            ..Default::default()
+        }),
         validation_status: Some(provenance_status.clone()),
         ..Default::default()
     };

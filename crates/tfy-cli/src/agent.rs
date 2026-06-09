@@ -4,7 +4,10 @@ use anyhow::{bail, Result};
 use clap::Subcommand;
 use std::fs;
 use std::path::PathBuf;
-use tfy_runtime::{AdapterKind, Origin, OriginHost, OriginInvocation};
+use tfy_runtime::{
+    AdapterKind, Origin, OriginHost, OriginInvocation, RouteClaimTier, RouteEvidence,
+    RouteIngressKind,
+};
 
 #[derive(Subcommand)]
 pub(crate) enum AgentCmd {
@@ -96,6 +99,15 @@ pub(crate) fn execute_agent(cmd: AgentCmd) -> Result<()> {
             parent_event_id,
             AdapterKind::Cli,
             Origin::agent_runtime(parse_host(&host), OriginInvocation::Wrapper),
+            RouteEvidence {
+                ingress: RouteIngressKind::AgentWrapper,
+                host: parse_host(&host),
+                claim_tier: RouteClaimTier::RouteEvidenceRecorded,
+                official_docs_backed: true,
+                kill_switch_available: true,
+                uninstall_available: true,
+                ..RouteEvidence::cli_gateway()
+            },
         ),
     }
 }

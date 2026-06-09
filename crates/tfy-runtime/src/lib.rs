@@ -53,6 +53,8 @@ pub enum OriginInvocation {
     Wrapper,
     McpTool,
     ExplicitCli,
+    OfficialHostHook,
+    HostConfig,
     PrivateHook,
     ProviderGateway,
 }
@@ -102,6 +104,174 @@ impl Default for Origin {
     fn default() -> Self {
         Self::human_cli()
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteIngressKind {
+    CliGateway,
+    McpTool,
+    GenericShellAdapter,
+    AgentWrapper,
+    HostHook,
+    HostMcpConfig,
+    EditorConfigWriter,
+    TestHarness,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteClaimTier {
+    NotConfigured,
+    ConfigSnippetAvailable,
+    ConfigWritten,
+    HostLaunched,
+    VerifiedHostMcpInvocation,
+    VerifiedHostHook,
+    RouteEvidenceRecorded,
+    SavingsVerified,
+    LaunchSupported,
+    Unsupported,
+    PlannedDiscovery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteEvidence {
+    pub ingress: RouteIngressKind,
+    pub host: OriginHost,
+    pub claim_tier: RouteClaimTier,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation_artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smoke_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overhead_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overhead_exception: Option<String>,
+    #[serde(default)]
+    pub no_negative_savings_proven: bool,
+    #[serde(default)]
+    pub positive_savings_proven: bool,
+    #[serde(default)]
+    pub official_docs_backed: bool,
+    #[serde(default)]
+    pub kill_switch_available: bool,
+    #[serde(default)]
+    pub uninstall_available: bool,
+}
+
+impl RouteEvidence {
+    pub fn cli_gateway() -> Self {
+        Self {
+            ingress: RouteIngressKind::CliGateway,
+            host: OriginHost::Generic,
+            claim_tier: RouteClaimTier::RouteEvidenceRecorded,
+            route_id: None,
+            config_scope: None,
+            config_path: None,
+            setup_artifact: None,
+            invocation_artifact: None,
+            smoke_id: None,
+            raw_bytes: None,
+            model_bytes: None,
+            overhead_ms: None,
+            baseline_ms: None,
+            overhead_exception: None,
+            no_negative_savings_proven: false,
+            positive_savings_proven: false,
+            official_docs_backed: true,
+            kill_switch_available: true,
+            uninstall_available: false,
+        }
+    }
+
+    pub fn mcp_tool(host: OriginHost) -> Self {
+        Self {
+            ingress: RouteIngressKind::McpTool,
+            host,
+            claim_tier: RouteClaimTier::RouteEvidenceRecorded,
+            official_docs_backed: true,
+            kill_switch_available: true,
+            ..Self::cli_gateway()
+        }
+    }
+
+    pub fn generic_shell_adapter() -> Self {
+        Self {
+            ingress: RouteIngressKind::GenericShellAdapter,
+            host: OriginHost::Generic,
+            claim_tier: RouteClaimTier::RouteEvidenceRecorded,
+            official_docs_backed: true,
+            kill_switch_available: true,
+            uninstall_available: true,
+            ..Self::cli_gateway()
+        }
+    }
+
+    pub fn unsupported_host_hook(host: OriginHost) -> Self {
+        Self {
+            ingress: RouteIngressKind::HostHook,
+            host,
+            claim_tier: RouteClaimTier::Unsupported,
+            official_docs_backed: false,
+            kill_switch_available: false,
+            uninstall_available: false,
+            ..Self::cli_gateway()
+        }
+    }
+
+    pub fn with_sizes(mut self, raw_bytes: usize, model_bytes: usize) -> Self {
+        self.raw_bytes = Some(raw_bytes);
+        self.model_bytes = Some(model_bytes);
+        self.no_negative_savings_proven = model_bytes <= raw_bytes;
+        self.positive_savings_proven = model_bytes < raw_bytes;
+        if self.positive_savings_proven {
+            self.claim_tier = RouteClaimTier::SavingsVerified;
+        }
+        self
+    }
+}
+
+impl Default for RouteEvidence {
+    fn default() -> Self {
+        Self::cli_gateway()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ApplyAuthorityEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_content_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_range: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unique_anchors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_scope: Option<String>,
+    #[serde(default)]
+    pub validate_succeeded: bool,
+    #[serde(default)]
+    pub parent_event_id_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -162,6 +332,10 @@ pub struct ProvenanceRefs {
     pub ledger_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_event_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub route_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply_authority: Option<ApplyAuthorityEvidence>,
     pub validation_status: Option<ValidationStatus>,
 }
 
@@ -203,6 +377,8 @@ pub struct RuntimeEnvelope<T> {
     pub workspace_root: Option<String>,
     #[serde(default)]
     pub origin: Origin,
+    #[serde(default)]
+    pub route: RouteEvidence,
     pub provenance: ProvenanceRefs,
     pub policy: RuntimePolicy,
     pub payload: T,
@@ -231,6 +407,7 @@ impl<T> RuntimeEnvelope<T> {
             trace_id: trace_id.into(),
             workspace_root: None,
             origin: Origin::default(),
+            route: RouteEvidence::default(),
             provenance: ProvenanceRefs::default(),
             policy: RuntimePolicy::default(),
             payload,

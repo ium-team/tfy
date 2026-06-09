@@ -706,6 +706,16 @@ fn classify_direct_command(cmd: &str) -> String {
         ["pnpm", "test", ..] => "pnpm_test".into(),
         ["yarn", "test", ..] => "yarn_test".into(),
         ["go", "test", ..] => "go_test".into(),
+        ["mvn", rest @ ..] | ["mvnw", rest @ ..] | ["./mvnw", rest @ ..]
+            if java_test_args(rest) =>
+        {
+            "maven_test".into()
+        }
+        ["gradle", rest @ ..] | ["gradlew", rest @ ..] | ["./gradlew", rest @ ..]
+            if java_test_args(rest) =>
+        {
+            "gradle_test".into()
+        }
         ["tsc", rest @ ..]
         | ["npx", "tsc", rest @ ..]
         | ["pnpm", "exec", "tsc", rest @ ..]
@@ -727,6 +737,21 @@ fn tsc_no_emit_args(args: &[&str]) -> bool {
     args_contain_exact(args, "--noEmit") && !tsc_long_running_args(args)
 }
 
+fn java_test_args(args: &[&str]) -> bool {
+    args.iter().any(|arg| {
+        matches!(
+            *arg,
+            "test"
+                | "verify"
+                | "check"
+                | "build"
+                | ":test"
+                | "testDebugUnitTest"
+                | "connectedAndroidTest"
+        ) || arg.ends_with(":test")
+    })
+}
+
 fn tsc_long_running_args(args: &[&str]) -> bool {
     args.iter()
         .any(|arg| matches!(*arg, "--watch" | "-w" | "--watchFile" | "--watchDirectory"))
@@ -744,7 +769,8 @@ fn family_risk(
         return "critical".into();
     }
     match family {
-        "cargo_test" | "pytest" | "npm_test" | "pnpm_test" | "yarn_test" | "go_test" => {
+        "cargo_test" | "pytest" | "npm_test" | "pnpm_test" | "yarn_test" | "go_test"
+        | "maven_test" | "gradle_test" => {
             if has_nonzero_test_failures(raw) || has_hard_failure_marker(raw) {
                 "critical".into()
             } else if is_success(raw) || raw.trim().is_empty() || has_zero_test_failures(raw) {
@@ -867,7 +893,8 @@ fn family_summary_candidate(
             rr,
             risk,
         )),
-        "cargo_test" | "pytest" | "npm_test" | "pnpm_test" | "yarn_test" | "go_test" => {
+        "cargo_test" | "pytest" | "npm_test" | "pnpm_test" | "yarn_test" | "go_test"
+        | "maven_test" | "gradle_test" => {
             Some(test_summary(family, cmd, code, raw, evidence, rr, risk))
         }
         "cargo_clippy" | "cargo_build" | "cargo_check" => {
@@ -1143,16 +1170,30 @@ fn test_summary(
         .captures_iter(raw)
         .filter_map(|c| c.get(1).and_then(|m| m.as_str().parse::<usize>().ok()))
         .max()
+        .or_else(|| {
+            Regex::new(r"(?i)Tests run:\s*([0-9]+)")
+                .expect("valid maven test count regex")
+                .captures_iter(raw)
+                .filter_map(|c| c.get(1).and_then(|m| m.as_str().parse::<usize>().ok()))
+                .max()
+        })
         .unwrap_or(0);
     let failures = Regex::new(r"(?i)(\d+)\s+(?:failed|failures?)")
         .expect("valid failure count regex")
         .captures_iter(raw)
         .filter_map(|c| c.get(1).and_then(|m| m.as_str().parse::<usize>().ok()))
         .max()
+        .or_else(|| {
+            Regex::new(r"(?i)(?:Failures|Errors):\s*([1-9][0-9]*)")
+                .expect("valid maven failure count regex")
+                .captures_iter(raw)
+                .filter_map(|c| c.get(1).and_then(|m| m.as_str().parse::<usize>().ok()))
+                .max()
+        })
         .unwrap_or_else(|| if risk == "critical" { 1 } else { 0 });
     let failed_names = collect_lines(
         raw,
-        r"(?i)(FAILED|failures:|---- .+ stdout|panic|assert|expected|got|left:|right:|Traceback|Error:)",
+        r"(?i)(FAILED|FAILURE!|<<< FAILURE!|failures:|Tests run:|There are test failures|---- .+ stdout|panic|assert|expected|got|left:|right:|Traceback|Error:|AssertionError|org\.|\.java:[0-9]+)",
         10,
     );
     let mut lines = vec![format!(

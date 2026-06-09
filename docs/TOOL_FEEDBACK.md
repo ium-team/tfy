@@ -44,9 +44,14 @@ The Tool Gateway now assigns a stable `command_family` in the shared command-out
 - `gh_pr_checks`
 - `cargo_test`, `cargo_clippy`, `cargo_build`, `cargo_check`, `cargo_fmt_check`
 - `tsc_check` for deterministic `tsc --noEmit` style checks (`tsc`, `npx tsc`, `pnpm exec tsc`, `yarn tsc`, `npm exec tsc -- --noEmit`)
-- `pytest`, `npm_test`, `pnpm_test`, `yarn_test`, `go_test`
+- `pytest`, `npm_test`, `pnpm_test`, `yarn_test`, `go_test`, `maven_test`, `gradle_test`
 
 Every family summary still passes through the no-negative-savings selector: TFY emits the family summary only when it is smaller than redacted public raw output, or emits a recoverable suppression notice for unsafe/binary-ish output. Raw bytes are stored first in all cases. Unsupported or low-confidence commands remain on the generic path and may pass through redacted raw output; broad package build scripts such as `npm run build`, `pnpm build`, and `yarn build` are intentionally not classified as P0 families.
+
+Internal RTK-overlap comparisons must use a reproducible benchmark manifest before any public
+superiority claim: fixture corpus, TFY version, RTK version/mode when executable, measurement
+method, correctness rubric, redaction/raw-recovery checks, missed-evidence classifications, and
+latency/overhead evidence.
 
 ## Core policy
 

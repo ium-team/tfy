@@ -217,6 +217,7 @@ struct ProductStatusReport {
     status: String,
     minimum_v1_host_matrix: Vec<HostReadiness>,
     surfaces: Vec<SurfaceStatus>,
+    claim_evidence_ladder: Vec<String>,
     launch_claim_gate: String,
     not_supported: Vec<String>,
     truthfulness_boundary: String,
@@ -228,6 +229,11 @@ struct HostReadiness {
     status: String,
     required_for_v1: bool,
     claim_tier: String,
+    evidence_tiers: Vec<String>,
+    next_evidence_tier: String,
+    supported_ingress: Vec<String>,
+    equivalence_ingress: Vec<String>,
+    unsupported_ingress: Vec<String>,
     config_strategy: String,
     apply_strategy: String,
     smoke_strategy: String,
@@ -261,6 +267,7 @@ struct HostIntegration {
 struct LaunchReadinessReport {
     status: String,
     host_matrix: Vec<HostReadiness>,
+    claim_evidence_ladder: Vec<String>,
     gain: GainReport,
     host_evidence: HostEvidenceSummary,
     release_thresholds: ReleaseThresholds,
@@ -455,6 +462,9 @@ struct RouteEvidence {
     output: bool,
     state: bool,
     host_bound_evidence: bool,
+    official_docs_backed: bool,
+    kill_switch_available: bool,
+    uninstall_available: bool,
     route_type: Option<String>,
     config_scope: Option<String>,
     config_path: Option<String>,
@@ -488,6 +498,9 @@ struct HostSetupEvidence {
     model_visible_bytes: Option<usize>,
     timestamp: Option<String>,
     smoke_id: Option<String>,
+    official_docs_backed: Option<bool>,
+    kill_switch_available: Option<bool>,
+    uninstall_available: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -1426,9 +1439,108 @@ fn build_product_status_report() -> ProductStatusReport {
             SurfaceStatus { name: "editor_integration".into(), status: "not_supported".into(), message: "Editor auto-connection is outside TFY scope.".into() },
             SurfaceStatus { name: "private_codex_hook".into(), status: "not_supported".into(), message: "No private or hidden Codex prompt interception is claimed.".into() },
         ],
-        launch_claim_gate: "A host is launch-supported only after safe setup, real host invocation smoke, host-bound ledger/raw evidence, raw recovery, no-negative-savings, and positive-savings checks pass.".into(),
+        claim_evidence_ladder: claim_evidence_ladder(),
+        launch_claim_gate: "A host is launch-supported only after config snippet, config write/apply proof, host launch, verified host MCP or official hook invocation, route evidence, raw recovery, no-negative-savings, and positive-savings checks pass.".into(),
         not_supported: not_supported_surfaces(),
         truthfulness_boundary: "automatic configuration is limited to supported AI-host routes; no provider proxy, editor hook, private Codex hook, or universal shell interception".into(),
+    }
+}
+
+fn claim_evidence_ladder() -> Vec<String> {
+    [
+        "config_snippet_available",
+        "config_written",
+        "host_launched",
+        "verified_host_mcp_invocation",
+        "verified_host_hook",
+        "route_evidence_recorded",
+        "savings_verified",
+        "launch_supported",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+fn unsupported_ingress() -> Vec<String> {
+    vec![
+        "provider_api_prompt_proxy".into(),
+        "private_codex_hook_interception".into(),
+        "universal_terminal_interception".into(),
+        "editor_internal_auto_hook_without_official_api_and_e2e".into(),
+    ]
+}
+
+fn host_readiness_from_integration(host: &HostIntegration) -> HostReadiness {
+    let claim_tier = if host.status == "planned_discovery" {
+        "planned_discovery"
+    } else {
+        "configurable"
+    };
+    HostReadiness {
+        host: host.id.into(),
+        status: host.status.into(),
+        required_for_v1: host.required_for_v1,
+        claim_tier: claim_tier.into(),
+        evidence_tiers: initial_host_evidence_tiers(host.status),
+        next_evidence_tier: next_evidence_tier(&initial_host_evidence_tiers(host.status)).into(),
+        supported_ingress: if host.status == "planned_discovery" {
+            Vec::new()
+        } else {
+            vec!["mcp_stdio".into()]
+        },
+        equivalence_ingress: if host.status == "planned_discovery" {
+            Vec::new()
+        } else {
+            vec!["official_host_hook_test_shim_only".into()]
+        },
+        unsupported_ingress: unsupported_ingress(),
+        config_strategy: host.config_strategy.into(),
+        apply_strategy: host.apply_strategy.into(),
+        smoke_strategy: host.smoke_strategy.into(),
+        host_evidence_strategy: host.host_evidence_strategy.into(),
+        setup: host.setup.into(),
+        normal_workflow: host.normal_workflow.into(),
+        evidence_gate: host
+            .evidence_gate
+            .iter()
+            .map(|item| (*item).into())
+            .collect(),
+        launch_claim: host.launch_claim.into(),
+    }
+}
+
+fn initial_host_evidence_tiers(status: &str) -> Vec<String> {
+    match status {
+        "config_snippet_available" => vec!["config_snippet_available".into()],
+        "planned_discovery" => vec!["planned_discovery".into()],
+        "unsupported" => vec!["unsupported".into()],
+        _ => vec![status.into()],
+    }
+}
+
+fn next_evidence_tier(observed: &[String]) -> &'static str {
+    if observed
+        .iter()
+        .any(|observed| observed == "planned_discovery")
+    {
+        return "official_route_discovery";
+    }
+    let has = |tier: &str| observed.iter().any(|observed| observed == tier);
+    if has("launch_supported") {
+        "complete"
+    } else if has("savings_verified") {
+        "launch_supported"
+    } else if has("route_evidence_recorded") {
+        "savings_verified"
+    } else if has("verified_host_mcp_invocation") || has("verified_host_hook") {
+        "route_evidence_recorded"
+    } else if has("host_launched") {
+        "verified_host_mcp_invocation_or_verified_host_hook"
+    } else if has("config_written") {
+        "host_launched"
+    } else {
+        "config_written"
     }
 }
 
@@ -1439,6 +1551,11 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
             status: "not_configured".into(),
             required_for_v1: true,
             claim_tier: "not_configured".into(),
+            evidence_tiers: Vec::new(),
+            next_evidence_tier: "config_written".into(),
+            supported_ingress: vec!["mcp_stdio".into()],
+            equivalence_ingress: Vec::new(),
+            unsupported_ingress: unsupported_ingress(),
             config_strategy: "host MCP stdio server entry pointing to `tfy mcp serve`".into(),
             apply_strategy: "host-specific apply; generic route requires explicit host config".into(),
             smoke_strategy: "local MCP initialize/tools-list plus host invocation artifact".into(),
@@ -1457,6 +1574,11 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
             status: "not_configured".into(),
             required_for_v1: true,
             claim_tier: "not_configured".into(),
+            evidence_tiers: Vec::new(),
+            next_evidence_tier: "config_written".into(),
+            supported_ingress: vec!["agent_wrapper".into(), "generic_shell_adapter".into()],
+            equivalence_ingress: Vec::new(),
+            unsupported_ingress: unsupported_ingress(),
             config_strategy: "agent command executor uses `tfy agent` or `tfy adapter run`".into(),
             apply_strategy: "manual/host-owned executor wiring until a host-specific writer exists".into(),
             smoke_strategy: "adapter run smoke with ToolCommandCompleted ledger event".into(),
@@ -1475,6 +1597,11 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
             status: "not_configured".into(),
             required_for_v1: true,
             claim_tier: "not_configured".into(),
+            evidence_tiers: Vec::new(),
+            next_evidence_tier: "config_written".into(),
+            supported_ingress: vec!["generic_shell_adapter".into()],
+            equivalence_ingress: Vec::new(),
+            unsupported_ingress: unsupported_ingress(),
             config_strategy: "generic-shell adapter installed for an AI command executor only".into(),
             apply_strategy: "`tfy adapter install --target generic-shell` where the caller opts in".into(),
             smoke_strategy: "wrapper invocation and adapter report smoke".into(),
@@ -1494,6 +1621,11 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
             status: "config_snippet_available".into(),
             required_for_v1: false,
             claim_tier: "configurable".into(),
+            evidence_tiers: vec!["config_snippet_available".into()],
+            next_evidence_tier: "config_written".into(),
+            supported_ingress: vec!["mcp_stdio".into()],
+            equivalence_ingress: vec!["official_host_hook_test_shim_only".into()],
+            unsupported_ingress: unsupported_ingress(),
             config_strategy: "Codex MCP command/TOML setup plus project AGENTS.md guidance".into(),
             apply_strategy: "project AGENTS.md apply via `tfy init`; Codex TOML remains dry-run/manual".into(),
             smoke_strategy: "local MCP smoke plus real Codex invocation artifact".into(),
@@ -1512,29 +1644,7 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
         .into_iter()
         .filter(|host| host.id != "codex")
     {
-        hosts.push(HostReadiness {
-            host: host.id.into(),
-            status: host.status.into(),
-            required_for_v1: host.required_for_v1,
-            claim_tier: if host.status == "planned_discovery" {
-                "planned_discovery"
-            } else {
-                "configurable"
-            }
-            .into(),
-            config_strategy: host.config_strategy.into(),
-            apply_strategy: host.apply_strategy.into(),
-            smoke_strategy: host.smoke_strategy.into(),
-            host_evidence_strategy: host.host_evidence_strategy.into(),
-            setup: host.setup.into(),
-            normal_workflow: host.normal_workflow.into(),
-            evidence_gate: host
-                .evidence_gate
-                .iter()
-                .map(|item| (*item).into())
-                .collect(),
-            launch_claim: host.launch_claim.into(),
-        });
+        hosts.push(host_readiness_from_integration(&host));
     }
     hosts
 }
@@ -1542,9 +1652,12 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
 fn not_supported_surfaces() -> Vec<String> {
     vec![
         "provider_api_gateway".into(),
+        "provider_api_prompt_proxy".into(),
         "editor_integration".into(),
         "private_codex_hook".into(),
+        "private_codex_hook_interception".into(),
         "ordinary_human_terminal_interception".into(),
+        "universal_terminal_interception".into(),
         "unconfigured_hosts".into(),
     ]
 }
@@ -1855,6 +1968,15 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                             (true, false)
                         }
                     };
+                let hook_route = matches!(
+                    host.route_type.as_deref(),
+                    Some("official_host_hook" | "host_hook" | "hook")
+                );
+                let hook_authorized = !hook_route
+                    || (host.official_docs_backed == Some(true)
+                        && host.kill_switch_available == Some(true)
+                        && host.uninstall_available == Some(true)
+                        && host_official_hook_launch_supported(&host.host));
                 let host_bound = host_id_matches
                     && route_type_valid
                     && config_scope_valid
@@ -1863,9 +1985,13 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     && raw_artifact_verified
                     && smoke_id_valid
                     && timestamp_valid
+                    && hook_authorized
                     && no_negative
                     && positive;
                 route.host_bound_evidence |= host_bound;
+                route.official_docs_backed |= host.official_docs_backed == Some(true);
+                route.kill_switch_available |= host.kill_switch_available == Some(true);
+                route.uninstall_available |= host.uninstall_available == Some(true);
                 route.no_negative_savings &= no_negative;
                 route.positive_savings |= positive;
                 if host_bound {
@@ -1896,7 +2022,7 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     summary.positive_savings |= positive;
                 }
                 summary.evidence_notes.push(format!(
-                    "named_host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={} host_bound_evidence={} config_path_verified={} ledger_artifact_verified={} raw_artifact_verified={}",
+                    "named_host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={} host_bound_evidence={} config_path_verified={} ledger_artifact_verified={} raw_artifact_verified={} hook_route={} hook_authorized={}",
                     host.host,
                     host.setup_verified,
                     setup_artifact_verified,
@@ -1907,7 +2033,9 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     host_bound,
                     config_path_verified,
                     ledger_artifact_verified,
-                    raw_artifact_verified
+                    raw_artifact_verified,
+                    hook_route,
+                    hook_authorized
                 ));
             }
         }
@@ -1922,6 +2050,13 @@ fn non_empty_opt(value: &Option<String>) -> bool {
 
 fn host_accepts_launch_evidence(host: &str) -> bool {
     host_integration(host).is_ok_and(|integration| integration.status != "planned_discovery")
+}
+
+fn host_official_hook_launch_supported(_host: &str) -> bool {
+    // No named production host currently has an implemented official-hook writer with
+    // docs, uninstall, kill-switch, and e2e evidence. The hook surface is test-shim
+    // only until a host is explicitly enabled here with regression coverage.
+    false
 }
 
 fn host_artifact_exists(base: &Path, artifact: &Path) -> bool {
@@ -1992,12 +2127,27 @@ fn apply_launch_evidence(
             }
         };
         if launch_supported {
+            host.evidence_tiers = route
+                .map(|route| host_observed_evidence_tiers(&host.host, route))
+                .unwrap_or_else(claim_evidence_ladder);
+            if !host
+                .evidence_tiers
+                .iter()
+                .any(|tier| tier == "launch_supported")
+            {
+                host.evidence_tiers.push("launch_supported".into());
+            }
+            host.next_evidence_tier = next_evidence_tier(&host.evidence_tiers).into();
             host.status = "launch_supported".into();
             host.claim_tier = "launch_supported".into();
             host.launch_claim =
                 "launch-supported for this report: setup, real host invocation, host-bound ledger evidence, raw recovery, no-negative-savings, and positive-savings gates passed"
                     .into();
         } else if local_verified {
+            host.evidence_tiers = route
+                .map(|route| host_observed_evidence_tiers(&host.host, route))
+                .unwrap_or_else(|| initial_host_evidence_tiers(&host.status));
+            host.next_evidence_tier = next_evidence_tier(&host.evidence_tiers).into();
             host.status = if route.is_some_and(|route| route.real_invocation_verified) {
                 "verified_host_invocation"
             } else if route.is_some_and(|route| route.setup_verified) {
@@ -2059,6 +2209,40 @@ fn apply_launch_evidence(
     hosts
 }
 
+fn host_observed_evidence_tiers(host: &str, route: &RouteEvidence) -> Vec<String> {
+    let mut tiers = Vec::new();
+    if route.setup_artifact_verified {
+        tiers.push("config_written".into());
+    }
+    if route.invocation_artifact_verified {
+        tiers.push("host_launched".into());
+    }
+    if route.real_invocation_verified && route.tool {
+        match route.route_type.as_deref() {
+            Some("official_host_hook") | Some("host_hook") | Some("hook") => {
+                tiers.push("verified_host_hook".into());
+            }
+            Some("mcp_stdio") | Some("mcp") | None if host == "mcp_stdio" => {
+                tiers.push("verified_host_mcp_invocation".into());
+            }
+            Some("mcp_stdio") | Some("mcp") => {
+                tiers.push("verified_host_mcp_invocation".into());
+            }
+            _ => tiers.push("verified_host_invocation".into()),
+        }
+    }
+    if route.host_bound_evidence || route.commands > 0 || route.raw_refs > 0 {
+        tiers.push("route_evidence_recorded".into());
+    }
+    if route.raw_refs > 0 && route.no_negative_savings && route.positive_savings {
+        tiers.push("savings_verified".into());
+    }
+    if named_host_ready(route) {
+        tiers.push("launch_supported".into());
+    }
+    tiers
+}
+
 fn named_host_ready(route: &RouteEvidence) -> bool {
     route_host_ready(route)
         && route.host_bound_evidence
@@ -2069,10 +2253,18 @@ fn named_host_ready(route: &RouteEvidence) -> bool {
 }
 
 fn route_host_ready(route: &RouteEvidence) -> bool {
+    let hook_route = matches!(
+        route.route_type.as_deref(),
+        Some("official_host_hook" | "host_hook" | "hook")
+    );
     route.setup_verified
         && route.real_invocation_verified
         && route.setup_artifact_verified
         && route.invocation_artifact_verified
+        && (!hook_route
+            || (route.official_docs_backed
+                && route.kill_switch_available
+                && route.uninstall_available))
         && (route.overhead_measured || route.overhead_exception.is_some())
         && route.overhead_passed
 }
@@ -2113,6 +2305,7 @@ fn build_launch_readiness_report(
         }
         .into(),
         host_matrix,
+        claim_evidence_ladder: claim_evidence_ladder(),
         gain,
         host_evidence,
         release_thresholds: ReleaseThresholds::default(),
@@ -2122,7 +2315,7 @@ fn build_launch_readiness_report(
         unsupported_claim_audit: UnsupportedClaimAudit {
             status: "pass".into(),
             audited_claims: not_supported_surfaces(),
-            rule: "unsupported provider/editor/private-hook/universal-terminal routes must remain not_supported/planned unless a separate official adapter and e2e evidence exist".into(),
+            rule: "unsupported provider/API prompt proxy, editor-internal auto hook, private Codex hook interception, and universal terminal interception claims must remain not_supported/planned; MCP and official-host-hook routes may promote only through config_written, host_launched, verified host invocation, route evidence, and savings_verified gates".into(),
         },
         blockers,
         not_supported: status.not_supported,
