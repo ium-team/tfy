@@ -189,7 +189,7 @@ tfy smoke --mcp
 tfy smoke --all --json # emits adapter + agent + MCP ledger paths for launch-report evidence
 tfy smoke --codex
 tfy gain # reports no-data until command-output savings events exist
-# host-evidence JSON must include per-route setup/invocation artifact paths plus overhead_ms/baseline_ms or an explicit overhead_exception.
+# smoke --all emits ledger= and host_evidence= entries that can be passed to launch-report.
 tfy launch-report --all --ledger <adapter-ledger> --ledger <agent-ledger> --ledger <mcp-ledger> --host-evidence <host-evidence.json> --json
 ```
 
@@ -216,4 +216,25 @@ MCP Code I/O workflow:
 
 This is MCP tool/resource integration. It does not claim private Codex hook interception, provider prompt mutation, or universal shell interception without host MCP routing.
 
-Launch reporting uses exact byte counts recorded from raw/model-visible gateway payloads and a conservative `ceil(bytes/4)` token proxy when tokenizer-specific counts are unavailable. Local smoke ledgers can raise required routes to `verified_local_mcp`, but `launch_supported` additionally requires `--host-evidence` JSON proving setup, real host invocation, config scope/path, route type, smoke id, ledger/raw artifacts, and no-negative plus positive savings for each route. `tfy explain` discloses the local raw-store contract: TFY stores raw command/context evidence under `.tfy/raw` or configured `--raw-dir` plus gateway ledgers such as `.tfy/mcp/ledger.jsonl` and `.tfy/adapter/ledger.jsonl`; TFY does not upload raw evidence. Until first-class retention commands are added, deletion/export is explicit local file management of those raw/ledger paths.
+Launch reporting uses exact byte counts recorded from raw/model-visible gateway payloads and a conservative `ceil(bytes/4)` token proxy when tokenizer-specific counts are unavailable. Local smoke ledgers can raise required routes to `verified_local_mcp`, but `launch_supported` additionally requires `--host-evidence` JSON proving setup, real host invocation, config scope/path, route type, smoke id, ledger/raw artifacts, and no-negative plus positive savings for each route. `tfy explain` discloses the local raw-store contract: TFY stores raw command/context evidence under `.tfy/raw` or configured `--raw-dir` plus gateway ledgers such as `.tfy/mcp/ledger.jsonl` and `.tfy/adapter/ledger.jsonl`; TFY does not upload raw evidence. First-class raw lifecycle commands are available: `tfy raw --list`, `tfy raw <raw_ref> --inspect`, `tfy raw <raw_ref> --export <path>`, and `tfy raw --prune --dry-run/--apply`; ledger files remain explicit local files.
+
+### Release readiness dry-run
+
+Developer Preview/RC evidence is generated from local gates, not broad claims:
+
+```sh
+./scripts/verify.sh
+./scripts/release-dry-run.sh
+SMOKE_JSON=.tfy/release/smoke.json
+tfy smoke --all --json > "$SMOKE_JSON"
+ARGS=(launch-report --all --release-evidence .tfy/release/release-evidence.json --json)
+while IFS= read -r item; do
+  case "$item" in
+    ledger=*) ARGS+=(--ledger "${item#ledger=}") ;;
+    host_evidence=*) ARGS+=(--host-evidence "${item#host_evidence=}") ;;
+  esac
+done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["evidence"]))' "$SMOKE_JSON")
+tfy "${ARGS[@]}"
+```
+
+`tfy launch-report` now exposes release tiers (`developer_preview_ready`, `rc_ready`, `ga_ready`, `public_superiority_claim_ready`). GA and public RTK-superiority claims remain blocked unless named-host and comparator evidence gates pass.

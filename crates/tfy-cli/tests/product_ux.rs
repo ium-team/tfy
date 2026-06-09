@@ -1,5 +1,74 @@
 use std::process::Command;
 
+fn append_smoke_launch_args(args: &mut Vec<String>, smoke_json: &serde_json::Value) {
+    for entry in smoke_json["evidence"].as_array().unwrap() {
+        let text = entry.as_str().unwrap();
+        if let Some(path) = text.strip_prefix("ledger=") {
+            args.push("--ledger".into());
+            args.push(path.to_string());
+        } else if let Some(path) = text.strip_prefix("host_evidence=") {
+            args.push("--host-evidence".into());
+            args.push(path.to_string());
+        }
+    }
+}
+
+fn write_release_evidence_fixture(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    let root = dir.path();
+    let files = [
+        "install-bin",
+        "release-bin",
+        "archive.tar.gz",
+        "archive.sha256",
+        "docs.md",
+        "notes.md",
+        "review.json",
+        "ci.json",
+    ];
+    for file in files {
+        std::fs::write(root.join(file), "fixture evidence").unwrap();
+    }
+    std::fs::write(
+        root.join("bench-manifest.json"),
+        r#"{
+          "status": "pass",
+          "tfy_self_benchmark": {
+            "no_negative_savings": true,
+            "positive_savings": true
+          },
+          "scenarios": [
+            {"raw_ref": "cmdout_fixture", "no_negative_savings": true}
+          ]
+        }"#,
+    )
+    .unwrap();
+    let release_evidence = root.join("release-evidence.json");
+    std::fs::write(
+        &release_evidence,
+        r#"{
+          "cargo_install_verified": true,
+          "cargo_install_binary": "install-bin",
+          "cargo_build_release_verified": true,
+          "release_binary": "release-bin",
+          "archive_checksum_dry_run": true,
+          "archive_artifact": "archive.tar.gz",
+          "checksum_artifact": "archive.sha256",
+          "docs_demo_release_notes_complete": true,
+          "docs_artifact": "docs.md",
+          "release_notes_artifact": "notes.md",
+          "independent_reviews_approved": true,
+          "review_artifact": "review.json",
+          "pr_ci_green": true,
+          "ci_artifact": "ci.json",
+          "benchmark_manifest_generated": true,
+          "benchmark_manifest": "bench-manifest.json",
+          "notes": ["test fixture artifact-backed release evidence"]
+        }"#,
+    )
+    .unwrap();
+    release_evidence
+}
+
 #[test]
 fn init_codex_dry_run_writes_nothing_and_prints_tiers() {
     let dir = tempfile::tempdir().unwrap();
@@ -265,7 +334,16 @@ fn smoke_all_produces_adapter_and_mcp_launch_evidence() {
         .map(|r| r["mode"].as_str().unwrap())
         .collect();
     assert!(modes.contains(&"adapter"), "{json}");
+    assert!(modes.contains(&"agent"), "{json}");
     assert!(modes.contains(&"mcp"), "{json}");
+    assert!(
+        json["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.as_str().unwrap().starts_with("host_evidence=")),
+        "{json}"
+    );
 }
 
 #[test]
@@ -1663,36 +1741,11 @@ fn launch_report_passes_only_with_route_smoke_and_host_evidence() {
         String::from_utf8_lossy(&smoke.stderr)
     );
     let smoke_json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
-    let evidence = smoke_json["evidence"].as_array().unwrap();
     let mut owned_args: Vec<String> = vec!["launch-report", "--all", "--json"]
         .into_iter()
         .map(|s| s.to_string())
         .collect();
-    for entry in evidence {
-        let text = entry.as_str().unwrap();
-        if let Some(path) = text.strip_prefix("ledger=") {
-            owned_args.push("--ledger".into());
-            owned_args.push(path.to_string());
-        }
-    }
-    let setup_artifact = dir.path().join("setup-proof.txt");
-    let invocation_artifact = dir.path().join("invocation-proof.txt");
-    std::fs::write(&setup_artifact, "configured host wrapper/mcp").unwrap();
-    std::fs::write(&invocation_artifact, "real host invocation smoke observed").unwrap();
-    let host_evidence = dir.path().join("host-evidence.json");
-    std::fs::write(
-        &host_evidence,
-        r#"{
-          "hosts": [
-            {"host":"generic_shell","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":100,"baseline_ms":100},
-            {"host":"tfy_agent_adapter","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":100,"baseline_ms":100},
-            {"host":"mcp_stdio","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":100,"baseline_ms":100}
-          ]
-        }"#,
-    )
-    .unwrap();
-    owned_args.push("--host-evidence".into());
-    owned_args.push(host_evidence.display().to_string());
+    append_smoke_launch_args(&mut owned_args, &smoke_json);
     let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
         .args(&owned_args)
@@ -1866,29 +1919,7 @@ fn launch_report_accepts_artifact_backed_overhead_exception() {
         .into_iter()
         .map(|s| s.to_string())
         .collect();
-    for entry in smoke_json["evidence"].as_array().unwrap() {
-        let text = entry.as_str().unwrap();
-        if let Some(path) = text.strip_prefix("ledger=") {
-            owned_args.push("--ledger".into());
-            owned_args.push(path.to_string());
-        }
-    }
-    std::fs::write(dir.path().join("setup-proof.txt"), "configured").unwrap();
-    std::fs::write(dir.path().join("invocation-proof.txt"), "invoked").unwrap();
-    let host_evidence = dir.path().join("host-evidence.json");
-    std::fs::write(
-        &host_evidence,
-        r#"{
-          "hosts": [
-            {"host":"generic_shell","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_exception":"fixture host overhead accepted by release owner"},
-            {"host":"tfy_agent_adapter","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_exception":"fixture host overhead accepted by release owner"},
-            {"host":"mcp_stdio","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_exception":"fixture host overhead accepted by release owner"}
-          ]
-        }"#,
-    )
-    .unwrap();
-    owned_args.push("--host-evidence".into());
-    owned_args.push(host_evidence.display().to_string());
+    append_smoke_launch_args(&mut owned_args, &smoke_json);
     let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
         .args(&owned_args)
@@ -2165,4 +2196,218 @@ fn launch_report_refuses_official_hook_promotion_without_supported_hook_authorit
         .unwrap()
         .iter()
         .any(|note| note.as_str().unwrap().contains("hook_authorized=false")));
+}
+
+#[test]
+fn raw_lifecycle_lists_inspects_exports_and_prunes_with_dry_run_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw_dir = dir.path().join("raw");
+    let ledger = dir.path().join("ledger.jsonl");
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "tool-gateway",
+            "--json",
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "for i in $(seq 1 40); do echo raw-life-$i; done",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let gateway_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let raw_ref = gateway_json["provenance"]["raw_refs"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let list = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "raw",
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--list",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(list.status.success());
+    let list_json: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(list_json["count"], 1);
+    assert_eq!(list_json["entries"][0]["raw_ref"], raw_ref);
+    assert_eq!(list_json["entries"][0]["command_present"], true);
+    assert!(list_json["entries"][0]["command"].is_null(), "{list_json}");
+    assert!(
+        list_json["entries"][0]["command_sha256"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 64),
+        "{list_json}"
+    );
+
+    let inspect = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "raw",
+            &raw_ref,
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--inspect",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(inspect.status.success());
+    let inspect_json: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(inspect_json["raw_ref"], raw_ref);
+    assert!(inspect_json["bytes"].as_u64().unwrap() > 0);
+    assert!(inspect_json["command"].is_null(), "{inspect_json}");
+
+    let export_dir = dir.path().join("exported");
+    let export = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "raw",
+            &raw_ref,
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--export",
+            export_dir.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(export.status.success());
+    assert!(export_dir.join(format!("{raw_ref}.json")).is_file());
+
+    let dry_prune = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "raw",
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--prune",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(dry_prune.status.success());
+    let dry_json: serde_json::Value = serde_json::from_slice(&dry_prune.stdout).unwrap();
+    assert_eq!(dry_json["dry_run"], true);
+    assert!(raw_dir.join(format!("{raw_ref}.json")).is_file());
+
+    let apply_prune = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "raw",
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--prune",
+            "--apply",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(apply_prune.status.success());
+    let apply_json: serde_json::Value = serde_json::from_slice(&apply_prune.stdout).unwrap();
+    assert_eq!(apply_json["applied"], true);
+    assert!(!raw_dir.join(format!("{raw_ref}.json")).exists());
+}
+
+#[test]
+fn bench_manifest_is_self_benchmark_and_fails_closed_for_public_rtk_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("bench-manifest.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "bench",
+            "--json",
+            "--output",
+            manifest_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["status"], "pass", "{json}");
+    assert_eq!(json["tfy_self_benchmark"]["no_negative_savings"], true);
+    assert_eq!(json["tfy_self_benchmark"]["positive_savings"], true);
+    assert_eq!(json["rtk_comparator"]["status"], "skipped_unavailable");
+    assert_eq!(json["public_superiority_claim_ready"], false);
+    assert!(json["claim_policy"]
+        .as_str()
+        .unwrap()
+        .contains("fails closed"));
+    assert!(manifest_path.is_file());
+}
+
+#[test]
+fn launch_report_release_tiers_require_release_evidence_and_keep_ga_blocked_without_named_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["smoke", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    let smoke_json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
+    let mut owned_args: Vec<String> = vec!["launch-report", "--all", "--json"]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+    append_smoke_launch_args(&mut owned_args, &smoke_json);
+    let release_evidence = write_release_evidence_fixture(&dir);
+    owned_args.push("--release-evidence".into());
+    owned_args.push(release_evidence.display().to_string());
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(&owned_args)
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(json["status"], "pass", "{json}");
+    assert_eq!(
+        json["release_tiers"]["developer_preview_ready"]["status"], "ready",
+        "{json}"
+    );
+    assert_eq!(
+        json["release_tiers"]["rc_ready"]["status"], "ready",
+        "{json}"
+    );
+    assert_eq!(
+        json["release_tiers"]["ga_ready"]["status"], "blocked",
+        "{json}"
+    );
+    assert!(json["release_tiers"]["ga_ready"]["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|blocker| blocker.as_str().unwrap().contains("no named AI host")));
+    assert_eq!(
+        json["release_tiers"]["public_superiority_claim_ready"]["status"],
+        "blocked"
+    );
 }

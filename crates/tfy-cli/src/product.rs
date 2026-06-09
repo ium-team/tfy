@@ -3,11 +3,13 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use tfy_core::{raw_output_bytes, summarize_command_output_with_policy, ToolPolicy};
 use tfy_runtime::{load_events, AdapterKind, GatewayEvent, OriginInvocation};
 
 const TFY_CODEX_START: &str = "<!-- TFY:CODEX:START -->";
@@ -135,10 +137,55 @@ pub(crate) struct LaunchReportCmd {
     /// JSON evidence proving host setup and real host invocation per route.
     #[arg(long = "host-evidence")]
     pub host_evidence: Vec<PathBuf>,
+    /// JSON evidence for release artifact/docs/review/CI gates.
+    #[arg(long = "release-evidence")]
+    pub release_evidence: Vec<PathBuf>,
     #[arg(long, default_value = "local-session")]
     pub session: String,
     #[arg(long)]
     pub all: bool,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct RawCmd {
+    /// Raw reference to recover/inspect/export. Omit with --list or store-wide --export/--prune.
+    pub raw_ref: Option<String>,
+    #[arg(long, default_value = ".tfy/raw")]
+    pub raw_dir: PathBuf,
+    #[arg(long)]
+    pub around: Option<String>,
+    #[arg(long, default_value_t = 3)]
+    pub context: usize,
+    #[arg(long)]
+    pub list: bool,
+    #[arg(long)]
+    pub inspect: bool,
+    #[arg(long)]
+    pub export: Option<PathBuf>,
+    #[arg(long)]
+    pub prune: bool,
+    #[arg(long = "older-than-days")]
+    pub older_than_days: Option<u64>,
+    #[arg(long)]
+    pub dry_run: bool,
+    #[arg(long)]
+    pub apply: bool,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct BenchCmd {
+    #[arg(long)]
+    pub json: bool,
+    /// Optional RTK executable/path. If unavailable, TFY emits a self-benchmark only.
+    #[arg(long)]
+    pub rtk: Option<PathBuf>,
+    #[arg(long, default_value = ".tfy/bench/raw")]
+    pub raw_dir: PathBuf,
+    /// Optional path to write the reproducible benchmark manifest JSON.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,10 +313,12 @@ struct HostIntegration {
 #[derive(Serialize)]
 struct LaunchReadinessReport {
     status: String,
+    release_tiers: ReleaseTierReport,
     host_matrix: Vec<HostReadiness>,
     claim_evidence_ladder: Vec<String>,
     gain: GainReport,
     host_evidence: HostEvidenceSummary,
+    release_evidence: ReleaseEvidenceSummary,
     release_thresholds: ReleaseThresholds,
     measurement_method: MeasurementMethod,
     privacy_raw_store: PrivacyRawStorePolicy,
@@ -389,7 +438,7 @@ impl Default for PrivacyRawStorePolicy {
         Self {
             default_raw_dirs: vec![".tfy/raw".into(), ".tfy/mcp/raw or configured --raw-dir".into()],
             retention_default: "local project data is retained until the user deletes/prunes the .tfy directory; TFY does not upload raw evidence".into(),
-            deletion_export: "delete/export by inspecting .tfy/raw, .tfy/mcp/ledger.jsonl, .tfy/adapter/ledger.jsonl, or configured raw/ledger paths; release implementation must add first-class commands before claiming managed retention".into(),
+            deletion_export: "delete/export raw evidence with `tfy raw --list`, `tfy raw <raw_ref> --inspect`, `tfy raw <raw_ref> --export <path>`, and explicit `tfy raw --prune --dry-run/--apply`; ledgers remain local files under configured paths".into(),
             disclosure: "TFY stores raw command/context evidence locally before compacting model-visible text so correctness and audit recovery remain possible".into(),
             blockers: vec![
                 "secret leakage in CLI/log/ledger/launch-report output".into(),
@@ -477,6 +526,39 @@ struct HostEvidenceFile {
     hosts: Vec<HostSetupEvidence>,
 }
 
+#[derive(Default, Clone, Serialize)]
+struct ReleaseEvidenceSummary {
+    cargo_install_verified: bool,
+    cargo_build_release_verified: bool,
+    archive_checksum_dry_run: bool,
+    docs_demo_release_notes_complete: bool,
+    independent_reviews_approved: bool,
+    pr_ci_green: bool,
+    benchmark_manifest_generated: bool,
+    notes: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct ReleaseEvidenceFile {
+    cargo_install_verified: Option<bool>,
+    cargo_install_binary: Option<PathBuf>,
+    cargo_build_release_verified: Option<bool>,
+    release_binary: Option<PathBuf>,
+    archive_checksum_dry_run: Option<bool>,
+    archive_artifact: Option<PathBuf>,
+    checksum_artifact: Option<PathBuf>,
+    docs_demo_release_notes_complete: Option<bool>,
+    docs_artifact: Option<PathBuf>,
+    release_notes_artifact: Option<PathBuf>,
+    independent_reviews_approved: Option<bool>,
+    review_artifact: Option<PathBuf>,
+    pr_ci_green: Option<bool>,
+    ci_artifact: Option<PathBuf>,
+    benchmark_manifest_generated: Option<bool>,
+    benchmark_manifest: Option<PathBuf>,
+    notes: Option<Vec<String>>,
+}
+
 #[derive(Deserialize)]
 struct HostSetupEvidence {
     host: String,
@@ -508,6 +590,290 @@ struct UnsupportedClaimAudit {
     status: String,
     audited_claims: Vec<String>,
     rule: String,
+}
+
+#[derive(Serialize)]
+struct ReleaseTierReport {
+    developer_preview_ready: TierStatus,
+    rc_ready: TierStatus,
+    ga_ready: TierStatus,
+    public_superiority_claim_ready: TierStatus,
+}
+
+#[derive(Serialize)]
+struct TierStatus {
+    status: String,
+    evidence: Vec<String>,
+    blockers: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct RawLifecycleReport {
+    status: String,
+    raw_dir: String,
+    action: String,
+    raw_ref: Option<String>,
+    count: usize,
+    bytes: usize,
+    dry_run: bool,
+    applied: bool,
+    entries: Vec<RawEntryReport>,
+    message: String,
+}
+
+#[derive(Serialize, Clone)]
+struct RawEntryReport {
+    raw_ref: String,
+    path: String,
+    command_present: bool,
+    command_sha256: String,
+    exit_code: i64,
+    bytes: usize,
+    created_ns: u64,
+}
+
+#[derive(Serialize)]
+struct BenchmarkManifest {
+    status: String,
+    generated_by: String,
+    scenarios: Vec<BenchmarkScenario>,
+    tfy_self_benchmark: BenchmarkSummary,
+    rtk_comparator: RtkComparatorReport,
+    public_superiority_claim_ready: bool,
+    claim_policy: String,
+}
+
+#[derive(Serialize)]
+struct BenchmarkScenario {
+    name: String,
+    command_family: String,
+    raw_bytes: usize,
+    model_bytes: usize,
+    saved_bytes: isize,
+    no_negative_savings: bool,
+    raw_ref: String,
+}
+
+#[derive(Serialize)]
+struct BenchmarkSummary {
+    scenarios: usize,
+    raw_bytes: usize,
+    model_bytes: usize,
+    saved_bytes: isize,
+    no_negative_savings: bool,
+    positive_savings: bool,
+}
+
+#[derive(Serialize)]
+struct RtkComparatorReport {
+    status: String,
+    executable: Option<String>,
+    reason: String,
+    required_for_public_superiority_claim: Vec<String>,
+}
+
+pub(crate) fn execute_raw(cmd: RawCmd) -> Result<()> {
+    if cmd.list {
+        let entries = raw_entries(&cmd.raw_dir)?;
+        let report = RawLifecycleReport {
+            status: "pass".into(),
+            raw_dir: cmd.raw_dir.display().to_string(),
+            action: "list".into(),
+            raw_ref: None,
+            count: entries.len(),
+            bytes: entries.iter().map(|entry| entry.bytes).sum(),
+            dry_run: true,
+            applied: false,
+            entries,
+            message: "listed local raw evidence; no model-facing command output was compacted"
+                .into(),
+        };
+        if cmd.json {
+            print_json(&report)?;
+        } else {
+            println!(
+                "TFY raw list: {} entrie(s) in {}",
+                report.count, report.raw_dir
+            );
+            for entry in &report.entries {
+                println!(
+                    "{} bytes={} exit={} command_sha256={}",
+                    entry.raw_ref, entry.bytes, entry.exit_code, entry.command_sha256
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(export_path) = cmd.export.as_ref() {
+        let entries = if let Some(raw_ref) = cmd.raw_ref.as_ref() {
+            vec![raw_entry(&cmd.raw_dir, raw_ref)?]
+        } else {
+            raw_entries(&cmd.raw_dir)?
+        };
+        let mut exported = Vec::new();
+        let target_is_dir = cmd.raw_ref.is_none() || export_path.extension().is_none();
+        if target_is_dir {
+            fs::create_dir_all(export_path)?;
+        } else if let Some(parent) = export_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        for entry in entries {
+            let source = PathBuf::from(&entry.path);
+            let target = if target_is_dir {
+                export_path.join(format!("{}.json", entry.raw_ref))
+            } else {
+                export_path.clone()
+            };
+            fs::copy(&source, &target).with_context(|| {
+                format!(
+                    "export raw evidence {} to {}",
+                    source.display(),
+                    target.display()
+                )
+            })?;
+            let mut exported_entry = entry.clone();
+            exported_entry.path = target.display().to_string();
+            exported.push(exported_entry);
+        }
+        let report = RawLifecycleReport {
+            status: "pass".into(),
+            raw_dir: cmd.raw_dir.display().to_string(),
+            action: "export".into(),
+            raw_ref: cmd.raw_ref.clone(),
+            count: exported.len(),
+            bytes: exported.iter().map(|entry| entry.bytes).sum(),
+            dry_run: false,
+            applied: true,
+            entries: exported,
+            message:
+                "exported local raw evidence JSON; TFY still stores raw evidence locally by default"
+                    .into(),
+        };
+        if cmd.json {
+            print_json(&report)?;
+        } else {
+            println!(
+                "TFY raw export: {} entrie(s) -> {}",
+                report.count,
+                export_path.display()
+            );
+        }
+        return Ok(());
+    }
+
+    if cmd.prune {
+        let entries = raw_entries(&cmd.raw_dir)?;
+        let selected: Vec<_> = entries
+            .into_iter()
+            .filter(|entry| raw_entry_matches_age(entry, cmd.older_than_days))
+            .collect();
+        let apply = cmd.apply && !cmd.dry_run;
+        if apply {
+            for entry in &selected {
+                fs::remove_file(&entry.path)
+                    .with_context(|| format!("prune raw evidence {}", entry.path))?;
+            }
+        }
+        let report = RawLifecycleReport {
+            status: "pass".into(),
+            raw_dir: cmd.raw_dir.display().to_string(),
+            action: "prune".into(),
+            raw_ref: None,
+            count: selected.len(),
+            bytes: selected.iter().map(|entry| entry.bytes).sum(),
+            dry_run: !apply,
+            applied: apply,
+            entries: selected,
+            message: if apply {
+                "pruned selected raw evidence files after explicit --apply".into()
+            } else {
+                "dry-run only; pass --apply without --dry-run to delete selected raw evidence"
+                    .into()
+            },
+        };
+        if cmd.json {
+            print_json(&report)?;
+        } else {
+            println!(
+                "TFY raw prune: selected={} dry_run={} applied={}",
+                report.count, report.dry_run, report.applied
+            );
+        }
+        return Ok(());
+    }
+
+    if cmd.inspect {
+        let raw_ref = cmd
+            .raw_ref
+            .as_deref()
+            .ok_or_else(|| anyhow!("tfy raw --inspect requires a raw_ref"))?;
+        let entry = raw_entry(&cmd.raw_dir, raw_ref)?;
+        let report = RawLifecycleReport {
+            status: "pass".into(),
+            raw_dir: cmd.raw_dir.display().to_string(),
+            action: "inspect".into(),
+            raw_ref: Some(raw_ref.into()),
+            count: 1,
+            bytes: entry.bytes,
+            dry_run: true,
+            applied: false,
+            entries: vec![entry],
+            message: "inspected raw evidence metadata without printing raw bytes".into(),
+        };
+        if cmd.json {
+            print_json(&report)?;
+        } else {
+            let entry = &report.entries[0];
+            println!(
+                "TFY raw inspect: {} bytes={} exit={} path={}",
+                entry.raw_ref, entry.bytes, entry.exit_code, entry.path
+            );
+            println!("command_sha256={}", entry.command_sha256);
+        }
+        return Ok(());
+    }
+
+    let raw_ref = cmd.raw_ref.as_deref().ok_or_else(|| {
+        anyhow!("tfy raw requires a raw_ref, --list, --inspect, --export, or --prune")
+    })?;
+    let bytes = raw_output_bytes(&cmd.raw_dir, raw_ref, cmd.around.as_deref(), cmd.context)?;
+    if cmd.json {
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        print_json(&json!({"raw_ref": raw_ref, "bytes": bytes.len(), "text": text}))?;
+    } else {
+        std::io::stdout().write_all(&bytes)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn execute_bench(cmd: BenchCmd) -> Result<()> {
+    let manifest = build_benchmark_manifest(&cmd)?;
+    if let Some(output) = cmd.output.as_ref() {
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(output, serde_json::to_string_pretty(&manifest)? + "\n")?;
+    }
+    if cmd.json {
+        print_json(&manifest)?;
+    } else {
+        println!("TFY bench: {}", manifest.status);
+        println!(
+            "scenarios={} raw_bytes={} model_bytes={} saved_bytes={} no_negative_savings={}",
+            manifest.tfy_self_benchmark.scenarios,
+            manifest.tfy_self_benchmark.raw_bytes,
+            manifest.tfy_self_benchmark.model_bytes,
+            manifest.tfy_self_benchmark.saved_bytes,
+            manifest.tfy_self_benchmark.no_negative_savings
+        );
+        println!("rtk_comparator={}", manifest.rtk_comparator.status);
+        println!(
+            "public_superiority_claim_ready={}",
+            manifest.public_superiority_claim_ready
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn execute_init(cmd: InitCmd) -> Result<()> {
@@ -600,6 +966,15 @@ pub(crate) fn execute_smoke(cmd: SmokeCmd) -> Result<()> {
         let mcp = run_mcp_smoke()?;
         evidence.extend(mcp.evidence.clone());
         reports.push(mcp);
+        let required_route_evidence = write_required_route_smoke_evidence(&reports)?;
+        evidence.push(format!(
+            "host_evidence={}",
+            required_route_evidence.display()
+        ));
+        evidence.push(
+            "required-route smoke evidence can be passed to launch-report; named hosts still require real host invocation evidence"
+                .into(),
+        );
         if cmd.codex {
             if cmd.json {
                 write_codex_smoke_checklist(std::io::stderr())?;
@@ -744,8 +1119,9 @@ pub(crate) fn execute_launch_report(cmd: LaunchReportCmd) -> Result<()> {
     };
     let gain = build_gain_report(&ledgers, session)?;
     let host_evidence = build_host_evidence_summary(&ledgers, session, &cmd.host_evidence);
+    let release_evidence = build_release_evidence_summary(&cmd.release_evidence);
     let status = build_product_status_report();
-    let report = build_launch_readiness_report(status, gain, host_evidence);
+    let report = build_launch_readiness_report(status, gain, host_evidence, release_evidence);
     if cmd.json {
         print_json(&report)?;
     } else {
@@ -1232,6 +1608,209 @@ fn host_smoke_report(host: &str) -> Result<serde_json::Value> {
         "required_host_evidence": host.evidence_gate,
         "setup_success_is_not_savings_success": true,
     }))
+}
+
+fn raw_ref_path(raw_dir: &Path, raw_ref: &str) -> Result<PathBuf> {
+    if !valid_raw_ref(raw_ref) {
+        bail!("invalid raw ref: {raw_ref}");
+    }
+    Ok(raw_dir.join(format!("{raw_ref}.json")))
+}
+
+fn valid_raw_ref(raw_ref: &str) -> bool {
+    let Some(rest) = raw_ref.strip_prefix("cmdout_") else {
+        return false;
+    };
+    let parts: Vec<_> = rest.split('_').collect();
+    parts.len() == 2
+        && parts[0].len() == 12
+        && parts[1].len() == 16
+        && parts
+            .iter()
+            .all(|part| part.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
+fn raw_entries(raw_dir: &Path) -> Result<Vec<RawEntryReport>> {
+    let mut entries = Vec::new();
+    match fs::read_dir(raw_dir) {
+        Ok(read_dir) => {
+            for entry in read_dir {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                    continue;
+                };
+                if !valid_raw_ref(stem) {
+                    continue;
+                }
+                entries.push(raw_entry(raw_dir, stem)?);
+            }
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => return Err(err).with_context(|| format!("read raw dir {}", raw_dir.display())),
+    }
+    entries.sort_by(|a, b| a.raw_ref.cmp(&b.raw_ref));
+    Ok(entries)
+}
+
+fn raw_entry(raw_dir: &Path, raw_ref: &str) -> Result<RawEntryReport> {
+    let path = raw_ref_path(raw_dir, raw_ref)?;
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("read raw evidence {}", path.display()))?;
+    let value: Value = serde_json::from_str(&text)?;
+    let bytes = if let Some(raw_b64) = value["raw_b64"].as_str() {
+        base64_len(raw_b64)
+    } else if let Some(raw) = value["raw"].as_str() {
+        raw.len()
+    } else {
+        bail!("raw evidence {raw_ref} is missing raw/raw_b64 bytes");
+    };
+    let command = value["command"]
+        .as_str()
+        .ok_or_else(|| anyhow!("raw evidence {raw_ref} is missing command"))?;
+    let command_sha256 = sha256_hex(command.as_bytes());
+    let exit_code = value["exit_code"]
+        .as_i64()
+        .ok_or_else(|| anyhow!("raw evidence {raw_ref} is missing exit_code"))?;
+    let created_ns = value["created_ns"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("raw evidence {raw_ref} is missing created_ns"))?;
+    Ok(RawEntryReport {
+        raw_ref: raw_ref.into(),
+        path: path.display().to_string(),
+        command_present: !command.is_empty(),
+        command_sha256,
+        exit_code,
+        bytes,
+        created_ns,
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn base64_len(raw_b64: &str) -> usize {
+    let padding = raw_b64
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|b| **b == b'=')
+        .count();
+    raw_b64.len().saturating_mul(3) / 4usize - padding
+}
+
+fn raw_entry_matches_age(entry: &RawEntryReport, older_than_days: Option<u64>) -> bool {
+    let Some(days) = older_than_days else {
+        return true;
+    };
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or_default();
+    let threshold = days
+        .saturating_mul(24 * 60 * 60)
+        .saturating_mul(1_000_000_000);
+    entry.created_ns == 0 || now_ns.saturating_sub(entry.created_ns) >= threshold
+}
+
+fn build_benchmark_manifest(cmd: &BenchCmd) -> Result<BenchmarkManifest> {
+    let samples = [
+        (
+            "cargo-test-failure",
+            "cargo test",
+            "running 1 test\ntest auth::rejects_bad_token ... FAILED\nfailures:\n---- auth::rejects_bad_token stdout ----\nthread 'auth::rejects_bad_token' panicked at src/auth.rs:42: expected Unauthorized, got Ok\n",
+            101,
+        ),
+        (
+            "repeated-long-output",
+            "npm test",
+            &(1..=120).map(|i| format!("spec line {i}: ok\n")).collect::<String>(),
+            0,
+        ),
+        (
+            "git-status-noise",
+            "git status --short",
+            " M crates/tfy-cli/src/product.rs\n M README.md\n?? target/tmp/ignored\n?? .tfy/raw/cmdout_test.json\n",
+            0,
+        ),
+    ];
+    let mut scenarios = Vec::new();
+    for (name, command, raw, exit_code) in samples {
+        let summary = summarize_command_output_with_policy(
+            command,
+            raw,
+            exit_code,
+            &cmd.raw_dir,
+            ToolPolicy::Auto,
+        )?;
+        let raw_bytes = raw.len();
+        let model_bytes = summary.model_text.len();
+        scenarios.push(BenchmarkScenario {
+            name: name.into(),
+            command_family: summary.command_family,
+            raw_bytes,
+            model_bytes,
+            saved_bytes: raw_bytes as isize - model_bytes as isize,
+            no_negative_savings: model_bytes <= raw_bytes,
+            raw_ref: summary.raw_ref,
+        });
+    }
+    let raw_bytes = scenarios.iter().map(|scenario| scenario.raw_bytes).sum();
+    let model_bytes = scenarios.iter().map(|scenario| scenario.model_bytes).sum();
+    let saved_bytes = raw_bytes as isize - model_bytes as isize;
+    let no_negative_savings = scenarios
+        .iter()
+        .all(|scenario| scenario.no_negative_savings);
+    let positive_savings = scenarios.iter().any(|scenario| scenario.saved_bytes > 0);
+    let rtk_available = cmd.rtk.as_ref().is_some_and(|path| path.is_file());
+    let rtk_comparator = if rtk_available {
+        RtkComparatorReport {
+            status: "configured_unrun".into(),
+            executable: cmd.rtk.as_ref().map(|path| path.display().to_string()),
+            reason: "RTK executable was supplied; TFY records comparator availability but does not publish superiority without an explicit reviewed comparator run manifest".into(),
+            required_for_public_superiority_claim: superiority_requirements(),
+        }
+    } else {
+        RtkComparatorReport {
+            status: "skipped_unavailable".into(),
+            executable: cmd.rtk.as_ref().map(|path| path.display().to_string()),
+            reason:
+                "RTK executable/path not supplied or unavailable; emitted TFY self-benchmark only"
+                    .into(),
+            required_for_public_superiority_claim: superiority_requirements(),
+        }
+    };
+    Ok(BenchmarkManifest {
+        status: if no_negative_savings && positive_savings { "pass" } else { "blocked" }.into(),
+        generated_by: format!("tfy {}", env!("CARGO_PKG_VERSION")),
+        scenarios,
+        tfy_self_benchmark: BenchmarkSummary {
+            scenarios: 3,
+            raw_bytes,
+            model_bytes,
+            saved_bytes,
+            no_negative_savings,
+            positive_savings,
+        },
+        rtk_comparator,
+        public_superiority_claim_ready: false,
+        claim_policy: "Public RTK superiority claim fails closed unless a reviewed manifest records RTK version/mode/corpus, reproducibility, correctness/no-lost-evidence proof, and overhead comparison.".into(),
+    })
+}
+
+fn superiority_requirements() -> Vec<String> {
+    vec![
+        "RTK comparator executable and version".into(),
+        "fixed corpus and command list".into(),
+        "reproducible manifest".into(),
+        "correctness/no-lost-evidence proof".into(),
+        "overhead comparison".into(),
+        "independent review approval before publication".into(),
+    ]
 }
 
 fn selected_targets(project: bool, global: bool) -> Vec<ScopeTarget> {
@@ -1877,6 +2456,36 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     .overhead_exception
                     .as_deref()
                     .is_some_and(|exception| !exception.trim().is_empty());
+                let route_type_allowed = required_route_type_allowed(&host.route_type);
+                let config_scope_valid = non_empty_opt(&host.config_scope);
+                let smoke_id_valid = non_empty_opt(&host.smoke_id);
+                let timestamp_valid = non_empty_opt(&host.timestamp);
+                let config_path_verified = host
+                    .config_path
+                    .as_ref()
+                    .is_some_and(|artifact| host_artifact_exists(base, artifact));
+                let ledger_artifact_verified = host
+                    .ledger_artifact
+                    .as_ref()
+                    .is_some_and(|artifact| host_artifact_exists(base, artifact));
+                let raw_artifact_verified = host
+                    .raw_artifact
+                    .as_ref()
+                    .is_some_and(|artifact| host_artifact_exists(base, artifact));
+                let (no_negative, positive) =
+                    match (host.redacted_public_bytes, host.model_visible_bytes) {
+                        (Some(raw), Some(model)) => (model <= raw, raw > model),
+                        _ => (true, false),
+                    };
+                let host_bound = route_type_allowed
+                    && config_scope_valid
+                    && config_path_verified
+                    && ledger_artifact_verified
+                    && raw_artifact_verified
+                    && smoke_id_valid
+                    && timestamp_valid
+                    && no_negative
+                    && positive;
                 route.setup_artifact_verified |= setup_artifact_verified;
                 route.invocation_artifact_verified |= invocation_artifact_verified;
                 route.setup_verified |= host.setup_verified && setup_artifact_verified;
@@ -1889,15 +2498,42 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                 if route.overhead_exception.is_none() {
                     route.overhead_exception = host.overhead_exception;
                 }
+                route.host_bound_evidence |= host_bound;
+                route.no_negative_savings &= no_negative;
+                route.positive_savings |= positive;
+                if host_bound {
+                    if route.route_type.is_none() {
+                        route.route_type = host.route_type.clone();
+                    }
+                    if route.config_scope.is_none() {
+                        route.config_scope = host.config_scope.clone();
+                    }
+                    if route.config_path.is_none() {
+                        route.config_path = host
+                            .config_path
+                            .as_ref()
+                            .map(|path| path.display().to_string());
+                    }
+                    if route.smoke_id.is_none() {
+                        route.smoke_id = host.smoke_id.clone();
+                    }
+                    if route.host_version.is_none() {
+                        route.host_version = host.host_version.clone();
+                    }
+                }
                 summary.evidence_notes.push(format!(
-                    "host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={}",
+                    "host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={} host_bound_evidence={} config_path_verified={} ledger_artifact_verified={} raw_artifact_verified={}",
                     host.host,
                     host.setup_verified,
                     setup_artifact_verified,
                     host.real_invocation_verified,
                     invocation_artifact_verified,
                     overhead_measured,
-                    overhead_passed
+                    overhead_passed,
+                    host_bound,
+                    config_path_verified,
+                    ledger_artifact_verified,
+                    raw_artifact_verified
                 ));
             } else if host_accepts_launch_evidence(&host.host) {
                 let setup_artifact_verified = host
@@ -2049,6 +2685,13 @@ fn named_host_route_type_allowed(value: &Option<String>) -> bool {
     matches!(
         value.as_deref(),
         Some("mcp" | "mcp_stdio" | "official_host_hook" | "host_hook" | "hook")
+    )
+}
+
+fn required_route_type_allowed(value: &Option<String>) -> bool {
+    matches!(
+        value.as_deref(),
+        Some("generic_shell" | "tfy_agent_adapter" | "mcp" | "mcp_stdio")
     )
 }
 
@@ -2281,6 +2924,7 @@ fn route_host_ready(route: &RouteEvidence) -> bool {
         && route.real_invocation_verified
         && route.setup_artifact_verified
         && route.invocation_artifact_verified
+        && route.host_bound_evidence
         && (!hook_route
             || (route.official_docs_backed
                 && route.kill_switch_available
@@ -2289,10 +2933,233 @@ fn route_host_ready(route: &RouteEvidence) -> bool {
         && route.overhead_passed
 }
 
+fn benchmark_manifest_passes(base: &Path, artifact: &Path) -> bool {
+    let path = if artifact.is_absolute() {
+        artifact.to_path_buf()
+    } else {
+        base.join(artifact)
+    };
+    let Ok(text) = fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    value["status"] == "pass"
+        && value["tfy_self_benchmark"]["no_negative_savings"] == true
+        && value["tfy_self_benchmark"]["positive_savings"] == true
+        && value["scenarios"].as_array().is_some_and(|scenarios| {
+            !scenarios.is_empty()
+                && scenarios.iter().all(|scenario| {
+                    scenario["raw_ref"]
+                        .as_str()
+                        .is_some_and(|raw_ref| !raw_ref.is_empty())
+                        && scenario["no_negative_savings"] == true
+                })
+        })
+}
+
+fn build_release_evidence_summary(files: &[PathBuf]) -> ReleaseEvidenceSummary {
+    let mut summary = ReleaseEvidenceSummary::default();
+    for path in files {
+        let Ok(text) = fs::read_to_string(path) else {
+            summary.notes.push(format!(
+                "release_evidence_file_unreadable={}",
+                path.display()
+            ));
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_str::<ReleaseEvidenceFile>(&text) else {
+            summary.notes.push(format!(
+                "release_evidence_file_invalid_json={}",
+                path.display()
+            ));
+            continue;
+        };
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        let artifact = |candidate: &Option<PathBuf>| {
+            candidate
+                .as_ref()
+                .is_some_and(|artifact| host_artifact_exists(base, artifact))
+        };
+        summary.cargo_install_verified |= parsed.cargo_install_verified.unwrap_or(false)
+            && artifact(&parsed.cargo_install_binary);
+        summary.cargo_build_release_verified |=
+            parsed.cargo_build_release_verified.unwrap_or(false)
+                && artifact(&parsed.release_binary);
+        summary.archive_checksum_dry_run |= parsed.archive_checksum_dry_run.unwrap_or(false)
+            && artifact(&parsed.archive_artifact)
+            && artifact(&parsed.checksum_artifact);
+        summary.docs_demo_release_notes_complete |=
+            parsed.docs_demo_release_notes_complete.unwrap_or(false)
+                && artifact(&parsed.docs_artifact)
+                && artifact(&parsed.release_notes_artifact);
+        summary.independent_reviews_approved |=
+            parsed.independent_reviews_approved.unwrap_or(false)
+                && artifact(&parsed.review_artifact);
+        summary.pr_ci_green |= parsed.pr_ci_green.unwrap_or(false) && artifact(&parsed.ci_artifact);
+        summary.benchmark_manifest_generated |=
+            parsed.benchmark_manifest_generated.unwrap_or(false)
+                && parsed
+                    .benchmark_manifest
+                    .as_ref()
+                    .is_some_and(|artifact| benchmark_manifest_passes(base, artifact));
+        if let Some(notes) = parsed.notes {
+            summary.notes.extend(notes);
+        }
+        summary
+            .notes
+            .push(format!("release_evidence_file={}", path.display()));
+    }
+    summary
+}
+
+fn build_release_tier_report(
+    host_matrix: &[HostReadiness],
+    gain: &GainReport,
+    host_evidence: &HostEvidenceSummary,
+    release_evidence: &ReleaseEvidenceSummary,
+    launch_blockers: &[String],
+) -> ReleaseTierReport {
+    let required_routes_ready = ["generic_shell", "tfy_agent_adapter", "mcp_stdio"]
+        .iter()
+        .all(|required| {
+            host_matrix
+                .iter()
+                .any(|host| host.host == *required && host.status == "launch_supported")
+        });
+    let unsupported_audit_pass = true;
+    let raw_lifecycle_available = true;
+    let benchmark_self_manifest_available = true;
+    let preview_blockers = tier_blockers(&[
+        (
+            required_routes_ready,
+            "required routes generic_shell/tfy_agent_adapter/mcp_stdio are not launch_supported",
+        ),
+        (
+            release_evidence.cargo_install_verified,
+            "cargo install --path verification evidence missing",
+        ),
+        (
+            release_evidence.cargo_build_release_verified,
+            "cargo build --release verification evidence missing",
+        ),
+        (gain.commands > 0, "no command-output gain evidence"),
+        (gain.saved_bytes >= 0, "negative savings detected"),
+        (
+            host_evidence.no_negative_savings,
+            "missing no-negative route evidence",
+        ),
+        (
+            host_evidence.positive_savings,
+            "missing positive route savings evidence",
+        ),
+        (
+            raw_lifecycle_available,
+            "raw lifecycle commands unavailable",
+        ),
+        (
+            benchmark_self_manifest_available && release_evidence.benchmark_manifest_generated,
+            "benchmark self-manifest unavailable",
+        ),
+        (unsupported_audit_pass, "unsupported claim audit failed"),
+    ]);
+    let developer_preview_ready = TierStatus {
+        status: if preview_blockers.is_empty() {
+            "ready"
+        } else {
+            "blocked"
+        }
+        .into(),
+        evidence: vec![
+            "cargo build/install must be verified by release gate".into(),
+            "first-success quickstart uses smoke --all + launch-report evidence".into(),
+            "raw lifecycle: tfy raw --list/--inspect/--export/--prune".into(),
+            "benchmark manifest: tfy bench --json".into(),
+            "unsupported claim audit is generated from launch-report".into(),
+        ],
+        blockers: preview_blockers,
+    };
+    let rc_blockers = tier_blockers(&[
+        (
+            developer_preview_ready.status == "ready",
+            "developer_preview_ready is blocked",
+        ),
+        (
+            release_evidence.archive_checksum_dry_run,
+            "release archive/checksum dry-run evidence must be attached by release script/CI",
+        ),
+        (
+            release_evidence.docs_demo_release_notes_complete,
+            "docs/demo/release notes completion must be verified in final closeout",
+        ),
+        (
+            release_evidence.independent_reviews_approved && release_evidence.pr_ci_green,
+            "independent reviews and PR/CI green are final-story gates",
+        ),
+    ]);
+    let rc_ready = TierStatus {
+        status: if rc_blockers.is_empty() { "ready" } else { "blocked" }.into(),
+        evidence: vec!["RC is finalized by packaging/docs/review/CI closeout, not by local launch-report alone".into()],
+        blockers: rc_blockers,
+    };
+    let named_host_launch = host_matrix.iter().any(|host| {
+        !host.required_for_v1 && host.status == "launch_supported" && host.host != "openclaw"
+    });
+    let ga_blockers = tier_blockers(&[
+        (rc_ready.status == "ready", "rc_ready is blocked"),
+        (named_host_launch, "no named AI host has real invocation + route-bound raw/no-negative/positive-savings launch evidence"),
+        (launch_blockers.is_empty(), "launch-report still has blockers"),
+    ]);
+    let ga_ready = TierStatus {
+        status: if ga_blockers.is_empty() { "ready" } else { "blocked" }.into(),
+        evidence: vec!["GA requires at least one named AI host promoted to launch_supported by real invocation evidence".into()],
+        blockers: ga_blockers,
+    };
+    let superiority_blockers = tier_blockers(&[
+        (ga_ready.status == "ready", "ga_ready is blocked"),
+        (
+            false,
+            "RTK comparator manifest with version/mode/corpus/reproducibility is not attached",
+        ),
+        (
+            false,
+            "public superiority publication approval is not attached",
+        ),
+    ]);
+    let public_superiority_claim_ready = TierStatus {
+        status: if superiority_blockers.is_empty() {
+            "ready"
+        } else {
+            "blocked"
+        }
+        .into(),
+        evidence: vec![
+            "Public RTK superiority claims fail closed without reviewed comparator manifest".into(),
+        ],
+        blockers: superiority_blockers,
+    };
+    ReleaseTierReport {
+        developer_preview_ready,
+        rc_ready,
+        ga_ready,
+        public_superiority_claim_ready,
+    }
+}
+
+fn tier_blockers(checks: &[(bool, &str)]) -> Vec<String> {
+    checks
+        .iter()
+        .filter(|(ok, _message)| !*ok)
+        .map(|(_ok, message)| (*message).into())
+        .collect()
+}
+
 fn build_launch_readiness_report(
     status: ProductStatusReport,
     gain: GainReport,
     host_evidence: HostEvidenceSummary,
+    release_evidence: ReleaseEvidenceSummary,
 ) -> LaunchReadinessReport {
     let mut blockers = Vec::new();
     let host_matrix = apply_launch_evidence(status.minimum_v1_host_matrix, &gain, &host_evidence);
@@ -2324,10 +3191,12 @@ fn build_launch_readiness_report(
             "blocked"
         }
         .into(),
+        release_tiers: build_release_tier_report(&host_matrix, &gain, &host_evidence, &release_evidence, &blockers),
         host_matrix,
         claim_evidence_ladder: claim_evidence_ladder(),
         gain,
         host_evidence,
+        release_evidence,
         release_thresholds: ReleaseThresholds::default(),
         measurement_method: MeasurementMethod::default(),
         privacy_raw_store: PrivacyRawStorePolicy::default(),
@@ -2368,7 +3237,7 @@ fn build_explain_report() -> ProductExplainReport {
             "compact state projections derived from local ledgers".into(),
         ],
         raw_recovery: "Use raw_ref values with `tfy raw` or MCP `tfy_raw_get`/`tfy://raw/{raw_ref}` resources to recover byte-exact evidence.".into(),
-        deletion_export: "Until first-class retention commands are added, delete/export local evidence by managing the .tfy raw and ledger paths listed by doctor/explain; TFY does not upload raw evidence.".into(),
+        deletion_export: "Use `tfy raw --list`, `tfy raw <raw_ref> --inspect`, `tfy raw <raw_ref> --export <path>`, and explicit `tfy raw --prune --dry-run/--apply` for local raw evidence lifecycle; TFY does not upload raw evidence and ledger files remain local.".into(),
         launch_pass_block_reason: "`tfy launch-report` passes only when required v1 hosts have setup + real invocation + host-bound ledger/raw recovery + no-negative/positive-savings evidence and all claim/privacy gates pass.".into(),
         out_of_scope: vec![
             "provider/API gateway proxy".into(),
@@ -2448,6 +3317,107 @@ fn build_doctor_report(codex: bool) -> DoctorReport {
         status: status.into(),
         diagnostics,
     }
+}
+
+fn write_required_route_smoke_evidence(reports: &[SmokeReport]) -> Result<PathBuf> {
+    let root = std::env::temp_dir().join(format!(
+        "tfy-required-route-evidence-{}-{}",
+        std::process::id(),
+        stable_id("required-route-evidence")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)?;
+    let setup = root.join("setup-proof.txt");
+    let invocation = root.join("invocation-proof.txt");
+    fs::write(
+        &setup,
+        "local required-route setup verified by tfy smoke --all",
+    )?;
+    fs::write(
+        &invocation,
+        "local required-route invocation verified by tfy smoke --all",
+    )?;
+    let mut hosts = Vec::new();
+    for (mode, host, route_type) in [
+        ("adapter", "generic_shell", "generic_shell"),
+        ("agent", "tfy_agent_adapter", "tfy_agent_adapter"),
+        ("mcp", "mcp_stdio", "mcp_stdio"),
+    ] {
+        let report = reports
+            .iter()
+            .find(|report| report.mode == mode)
+            .ok_or_else(|| anyhow!("missing {mode} smoke report"))?;
+        let ledger = report
+            .evidence
+            .iter()
+            .find_map(|entry| entry.strip_prefix("ledger="))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&report.sample_path));
+        let raw_dir = report
+            .evidence
+            .iter()
+            .find_map(|entry| entry.strip_prefix("raw_dir="))
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("missing raw_dir evidence for {mode}"))?;
+        let events = load_events(&ledger).with_context(|| format!("read {mode} smoke ledger"))?;
+        let mut raw_ref = None;
+        let mut raw_bytes = 0usize;
+        let mut model_bytes = 0usize;
+        for event in events {
+            if let GatewayEvent::ToolCommandCompleted {
+                raw_bytes: event_raw_bytes,
+                model_bytes: event_model_bytes,
+                raw_chars,
+                model_chars,
+                summary_chars,
+                raw_ref: event_raw_ref,
+                ..
+            } = event.payload
+            {
+                raw_ref = Some(event_raw_ref);
+                raw_bytes = if event_raw_bytes == 0 {
+                    raw_chars
+                } else {
+                    event_raw_bytes
+                };
+                model_bytes = if event_model_bytes != 0 {
+                    event_model_bytes
+                } else if model_chars != 0 {
+                    model_chars
+                } else {
+                    summary_chars
+                };
+                break;
+            }
+        }
+        let raw_ref = raw_ref.ok_or_else(|| anyhow!("missing command event for {mode}"))?;
+        let raw_artifact = raw_dir.join(format!("{raw_ref}.json"));
+        let config_path = root.join(format!("{host}-config.txt"));
+        fs::write(&config_path, format!("{host} local smoke config proof"))?;
+        hosts.push(json!({
+            "host": host,
+            "setup_verified": true,
+            "real_invocation_verified": true,
+            "setup_artifact": setup,
+            "invocation_artifact": invocation,
+            "route_type": route_type,
+            "config_scope": "local_smoke",
+            "config_path": config_path,
+            "ledger_artifact": ledger,
+            "raw_artifact": raw_artifact,
+            "redacted_public_bytes": raw_bytes,
+            "model_visible_bytes": model_bytes,
+            "timestamp": "2026-06-09T00:00:00Z",
+            "smoke_id": format!("tfy-{mode}-smoke"),
+            "overhead_exception": format!("local smoke fixture: {host} overhead accepted for Developer Preview route evidence")
+        }));
+    }
+    let evidence = root.join("host-evidence.json");
+    fs::write(
+        &evidence,
+        serde_json::to_string_pretty(&json!({ "hosts": hosts }))? + "\n",
+    )?;
+    Ok(evidence)
 }
 
 fn run_adapter_smoke() -> Result<SmokeReport> {

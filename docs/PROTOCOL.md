@@ -214,3 +214,28 @@ Adapter reports use `raw_bytes` and `model_bytes` as the public size contract. L
 MCP tools expose existing TFY gateway behavior rather than a second compression engine. `tfy_tool_run` stores raw output locally, returns compact model-facing output only when it is smaller/safe, preserves command exit metadata, appends an MCP ledger event when possible, and never exits the MCP server on child command failure. `tfy_scope_list` returns bounded snapshot-stable scope ids, `tfy_context_get` returns compact selected-scope context with symbol map, `base_compact_code`, `context_ref`, and `ApplyProof`, `tfy_output_validate` restores in preview-only mode, and `tfy_output_apply` mutates only through the existing proof-gated single-file selected-scope apply path. `tfy_restore_display` provides display-only readable output, while `tfy_workspace_validate` and `tfy_workspace_apply` expose exact multi-file WorkspaceApplyPlan validation/apply with plan-hash and per-operation proof gates. Parent event ids or ledger state alone are not apply authority. Raw/report/state recovery is available through `tfy://raw/{raw_ref}`, `tfy://report/{session}`, and `tfy://state/{session}`.
 
 MCP session resources are session-scoped. `tfy://state/{session}` and `tfy_state_project` filter the ledger by requested session before projecting state, so one session cannot receive another session's tool evidence through state reads. JSON-RPC notifications such as `notifications/initialized` are treated as one-way messages and do not produce stdout responses.
+
+## Release tier evidence reducer
+
+`tfy launch-report --json` includes four evidence-gated release tiers:
+
+- `developer_preview_ready` requires verified local build/install evidence, first-success route evidence for `generic_shell`, `tfy_agent_adapter`, and `mcp_stdio`, no-negative plus positive savings, raw lifecycle availability, a benchmark self-manifest, and unsupported claim audit pass.
+- `rc_ready` requires developer preview readiness plus release archive/checksum dry-run, docs/demo/release notes, independent reviews, and PR/CI evidence supplied through `--release-evidence`.
+- `ga_ready` remains blocked until at least one named AI host has real invocation evidence with host-bound ledger/raw/no-negative/positive-savings proof and reproducible demo evidence.
+- `public_superiority_claim_ready` remains blocked unless a reviewed RTK comparator manifest records version, mode, corpus, reproducibility, correctness/no-lost-evidence proof, and overhead comparison.
+
+`--release-evidence <json>` accepts packaging/docs/review/CI proof fields, but each boolean must be backed by existing artifact paths (`cargo_install_binary`, `release_binary`, archive/checksum artifacts, docs/release-notes artifacts, review/CI artifacts) before it is trusted. `benchmark_manifest_generated` additionally requires an attached benchmark manifest with `status=pass`, no-negative savings, positive savings, and raw refs for every scenario. This reducer is evidence reporting only; it does not promote provider/API proxying, private Codex hooks, universal terminal interception, editor auto-hooks, or named-host launch support without matching route evidence.
+
+## Raw evidence lifecycle
+
+Raw command output is recoverable by `tfy raw <raw_ref>` and MCP `tfy_raw_get`. First-class lifecycle commands are available for local evidence management:
+
+```sh
+tfy raw --list --json
+tfy raw <raw_ref> --inspect --json
+tfy raw <raw_ref> --export ./raw-export
+tfy raw --prune --dry-run --json
+tfy raw --prune --apply --json
+```
+
+Prune is dry-run unless `--apply` is supplied. These commands manage raw evidence JSON files; gateway ledgers remain explicit local files.

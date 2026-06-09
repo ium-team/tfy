@@ -24,11 +24,11 @@ use gateways::{
 use hook::{execute_hook, HookCmd};
 use mcp::{execute_mcp, McpCmd};
 use product::{
-    execute_doctor, execute_explain, execute_gain, execute_init, execute_launch_report,
-    execute_setup, execute_smoke, execute_status, DoctorCmd, ExplainCmd, GainCmd, InitCmd,
-    LaunchReportCmd, SetupCmd, SmokeCmd, StatusCmd,
+    execute_bench, execute_doctor, execute_explain, execute_gain, execute_init,
+    execute_launch_report, execute_raw, execute_setup, execute_smoke, execute_status, BenchCmd,
+    DoctorCmd, ExplainCmd, GainCmd, InitCmd, LaunchReportCmd, RawCmd, SetupCmd, SmokeCmd,
+    StatusCmd,
 };
-use std::io::{self, Write};
 use std::path::PathBuf;
 use tfy_core::*;
 use tfy_runtime::*;
@@ -80,6 +80,8 @@ enum Cmd {
     Explain(ExplainCmd),
     /// Report launch-readiness evidence, blockers, host readiness matrix, and measured savings.
     LaunchReport(LaunchReportCmd),
+    /// Generate deterministic benchmark manifests and optional RTK-safe comparator results.
+    Bench(BenchCmd),
     Index {
         path: PathBuf,
     },
@@ -236,15 +238,8 @@ enum Cmd {
         #[arg(long, default_value = ".tfy/state/ledger.jsonl")]
         ledger: PathBuf,
     },
-    Raw {
-        raw_ref: String,
-        #[arg(long, default_value = ".tfy/raw")]
-        raw_dir: PathBuf,
-        #[arg(long)]
-        around: Option<String>,
-        #[arg(long, default_value_t = 3)]
-        context: usize,
-    },
+    /// Recover, inspect, export, or prune locally stored raw command evidence.
+    Raw(RawCmd),
     Languages,
     EvalCode {
         path: PathBuf,
@@ -265,6 +260,7 @@ fn main() -> Result<()> {
         Cmd::Smoke(cmd) => execute_smoke(cmd)?,
         Cmd::Gain(cmd) => execute_gain(cmd)?,
         Cmd::LaunchReport(cmd) => execute_launch_report(cmd)?,
+        Cmd::Bench(cmd) => execute_bench(cmd)?,
         Cmd::Setup(cmd) => execute_setup(cmd)?,
         Cmd::Status(cmd) => execute_status(cmd)?,
         Cmd::Explain(cmd) => execute_explain(cmd)?,
@@ -422,15 +418,7 @@ fn main() -> Result<()> {
             );
             print_json(&response)?;
         }
-        Cmd::Raw {
-            raw_ref,
-            raw_dir,
-            around,
-            context,
-        } => {
-            let bytes = raw_output_bytes(raw_dir, &raw_ref, around.as_deref(), context)?;
-            io::stdout().write_all(&bytes)?;
-        }
+        Cmd::Raw(cmd) => execute_raw(cmd)?,
         Cmd::Languages => print_json(&serde_json::json!({"languages": supported_languages()}))?,
         Cmd::EvalCode {
             path,
