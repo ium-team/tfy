@@ -328,6 +328,216 @@ fn setup_openclaw_remains_planned_discovery() {
 }
 
 #[test]
+fn setup_cursor_project_apply_is_reversible_and_preserves_existing_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let cursor_dir = dir.path().join(".cursor");
+    std::fs::create_dir_all(&cursor_dir).unwrap();
+    let config = cursor_dir.join("mcp.json");
+    std::fs::write(
+        &config,
+        r#"{"mcpServers":{"other":{"command":"other"}},"keep":true}"#,
+    )
+    .unwrap();
+
+    for _ in 0..2 {
+        let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+            .current_dir(dir.path())
+            .args(["setup", "--ai", "--host", "cursor", "--apply", "--project"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(cursor_dir.join("mcp.json.tfy-backup").exists());
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(json["keep"], true);
+    assert_eq!(json["mcpServers"]["other"]["command"], "other");
+    assert_eq!(json["mcpServers"]["tfy"]["command"], "tfy");
+    assert_eq!(json["mcpServers"]["tfy"]["tfy_managed"], true);
+    assert_eq!(json["mcpServers"]["tfy"].as_object().unwrap().len(), 3);
+    assert_eq!(
+        std::fs::read_to_string(cursor_dir.join("mcp.json.tfy-backup")).unwrap(),
+        r#"{"mcpServers":{"other":{"command":"other"}},"keep":true}"#
+    );
+
+    let uninstall = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "setup",
+            "--ai",
+            "--host",
+            "cursor",
+            "--uninstall",
+            "--apply",
+            "--project",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        uninstall.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&uninstall.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(json["mcpServers"]["other"]["command"], "other");
+    assert!(json["mcpServers"]["tfy"].is_null(), "{json}");
+    assert_eq!(
+        std::fs::read_to_string(cursor_dir.join("mcp.json.tfy-backup")).unwrap(),
+        r#"{"mcpServers":{"other":{"command":"other"}},"keep":true}"#
+    );
+}
+
+#[test]
+fn setup_cursor_project_apply_refuses_to_overwrite_unowned_tfy_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let cursor_dir = dir.path().join(".cursor");
+    std::fs::create_dir_all(&cursor_dir).unwrap();
+    let config = cursor_dir.join("mcp.json");
+    let original = r#"{"mcpServers":{"tfy":{"command":"custom-tfy","args":["custom"]}}}"#;
+    std::fs::write(&config, original).unwrap();
+
+    let apply = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["setup", "--ai", "--host", "cursor", "--apply", "--project"])
+        .output()
+        .unwrap();
+    assert!(!apply.status.success());
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+    assert!(!cursor_dir.join("mcp.json.tfy-backup").exists());
+
+    let uninstall = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "setup",
+            "--ai",
+            "--host",
+            "cursor",
+            "--uninstall",
+            "--apply",
+            "--project",
+        ])
+        .output()
+        .unwrap();
+    assert!(!uninstall.status.success());
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+}
+
+#[test]
+fn setup_cursor_project_apply_fails_closed_on_malformed_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let cursor_dir = dir.path().join(".cursor");
+    std::fs::create_dir_all(&cursor_dir).unwrap();
+    let config = cursor_dir.join("mcp.json");
+    let original = "{not-json";
+    std::fs::write(&config, original).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["setup", "--ai", "--host", "cursor", "--apply", "--project"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+    assert!(!cursor_dir.join("mcp.json.tfy-backup").exists());
+}
+
+#[test]
+fn setup_cursor_project_dry_run_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "setup",
+            "--ai",
+            "--host",
+            "cursor",
+            "--apply",
+            "--project",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("status=dry_run claim_tier=configurable"),
+        "{text}"
+    );
+    assert!(text.contains("dry_run=true applied=false"), "{text}");
+    assert!(!dir.path().join(".cursor").join("mcp.json").exists());
+}
+
+#[test]
+fn setup_cursor_project_uninstall_without_existing_config_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "setup",
+            "--ai",
+            "--host",
+            "cursor",
+            "--uninstall",
+            "--apply",
+            "--project",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!dir.path().join(".cursor").join("mcp.json").exists());
+}
+
+#[test]
+fn setup_cursor_project_uninstall_removes_tfy_created_config_without_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let apply = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["setup", "--ai", "--host", "cursor", "--apply", "--project"])
+        .output()
+        .unwrap();
+    assert!(
+        apply.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    let uninstall = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "setup",
+            "--ai",
+            "--host",
+            "cursor",
+            "--uninstall",
+            "--apply",
+            "--project",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        uninstall.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&uninstall.stderr)
+    );
+    assert!(!dir.path().join(".cursor").join("mcp.json").exists());
+    assert!(!dir
+        .path()
+        .join(".cursor")
+        .join("mcp.json.tfy-backup")
+        .exists());
+}
+
+#[test]
 fn mcp_install_supports_named_host_dry_runs_and_blocks_non_codex_output() {
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args(["mcp", "install", "--target", "hermes", "--dry-run"])
@@ -385,6 +595,9 @@ fn status_json_exposes_canonical_named_host_taxonomy() {
     assert_eq!(find("opencode")["status"], "config_snippet_available");
     assert_eq!(find("hermes")["status"], "config_snippet_available");
     assert_eq!(find("openclaw")["status"], "planned_discovery");
+    assert_eq!(find("codex")["claim_tier"], "configurable");
+    assert_eq!(find("cursor")["claim_tier"], "configurable");
+    assert_eq!(find("openclaw")["claim_tier"], "planned_discovery");
 }
 
 #[test]
@@ -469,6 +682,382 @@ fn launch_report_keeps_openclaw_planned_discovery_even_with_host_evidence() {
     assert_eq!(
         openclaw["launch_claim"],
         "unsupported/planned until official/current evidence proves a safe route",
+        "{json}"
+    );
+}
+
+#[test]
+fn launch_report_promotes_named_host_only_with_host_bound_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".cursor")).unwrap();
+    for file in [
+        "setup.txt",
+        "invoke.txt",
+        ".cursor/mcp.json",
+        "cursor-ledger.jsonl",
+        "raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "evidence").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup.txt",
+              "invocation_artifact":"invoke.txt",
+              "overhead_ms":10,
+              "baseline_ms":10,
+              "host_id":"cursor",
+              "host_version":"test",
+              "config_scope":"project",
+              "config_path":".cursor/mcp.json",
+              "route_type":"mcp",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"raw.txt",
+              "redacted_public_bytes":200,
+              "model_visible_bytes":100,
+              "savings_result":"positive",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "smoke_id":"cursor-smoke-1"
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "cursor")
+        .unwrap();
+    assert_eq!(cursor["status"], "launch_supported", "{json}");
+    assert_eq!(cursor["claim_tier"], "launch_supported", "{json}");
+    assert_eq!(
+        json["host_evidence"]["named_hosts"]["cursor"]["host_bound_evidence"], true,
+        "{json}"
+    );
+}
+
+#[test]
+fn launch_report_keeps_setup_only_named_evidence_from_poisoning_byte_proof() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".cursor")).unwrap();
+    for file in [
+        "setup.txt",
+        "invoke.txt",
+        ".cursor/mcp.json",
+        "cursor-ledger.jsonl",
+        "raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "evidence").unwrap();
+    }
+    let setup_only = dir.path().join("setup-only.json");
+    std::fs::write(
+        &setup_only,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup.txt",
+              "invocation_artifact":"invoke.txt",
+              "overhead_ms":10,
+              "baseline_ms":10
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let byte_proof = dir.path().join("byte-proof.json");
+    std::fs::write(
+        &byte_proof,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup.txt",
+              "invocation_artifact":"invoke.txt",
+              "overhead_ms":10,
+              "baseline_ms":10,
+              "host_id":"cursor",
+              "host_version":"test",
+              "config_scope":"project",
+              "config_path":".cursor/mcp.json",
+              "route_type":"mcp",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"raw.txt",
+              "redacted_public_bytes":200,
+              "model_visible_bytes":100,
+              "timestamp":"2026-06-09T00:00:00Z",
+              "smoke_id":"cursor-smoke-1"
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            setup_only.to_str().unwrap(),
+            "--host-evidence",
+            byte_proof.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "cursor")
+        .unwrap();
+    assert_eq!(cursor["status"], "launch_supported", "{json}");
+    assert_eq!(
+        json["host_evidence"]["named_hosts"]["cursor"]["no_negative_savings"], true,
+        "{json}"
+    );
+}
+
+#[test]
+fn launch_report_does_not_promote_named_host_when_bytes_contradict_positive_label() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".cursor")).unwrap();
+    for file in [
+        "setup.txt",
+        "invoke.txt",
+        ".cursor/mcp.json",
+        "cursor-ledger.jsonl",
+        "raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "evidence").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup.txt",
+              "invocation_artifact":"invoke.txt",
+              "overhead_ms":10,
+              "baseline_ms":10,
+              "host_id":"cursor",
+              "host_version":"test",
+              "config_scope":"project",
+              "config_path":".cursor/mcp.json",
+              "route_type":"mcp",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"raw.txt",
+              "redacted_public_bytes":100,
+              "model_visible_bytes":200,
+              "savings_result":"positive",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "smoke_id":"cursor-smoke-1"
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "cursor")
+        .unwrap();
+    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert_eq!(
+        json["host_evidence"]["named_hosts"]["cursor"]["host_bound_evidence"], false,
+        "{json}"
+    );
+}
+
+#[test]
+fn launch_report_rejects_positive_label_without_byte_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".cursor")).unwrap();
+    for file in [
+        "setup.txt",
+        "invoke.txt",
+        ".cursor/mcp.json",
+        "cursor-ledger.jsonl",
+        "raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "evidence").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup.txt",
+              "invocation_artifact":"invoke.txt",
+              "overhead_ms":10,
+              "baseline_ms":10,
+              "host_id":"cursor",
+              "host_version":"test",
+              "config_scope":"project",
+              "config_path":".cursor/mcp.json",
+              "route_type":"mcp",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"raw.txt",
+              "savings_result":"positive",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "smoke_id":"cursor-smoke-1"
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "cursor")
+        .unwrap();
+    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert_eq!(
+        json["host_evidence"]["named_hosts"]["cursor"]["host_bound_evidence"], false,
+        "{json}"
+    );
+}
+
+#[test]
+fn launch_report_rejects_substring_positive_savings_labels() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".cursor")).unwrap();
+    for file in [
+        "setup.txt",
+        "invoke.txt",
+        ".cursor/mcp.json",
+        "cursor-ledger.jsonl",
+        "raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "evidence").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup.txt",
+              "invocation_artifact":"invoke.txt",
+              "overhead_ms":10,
+              "baseline_ms":10,
+              "host_id":"cursor",
+              "host_version":"test",
+              "config_scope":"project",
+              "config_path":".cursor/mcp.json",
+              "route_type":"mcp",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"raw.txt",
+              "savings_result":"not_positive",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "smoke_id":"cursor-smoke-1"
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "cursor")
+        .unwrap();
+    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert_eq!(
+        json["host_evidence"]["named_hosts"]["cursor"]["host_bound_evidence"], false,
         "{json}"
     );
 }
@@ -621,6 +1210,50 @@ fn gain_empty_and_adapter_ledger_report_real_data() {
     assert_eq!(json["commands"], 1);
     assert!(json["raw_bytes"].as_u64().unwrap() > 0);
     assert!(json["model_bytes"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn setup_codex_apply_respects_global_scope_and_uninstall() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let project_agents = dir.path().join("AGENTS.md");
+    let global_agents = home.path().join(".codex").join("AGENTS.md");
+
+    let apply = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("HOME", home.path())
+        .args(["setup", "--ai", "--codex", "--apply", "--global"])
+        .output()
+        .unwrap();
+    assert!(
+        apply.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    assert!(!project_agents.exists());
+    let text = std::fs::read_to_string(&global_agents).unwrap();
+    assert_eq!(text.matches("TFY:CODEX:START").count(), 1, "{text}");
+
+    let uninstall = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("HOME", home.path())
+        .args([
+            "setup",
+            "--ai",
+            "--codex",
+            "--uninstall",
+            "--apply",
+            "--global",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        uninstall.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&uninstall.stderr)
+    );
+    let text = std::fs::read_to_string(&global_agents).unwrap();
+    assert!(!text.contains("TFY:CODEX:"), "{text}");
 }
 
 #[test]
