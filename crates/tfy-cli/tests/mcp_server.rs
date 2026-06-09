@@ -553,6 +553,33 @@ fn mcp_code_io_workflow_lists_context_validates_and_applies() {
         .unwrap()
         .iter()
         .any(|line| line.as_str().unwrap().contains("output preview validation")));
+
+    let ledger_text = std::fs::read_to_string(&ledger).unwrap();
+    let mut saw_apply_authority = false;
+    for line in ledger_text.lines() {
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(event["route"]["ingress"], "mcp_tool", "{event}");
+        assert_eq!(
+            event["route"]["claim_tier"], "route_evidence_recorded",
+            "{event}"
+        );
+        if event["payload"]["kind"] == "output_validated" && event["payload"]["applied"] == true {
+            let authority = &event["provenance"]["apply_authority"];
+            assert_eq!(authority["context_ref"], compact["context_ref"], "{event}");
+            assert_eq!(
+                authority["base_content_hash"], compact["apply_proof"]["source_sha256"],
+                "{event}"
+            );
+            assert_eq!(
+                authority["proof_hash"], compact["apply_proof"]["compact_code_sha256"],
+                "{event}"
+            );
+            assert_eq!(authority["validate_succeeded"], true, "{event}");
+            assert_eq!(authority["parent_event_id_only"], false, "{event}");
+            saw_apply_authority = true;
+        }
+    }
+    assert!(saw_apply_authority, "{ledger_text}");
 }
 
 #[test]
