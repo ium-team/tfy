@@ -159,7 +159,7 @@ Support claim boundary:
 - Codex/OMX command wrapping: only supported where the host is explicitly configured to call the generic-shell adapter.
 - MCP stdio tool/resource integration: implemented and tested through `tfy mcp serve`, including `tfy_scope_list`, enriched `tfy_context_get`, preview-only `tfy_output_validate`, and proof-gated `tfy_output_apply`.
 - Product UX lifecycle: implemented through `tfy init`, `tfy doctor`, `tfy smoke`, and `tfy gain`. These commands make setup, diagnostics, local MCP smoke, and savings reporting easier while keeping the same host-routing boundary.
-- Configured AI-agent wrapper: implemented through `tfy agent run`; lifecycle `tfy start --agent` records route intent (`route_state=intent_recorded`, `active=false`) but does not prove host invocation or launch support.
+- Configured AI-agent wrapper: implemented through `tfy agent run`; lifecycle `tfy start --agent` records route intent (`route_state=intent_recorded`, `active=false`) but does not prove host invocation or launch support; effective `active=true` is derived only from verified host/route evidence and savings, not config presence.
 - Human lifecycle: `tfy start --human` records explicit-wrapper/session intent only (`session_wrapper_available=true`, `active=false`); ordinary human terminal interception remains not claimed and ordinary terminal commands are not globally intercepted.
 - Private Codex hook, editor auto-integration, and provider/API prompt gateway: not claimed; editor/provider are outside TFY scope.
 

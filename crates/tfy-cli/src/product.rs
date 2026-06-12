@@ -9,6 +9,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tfy_core::{raw_output_bytes, summarize_command_output_with_policy, ToolPolicy};
 use tfy_runtime::{load_events, AdapterKind, GatewayEvent, OriginInvocation};
 
@@ -404,6 +405,14 @@ struct HumanLifecycleState {
 struct LifecycleHostRoute {
     route_state: String,
     active: bool,
+    #[serde(default)]
+    configured: bool,
+    #[serde(default)]
+    route_verified: bool,
+    #[serde(default)]
+    savings_verified: bool,
+    #[serde(default)]
+    normal_workflow_supported: bool,
     config_path: Option<String>,
     claim_tier: String,
     message: String,
@@ -485,7 +494,13 @@ struct EffectiveRouteStatus {
     desired: bool,
     desired_source: String,
     configured: bool,
+    lifecycle_started: bool,
+    route_configured: bool,
+    route_verified: bool,
+    savings_verified: bool,
+    normal_workflow_supported: bool,
     active: bool,
+    active_derivation: String,
     route_state: String,
     support_status: String,
     next_action: String,
@@ -783,6 +798,9 @@ struct ReleaseEvidenceFile {
 #[derive(Deserialize)]
 struct HostSetupEvidence {
     host: String,
+    tfy_version: Option<String>,
+    evidence_expires_at: Option<String>,
+    reverify_failed: Option<bool>,
     setup_verified: bool,
     real_invocation_verified: bool,
     setup_artifact: Option<PathBuf>,
@@ -1384,9 +1402,23 @@ fn lifecycle_host_route(
     claim_tier: &str,
     message: impl Into<String>,
 ) -> LifecycleHostRoute {
+    let configured = matches!(
+        route_state,
+        "config_snippet_available"
+            | "applied_unverified"
+            | "verified_local_mcp"
+            | "verified_host_invocation"
+            | "launch_supported"
+    );
+    let route_verified = matches!(route_state, "verified_host_invocation" | "launch_supported");
+    let savings_verified = route_state == "launch_supported";
     LifecycleHostRoute {
         route_state: route_state.into(),
         active: false,
+        configured,
+        route_verified,
+        savings_verified,
+        normal_workflow_supported: route_state == "launch_supported",
         config_path,
         claim_tier: claim_tier.into(),
         message: message.into(),
@@ -1533,9 +1565,17 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
             }
         }
         if cmd.verify {
+            let local_smoke = run_mcp_smoke()?;
             println!(
-                "verify_requested=true promotion=false reason=route_evidence_and_savings_required"
+                "verify_requested=true promotion=false reason=route_evidence_and_savings_required next_action=run_host_and_attach_setup_invocation_ledger_raw_no_negative_positive_overhead_evidence output=plain_text"
             );
+            println!(
+                "local_mcp_smoke_status={} local_mcp_smoke_mode={} named_host_launch_supported=false",
+                local_smoke.status, local_smoke.mode
+            );
+            for evidence in local_smoke.evidence {
+                println!("local_mcp_smoke_evidence={evidence}");
+            }
         }
     }
     if targets.contains(&LifecycleTarget::Human) {
@@ -3097,7 +3137,13 @@ fn effective_agent_status(
             desired: false,
             desired_source: "project_parse_error".into(),
             configured: false,
+            lifecycle_started: false,
+            route_configured: false,
+            route_verified: false,
+            savings_verified: false,
+            normal_workflow_supported: false,
             active: false,
+            active_derivation: "inactive: lifecycle parse error".into(),
             route_state: "lifecycle_parse_error".into(),
             support_status: "lifecycle_parse_error".into(),
             next_action: "Fix or remove .tfy/lifecycle.json before TFY can inherit project or global agent lifecycle state.".into(),
@@ -3107,13 +3153,44 @@ fn effective_agent_status(
         .map(|state| (state, "project"))
         .or_else(|| global.map(|state| (state, "global")));
     let desired = selected.is_some_and(|(state, _)| state.desired);
-    let active = selected.is_some_and(|(state, _)| state.active);
+    let configured = selected.is_some_and(|(state, _)| state.configured);
+    let route_configured = selected.is_some_and(|(state, _)| {
+        state.configured
+            && (!state.host_routes.is_empty()
+                || !matches!(state.route_state.as_str(), "not_configured" | "stopped"))
+    });
+    let route_verified = selected
+        .is_some_and(|(state, _)| state.host_routes.values().any(|route| route.route_verified));
+    let savings_verified = selected.is_some_and(|(state, _)| {
+        state
+            .host_routes
+            .values()
+            .any(|route| route.savings_verified)
+    });
+    let normal_workflow_supported = selected.is_some_and(|(state, _)| {
+        state
+            .host_routes
+            .values()
+            .any(|route| route.normal_workflow_supported)
+    });
+    let active = route_verified && savings_verified && normal_workflow_supported;
     let host_routes_empty = selected.is_none_or(|(state, _)| state.host_routes.is_empty());
     EffectiveRouteStatus {
         desired,
         desired_source: selected.map(|(_, source)| source).unwrap_or("none").into(),
-        configured: selected.is_some_and(|(state, _)| state.configured),
+        configured,
+        lifecycle_started: desired,
+        route_configured,
+        route_verified,
+        savings_verified,
+        normal_workflow_supported,
         active,
+        active_derivation: if active {
+            "active=true derived from route_verified && savings_verified && normal_workflow_supported"
+        } else {
+            "active=false until a host+route evidence scope verifies invocation, raw recovery, no-negative and positive savings"
+        }
+        .into(),
         route_state: selected
             .map(|(state, _)| state.route_state.clone())
             .unwrap_or_else(|| "not_configured".into()),
@@ -3121,13 +3198,13 @@ fn effective_agent_status(
             .map(|(state, _)| state.support_status.clone())
             .unwrap_or_else(|| "host_route_configuration_required".into()),
         next_action: if active {
-            "Route is active from verified host invocation and savings evidence.".into()
+            "Route is active only for the verified host+route evidence scope; reverify after config, host, TFY version, raw-ref, or route changes.".into()
         } else if !desired {
             "Run `tfy start --agent` in this project, or configure global agent defaults with `tfy use always --agent`.".into()
         } else if host_routes_empty {
             "Configure a supported route, e.g. `tfy start agent --host cursor --apply`, then collect host invocation raw/ledger/savings evidence.".into()
         } else {
-            "Run the configured host and collect route-bound raw/ledger/no-negative/positive-savings evidence before active=true.".into()
+            "Configured but not verified: run the configured host and collect route-bound raw/ledger/no-negative/positive-savings/overhead evidence before active=true.".into()
         },
     }
 }
@@ -3142,7 +3219,13 @@ fn effective_human_status(
             desired: false,
             desired_source: "project_parse_error".into(),
             configured: false,
+            lifecycle_started: false,
+            route_configured: false,
+            route_verified: false,
+            savings_verified: false,
+            normal_workflow_supported: false,
             active: false,
+            active_derivation: "inactive: lifecycle parse error".into(),
             route_state: "lifecycle_parse_error".into(),
             support_status: "lifecycle_parse_error".into(),
             next_action: "Fix or remove .tfy/lifecycle.json before TFY can inherit project or global human lifecycle state.".into(),
@@ -3152,12 +3235,28 @@ fn effective_human_status(
         .map(|state| (state, "project"))
         .or_else(|| global.map(|state| (state, "global")));
     let desired = selected.is_some_and(|(state, _)| state.desired);
-    let active = selected.is_some_and(|(state, _)| state.active);
+    let configured = selected.is_some_and(|(state, _)| state.configured);
+    let route_configured = selected.is_some_and(|(state, _)| state.session_wrapper_available);
+    let route_verified = selected.is_some_and(|(state, _)| state.active);
+    let savings_verified = route_verified;
+    let normal_workflow_supported = false;
+    let active = route_verified && savings_verified;
     EffectiveRouteStatus {
         desired,
         desired_source: selected.map(|(_, source)| source).unwrap_or("none").into(),
-        configured: selected.is_some_and(|(state, _)| state.configured),
+        configured,
+        lifecycle_started: desired,
+        route_configured,
+        route_verified,
+        savings_verified,
+        normal_workflow_supported,
         active,
+        active_derivation: if active {
+            "active=true derived from explicit wrapper/session evidence"
+        } else {
+            "active=false until explicit wrapper/session evidence exists; ordinary terminals are never globally intercepted"
+        }
+        .into(),
         route_state: selected
             .map(|(state, _)| state.route_state.clone())
             .unwrap_or_else(|| "not_configured".into()),
@@ -3562,6 +3661,41 @@ fn update_route_tool_evidence(
     }
 }
 
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before Unix epoch")
+        .as_secs()
+}
+
+fn parse_unix_stamp(value: &str) -> Option<u64> {
+    value.strip_prefix("unix:")?.parse().ok()
+}
+
+fn host_evidence_is_fresh(host: &HostSetupEvidence) -> (bool, Vec<String>) {
+    let mut reasons = Vec::new();
+    if host.reverify_failed == Some(true) {
+        reasons.push("reverify_failed=true".into());
+    }
+    match host.tfy_version.as_deref() {
+        Some(env!("CARGO_PKG_VERSION")) => {}
+        Some(version) => reasons.push(format!(
+            "tfy_version_mismatch evidence={} current={}",
+            version,
+            env!("CARGO_PKG_VERSION")
+        )),
+        None => reasons.push("tfy_version_missing".into()),
+    }
+    if let Some(expires) = host.evidence_expires_at.as_deref() {
+        match parse_unix_stamp(expires) {
+            Some(expiry) if expiry >= current_unix_seconds() => {}
+            Some(_) => reasons.push("evidence_expired".into()),
+            None => reasons.push("evidence_expires_at_invalid_format".into()),
+        }
+    }
+    (reasons.is_empty(), reasons)
+}
+
 fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf]) {
     for path in files {
         let Ok(text) = fs::read_to_string(path) else {
@@ -3605,8 +3739,10 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     .overhead_exception
                     .as_deref()
                     .is_some_and(|exception| !exception.trim().is_empty());
+                let (evidence_fresh, stale_reasons) = host_evidence_is_fresh(&host);
                 let route_type_allowed = required_route_type_allowed(&host.route_type);
                 let config_scope_valid = non_empty_opt(&host.config_scope);
+                let host_version_valid = non_empty_opt(&host.host_version);
                 let smoke_id_valid = non_empty_opt(&host.smoke_id);
                 let timestamp_valid = non_empty_opt(&host.timestamp);
                 let config_path_verified = host
@@ -3626,8 +3762,10 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                         (Some(raw), Some(model)) => (model <= raw, raw > model),
                         _ => (true, false),
                     };
-                let host_bound = route_type_allowed
+                let host_bound = evidence_fresh
+                    && route_type_allowed
                     && config_scope_valid
+                    && host_version_valid
                     && config_path_verified
                     && ledger_artifact_verified
                     && raw_artifact_verified
@@ -3645,7 +3783,7 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                 route.overhead_ms = route.overhead_ms.or(host.overhead_ms);
                 route.baseline_ms = route.baseline_ms.or(host.baseline_ms);
                 if route.overhead_exception.is_none() {
-                    route.overhead_exception = host.overhead_exception;
+                    route.overhead_exception = host.overhead_exception.clone();
                 }
                 route.host_bound_evidence |= host_bound;
                 route.no_negative_savings &= no_negative;
@@ -3671,7 +3809,7 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     }
                 }
                 summary.evidence_notes.push(format!(
-                    "host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={} host_bound_evidence={} config_path_verified={} ledger_artifact_verified={} raw_artifact_verified={}",
+                    "host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={} host_bound_evidence={} config_path_verified={} ledger_artifact_verified={} raw_artifact_verified={} host_version_valid={} evidence_fresh={} stale_reasons={}",
                     host.host,
                     host.setup_verified,
                     setup_artifact_verified,
@@ -3682,7 +3820,10 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     host_bound,
                     config_path_verified,
                     ledger_artifact_verified,
-                    raw_artifact_verified
+                    raw_artifact_verified,
+                    host_version_valid,
+                    evidence_fresh,
+                    stale_reasons.join("|")
                 ));
             } else if host_accepts_launch_evidence(&host.host) {
                 let setup_artifact_verified = host
@@ -3721,14 +3862,16 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                 route.overhead_ms = route.overhead_ms.or(host.overhead_ms);
                 route.baseline_ms = route.baseline_ms.or(host.baseline_ms);
                 if route.overhead_exception.is_none() {
-                    route.overhead_exception = host.overhead_exception;
+                    route.overhead_exception = host.overhead_exception.clone();
                 }
+                let (evidence_fresh, stale_reasons) = host_evidence_is_fresh(&host);
                 let host_id_matches = host
                     .host_id
                     .as_deref()
-                    .is_none_or(|host_id| host_id == host.host);
+                    .is_some_and(|host_id| host_id == host.host);
                 let route_type_allowed = named_host_route_type_allowed(&host.route_type);
                 let config_scope_valid = non_empty_opt(&host.config_scope);
+                let host_version_valid = non_empty_opt(&host.host_version);
                 let smoke_id_valid = non_empty_opt(&host.smoke_id);
                 let timestamp_valid = non_empty_opt(&host.timestamp);
                 let config_path_verified = host
@@ -3759,9 +3902,11 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                         && host.kill_switch_available == Some(true)
                         && host.uninstall_available == Some(true)
                         && host_official_hook_launch_supported(&host.host));
-                let host_bound = host_id_matches
+                let host_bound = evidence_fresh
+                    && host_id_matches
                     && route_type_allowed
                     && config_scope_valid
+                    && host_version_valid
                     && config_path_verified
                     && ledger_artifact_verified
                     && raw_artifact_verified
@@ -3804,7 +3949,7 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     summary.positive_savings |= positive;
                 }
                 summary.evidence_notes.push(format!(
-                    "named_host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={} host_bound_evidence={} config_path_verified={} ledger_artifact_verified={} raw_artifact_verified={} hook_route={} hook_authorized={}",
+                    "named_host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={} host_bound_evidence={} config_path_verified={} ledger_artifact_verified={} raw_artifact_verified={} host_version_valid={} hook_route={} hook_authorized={} evidence_fresh={} stale_reasons={}",
                     host.host,
                     host.setup_verified,
                     setup_artifact_verified,
@@ -3816,8 +3961,11 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     config_path_verified,
                     ledger_artifact_verified,
                     raw_artifact_verified,
+                    host_version_valid,
                     hook_route,
-                    hook_authorized
+                    hook_authorized,
+                    evidence_fresh,
+                    stale_reasons.join("|")
                 ));
             }
         }
@@ -4545,6 +4693,8 @@ fn write_required_route_smoke_evidence(reports: &[SmokeReport]) -> Result<PathBu
         fs::write(&config_path, format!("{host} local smoke config proof"))?;
         hosts.push(json!({
             "host": host,
+            "tfy_version": env!("CARGO_PKG_VERSION"),
+            "host_version": "tfy-local-smoke",
             "setup_verified": true,
             "real_invocation_verified": true,
             "setup_artifact": setup,
