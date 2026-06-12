@@ -2485,7 +2485,7 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
     );
     let start_text = String::from_utf8_lossy(&start.stdout);
     assert!(
-        start_text.contains("host_route_configuration_required"),
+        start_text.contains("host_route_configured_verification_required"),
         "{start_text}"
     );
     assert!(
@@ -2509,7 +2509,7 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
     assert_eq!(json["project_lifecycle"]["agent"]["desired"], true);
     assert_eq!(
         json["project_lifecycle"]["agent"]["support_status"],
-        "host_route_configuration_required"
+        "host_route_configured_verification_required"
     );
     assert!(json["project_lifecycle"]["agent"]["active_routes"].is_null());
     assert_eq!(
@@ -3302,6 +3302,12 @@ fn lifecycle_start_agent_auto_configures_cursor_by_default() {
     assert_eq!(cursor["configured"], true, "{json}");
     assert_eq!(cursor["route_configured"], true, "{json}");
     assert_eq!(cursor["host_reload_required"], true, "{json}");
+    assert_eq!(cursor["host_route_available_after_reload"], false, "{json}");
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["support_status"],
+        "host_route_configured_verification_required",
+        "{json}"
+    );
     assert_eq!(
         json["effective_lifecycle"]["agent"]["active"], false,
         "{json}"

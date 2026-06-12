@@ -1560,6 +1560,12 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                 }
                 if cmd.verify {
                     agent.support_status = "verification_requested_route_evidence_required".into();
+                } else if agent
+                    .host_routes
+                    .values()
+                    .any(|route| route.route_configured)
+                {
+                    agent.support_status = "host_route_configured_verification_required".into();
                 }
                 state.agent = Some(agent)
             }
