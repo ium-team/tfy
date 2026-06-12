@@ -3005,7 +3005,7 @@ fn lifecycle_status_reports_effective_state_and_next_actions() {
     assert!(json["effective_lifecycle"]["agent"]["next_action"]
         .as_str()
         .unwrap()
-        .contains("tfy start agent --host cursor --apply"));
+        .contains("tfy start --agent"));
 
     let project_start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3167,7 +3167,7 @@ fn lifecycle_target_aliases_match_flag_targets() {
 }
 
 #[test]
-fn lifecycle_start_cursor_apply_caps_at_applied_unverified() {
+fn lifecycle_start_cursor_apply_caps_at_configured_unverified() {
     let dir = tempfile::tempdir().unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3180,7 +3180,21 @@ fn lifecycle_start_cursor_apply_caps_at_applied_unverified() {
         String::from_utf8_lossy(&start.stderr)
     );
     let text = String::from_utf8_lossy(&start.stdout);
-    assert!(text.contains("route_state=applied_unverified"), "{text}");
+    assert!(text.contains("route_state=configured_unverified"), "{text}");
+    assert!(
+        text.contains("Configured Cursor project MCP route: .cursor/mcp.json"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Restart/reload Cursor to make the route visible."),
+        "{text}"
+    );
+    assert!(text.contains("Status: configured, not active."), "{text}");
+    assert!(
+        text.contains("Next: open Cursor and invoke a TFY MCP tool to verify real host routing."),
+        "{text}"
+    );
+    assert!(!text.contains("Cursor is now saving tokens"), "{text}");
     assert!(text.contains("active=false"), "{text}");
     assert!(dir.path().join(".cursor/mcp.json").exists());
 
@@ -3191,8 +3205,11 @@ fn lifecycle_start_cursor_apply_caps_at_applied_unverified() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     let cursor = &json["project_lifecycle"]["agent"]["host_routes"]["cursor"];
-    assert_eq!(cursor["route_state"], "applied_unverified");
+    assert_eq!(cursor["route_state"], "configured_unverified");
     assert_eq!(cursor["active"], false);
+    assert_eq!(cursor["route_configured"], true);
+    assert_eq!(cursor["host_reload_required"], true);
+    assert_eq!(cursor["host_route_available_after_reload"], false);
     assert_eq!(json["project_lifecycle"]["agent"]["active"], false);
     assert!(json["minimum_v1_host_matrix"]
         .as_array()
@@ -3216,7 +3233,7 @@ fn lifecycle_start_host_all_apply_only_uses_safe_writers() {
     );
     let text = String::from_utf8_lossy(&start.stdout);
     assert!(
-        text.contains("host=cursor route_state=applied_unverified"),
+        text.contains("host=cursor route_state=configured_unverified"),
         "{text}"
     );
     assert!(text.contains("apply=guidance_only"), "{text}");
@@ -3231,12 +3248,182 @@ fn lifecycle_start_host_all_apply_only_uses_safe_writers() {
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(
         json["project_lifecycle"]["agent"]["host_routes"]["cursor"]["route_state"],
-        "applied_unverified"
+        "configured_unverified"
+    );
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["host_routes"]["cursor"]["route_configured"],
+        true
+    );
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["host_routes"]["cursor"]["host_reload_required"],
+        true
     );
     assert_eq!(
         json["project_lifecycle"]["agent"]["host_routes"]["claude-code"]["active"],
         false
     );
+}
+
+#[test]
+fn lifecycle_start_agent_auto_configures_cursor_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let text = String::from_utf8_lossy(&start.stdout);
+    assert!(
+        text.contains("Configured Cursor project MCP route: .cursor/mcp.json"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Restart/reload Cursor to make the route visible."),
+        "{text}"
+    );
+    assert!(text.contains("Status: configured, not active."), "{text}");
+    assert!(!text.contains("TFY is active"), "{text}");
+    assert!(!text.contains("saving tokens"), "{text}");
+    assert!(dir.path().join(".cursor/mcp.json").exists());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let cursor = &json["project_lifecycle"]["agent"]["host_routes"]["cursor"];
+    assert_eq!(cursor["route_state"], "configured_unverified", "{json}");
+    assert_eq!(cursor["configured"], true, "{json}");
+    assert_eq!(cursor["route_configured"], true, "{json}");
+    assert_eq!(cursor["host_reload_required"], true, "{json}");
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["active"], false,
+        "{json}"
+    );
+}
+
+#[test]
+fn lifecycle_start_agent_no_apply_records_intent_without_cursor_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--no-apply"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["desired"], true,
+        "{json}"
+    );
+    assert!(
+        json["project_lifecycle"]["agent"]["host_routes"]
+            .as_object()
+            .unwrap()
+            .is_empty(),
+        "{json}"
+    );
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["route_configured"], false,
+        "{json}"
+    );
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["active"], false,
+        "{json}"
+    );
+}
+
+#[test]
+fn lifecycle_start_agent_host_cursor_applies_without_apply_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--host", "cursor"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    assert!(dir.path().join(".cursor/mcp.json").exists());
+    let text = String::from_utf8_lossy(&start.stdout);
+    assert!(text.contains("route_state=configured_unverified"), "{text}");
+}
+
+#[test]
+fn lifecycle_start_agent_unsupported_host_is_guidance_only_without_configured_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--host", "claude-code"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    assert!(!dir.path().join(".mcp.json").exists());
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let claude = &json["project_lifecycle"]["agent"]["host_routes"]["claude-code"];
+    assert_eq!(claude["route_state"], "config_snippet_available", "{json}");
+    assert_eq!(claude["configured"], false, "{json}");
+    assert_eq!(claude["route_configured"], false, "{json}");
+    assert_eq!(claude["active"], false, "{json}");
+}
+
+#[test]
+fn lifecycle_fuckyou_agent_removes_only_tfy_owned_cursor_entry_and_preserves_raw() {
+    let dir = tempfile::tempdir().unwrap();
+    let cursor_dir = dir.path().join(".cursor");
+    std::fs::create_dir_all(&cursor_dir).unwrap();
+    let config = cursor_dir.join("mcp.json");
+    std::fs::write(
+        &config,
+        r#"{"mcpServers":{"other":{"command":"other"},"tfy":{"command":"tfy","args":["mcp","serve"],"tfy_managed":true}},"keep":true}"#,
+    )
+    .unwrap();
+    let raw_dir = dir.path().join(".tfy/raw");
+    std::fs::create_dir_all(&raw_dir).unwrap();
+    std::fs::write(raw_dir.join("raw-proof.json"), "{}").unwrap();
+
+    let cleanup = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["fuckyou", "--agent", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        cleanup.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&cleanup.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(json["keep"], true, "{json}");
+    assert_eq!(json["mcpServers"]["other"]["command"], "other", "{json}");
+    assert!(json["mcpServers"]["tfy"].is_null(), "{json}");
+    assert!(raw_dir.join("raw-proof.json").exists());
 }
 
 #[test]

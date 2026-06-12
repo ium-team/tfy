@@ -140,6 +140,9 @@ pub(crate) struct StartCmd {
     /// Apply only safe, implemented host configuration writers. Unsupported hosts stay guidance-only.
     #[arg(long)]
     pub apply: bool,
+    /// Record lifecycle intent only; do not write supported host config.
+    #[arg(long)]
+    pub no_apply: bool,
     /// Request verification guidance/smoke. Does not promote lifecycle active without route evidence.
     #[arg(long)]
     pub verify: bool,
@@ -407,6 +410,12 @@ struct LifecycleHostRoute {
     active: bool,
     #[serde(default)]
     configured: bool,
+    #[serde(default)]
+    route_configured: bool,
+    #[serde(default)]
+    host_reload_required: bool,
+    #[serde(default)]
+    host_route_available_after_reload: bool,
     #[serde(default)]
     route_verified: bool,
     #[serde(default)]
@@ -1404,9 +1413,16 @@ fn lifecycle_host_route(
 ) -> LifecycleHostRoute {
     let configured = matches!(
         route_state,
-        "config_snippet_available"
-            | "applied_unverified"
+        "applied_unverified"
+            | "configured_unverified"
             | "verified_local_mcp"
+            | "verified_host_invocation"
+            | "launch_supported"
+    );
+    let route_configured = matches!(
+        route_state,
+        "applied_unverified"
+            | "configured_unverified"
             | "verified_host_invocation"
             | "launch_supported"
     );
@@ -1416,6 +1432,9 @@ fn lifecycle_host_route(
         route_state: route_state.into(),
         active: false,
         configured,
+        route_configured,
+        host_reload_required: route_configured && !route_verified,
+        host_route_available_after_reload: route_verified,
         route_verified,
         savings_verified,
         normal_workflow_supported: route_state == "launch_supported",
@@ -1457,11 +1476,13 @@ pub(crate) fn execute_use(cmd: UseCmd) -> Result<()> {
 
 fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
     let targets = targets_from_args(&cmd.target, cmd.target_alias.as_deref(), "start")?;
-    if (cmd.host.is_some() || cmd.apply || cmd.verify) && scope == LifecycleScope::Global {
-        bail!("tfy global start P1 records global lifecycle defaults only; host --apply/--verify is project-scoped");
+    if (cmd.host.is_some() || cmd.apply || cmd.verify || cmd.no_apply)
+        && scope == LifecycleScope::Global
+    {
+        bail!("tfy global start P1 records global lifecycle defaults only; host --apply/--verify/--no-apply is project-scoped");
     }
-    if (cmd.apply || cmd.verify) && cmd.host.is_none() {
-        bail!("tfy start --apply/--verify requires --host <host|all> so TFY never mutates hidden host state implicitly");
+    if cmd.apply && cmd.no_apply {
+        bail!("tfy start cannot combine --apply and --no-apply");
     }
     if cmd.host.is_some() && !targets.contains(&LifecycleTarget::Agent) {
         bail!("tfy start --host configures AI-agent routing; include agent/ai or both");
@@ -1470,7 +1491,19 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         .host
         .as_deref()
         .is_some_and(|host| host.trim().eq_ignore_ascii_case("all"));
-    let selected_hosts = host_selection(cmd.host.as_deref())?;
+    let mut selected_hosts = host_selection(cmd.host.as_deref())?;
+    let auto_apply_supported_agent_routes = scope == LifecycleScope::Project
+        && targets.contains(&LifecycleTarget::Agent)
+        && !cmd.no_apply
+        && (cmd.host.is_none()
+            || cmd
+                .host
+                .as_deref()
+                .is_some_and(|host| host.trim().eq_ignore_ascii_case("cursor")));
+    if selected_hosts.is_empty() && auto_apply_supported_agent_routes {
+        selected_hosts = vec![host_integration("cursor")?];
+    }
+    let should_apply_supported_routes = cmd.apply || auto_apply_supported_agent_routes;
     let mut state = read_lifecycle(scope)?;
     let now = now_stamp();
     for target in &targets {
@@ -1478,7 +1511,7 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
             LifecycleTarget::Agent => {
                 let mut agent = agent_started(&now);
                 for host in &selected_hosts {
-                    if host.id == "cursor" && cmd.apply {
+                    if host.id == "cursor" && should_apply_supported_routes {
                         let result = configure_cursor_project_mcp(
                             &cmd.session,
                             HostConfigScope::Project,
@@ -1488,22 +1521,22 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                         agent.host_routes.insert(
                             host.id.into(),
                             lifecycle_host_route(
-                                "applied_unverified",
+                                "configured_unverified",
                                 result
                                     .get("config_path")
                                     .and_then(Value::as_str)
                                     .map(str::to_string),
-                                "applied_unverified",
-                                "safe project .cursor/mcp.json writer ran; still not launch-supported until real host invocation plus raw/ledger/no-negative/positive-savings evidence exists",
+                                "configured_unverified",
+                                "safe project .cursor/mcp.json writer ran; restart/reload Cursor, then verify real host invocation plus raw/ledger/no-negative/positive-savings evidence before active=true",
                             ),
                         );
-                    } else if cmd.apply && !host_all {
+                    } else if should_apply_supported_routes && !host_all {
                         bail!(
                             "automatic --apply for host '{}' is not implemented safely yet; use `tfy setup --host {} --dry-run` and apply manually",
                             host.id,
                             host.id
                         );
-                    } else if cmd.apply {
+                    } else if should_apply_supported_routes {
                         agent.host_routes.insert(
                             host.id.into(),
                             lifecycle_host_route(
@@ -1548,11 +1581,17 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         println!("agent route_state=intent_recorded active=false support_status={support_status} private_hook_interception=false provider_prompt_gateway=false");
         println!("Configure supported host routing through tfy mcp serve, tfy agent run, or tfy adapter run; lifecycle start does not mark any host launch-supported.");
         for host in &selected_hosts {
-            if host.id == "cursor" && cmd.apply {
-                println!("host=cursor route_state=applied_unverified active=false config_path=.cursor/mcp.json");
-            } else if cmd.apply {
+            if host.id == "cursor" && should_apply_supported_routes {
+                println!("Configured Cursor project MCP route: .cursor/mcp.json");
+                println!("Restart/reload Cursor to make the route visible.");
+                println!("Status: configured, not active.");
                 println!(
-                    "host={} route_state={} active=false apply=guidance_only",
+                    "Next: open Cursor and invoke a TFY MCP tool to verify real host routing."
+                );
+                println!("host=cursor route_state=configured_unverified active=false route_configured=true host_reload_required=true host_route_available_after_reload=false config_path=.cursor/mcp.json");
+            } else if should_apply_supported_routes {
+                println!(
+                    "host={} route_state={} active=false configured=false apply=guidance_only",
                     host.id, host.status
                 );
             } else {
@@ -1656,6 +1695,9 @@ fn execute_lifecycle_fuckyou(scope: LifecycleScope, cmd: FuckyouCmd) -> Result<(
     };
     let mut state = read_lifecycle(scope)?;
     for target in &targets {
+        if scope == LifecycleScope::Project && *target == LifecycleTarget::Agent {
+            cleanup_project_agent_host_configs()?;
+        }
         remove_target_dir(scope, *target)?;
         match target {
             LifecycleTarget::Agent => state.agent = None,
@@ -2474,6 +2516,51 @@ fn print_host_setup(
     Ok(())
 }
 
+fn cleanup_project_agent_host_configs() -> Result<()> {
+    cleanup_cursor_project_mcp_if_tfy_owned()?;
+    Ok(())
+}
+
+fn cleanup_cursor_project_mcp_if_tfy_owned() -> Result<()> {
+    let path = PathBuf::from(".cursor").join("mcp.json");
+    let existing = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    if existing.trim().is_empty() {
+        return Ok(());
+    }
+    let mut root: Value = serde_json::from_str(&existing)
+        .with_context(|| format!("parse existing Cursor MCP config {}", path.display()))?;
+    let Some(root_obj) = root.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(servers) = root_obj.get_mut("mcpServers") else {
+        return Ok(());
+    };
+    let Some(servers_obj) = servers.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(existing_tfy) = servers_obj.get("tfy") else {
+        return Ok(());
+    };
+    if !cursor_tfy_entry_is_managed(existing_tfy) {
+        return Ok(());
+    }
+    servers_obj.remove("tfy");
+    if servers_obj.is_empty() {
+        root_obj.remove("mcpServers");
+    }
+    if root.as_object().is_some_and(|object| object.is_empty()) {
+        fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+    } else {
+        fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&root)?))
+            .with_context(|| format!("write {}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn configure_cursor_project_mcp(
     session: &str,
     scope: HostConfigScope,
@@ -3155,9 +3242,10 @@ fn effective_agent_status(
     let desired = selected.is_some_and(|(state, _)| state.desired);
     let configured = selected.is_some_and(|(state, _)| state.configured);
     let route_configured = selected.is_some_and(|(state, _)| {
-        state.configured
-            && (!state.host_routes.is_empty()
-                || !matches!(state.route_state.as_str(), "not_configured" | "stopped"))
+        state
+            .host_routes
+            .values()
+            .any(|route| route.route_configured)
     });
     let route_verified = selected
         .is_some_and(|(state, _)| state.host_routes.values().any(|route| route.route_verified));
@@ -3202,7 +3290,7 @@ fn effective_agent_status(
         } else if !desired {
             "Run `tfy start --agent` in this project, or configure global agent defaults with `tfy use always --agent`.".into()
         } else if host_routes_empty {
-            "Configure a supported route, e.g. `tfy start agent --host cursor --apply`, then collect host invocation raw/ledger/savings evidence.".into()
+            "Run `tfy start --agent` to auto-configure supported safe project routes such as Cursor, or use `tfy start --agent --no-apply` for lifecycle intent only.".into()
         } else {
             "Configured but not verified: run the configured host and collect route-bound raw/ledger/no-negative/positive-savings/overhead evidence before active=true.".into()
         },
