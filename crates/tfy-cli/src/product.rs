@@ -178,6 +178,20 @@ pub(crate) enum GlobalCmd {
     Fuckyou(FuckyouCmd),
 }
 
+#[derive(Subcommand, Clone)]
+pub(crate) enum UseCmd {
+    /// Alias for `tfy global start`; opt into TFY by default across projects.
+    #[command(alias = "alwais")]
+    Always(StartCmd),
+    /// Alias for `tfy global stop`; pause default TFY use without deleting data.
+    #[command(alias = "never")]
+    Stop(StopCmd),
+    /// Alias for `tfy global stop`; explicit cancellation spelling.
+    Cancel(StopCmd),
+    /// Alias for `tfy global fuckyou`; remove scoped global lifecycle state.
+    Fuckyou(FuckyouCmd),
+}
+
 #[derive(Args, Clone)]
 pub(crate) struct StatusCmd {
     /// Show only AI-agent lifecycle/status information.
@@ -451,12 +465,30 @@ struct ProductStatusReport {
     target_filter: String,
     project_lifecycle: LifecycleStatusView,
     global_lifecycle: LifecycleStatusView,
+    effective_lifecycle: EffectiveLifecycleStatus,
     minimum_v1_host_matrix: Vec<HostReadiness>,
     surfaces: Vec<SurfaceStatus>,
     claim_evidence_ladder: Vec<String>,
     launch_claim_gate: String,
     not_supported: Vec<String>,
     truthfulness_boundary: String,
+}
+
+#[derive(Serialize)]
+struct EffectiveLifecycleStatus {
+    agent: Option<EffectiveRouteStatus>,
+    human: Option<EffectiveRouteStatus>,
+}
+
+#[derive(Serialize)]
+struct EffectiveRouteStatus {
+    desired: bool,
+    desired_source: String,
+    configured: bool,
+    active: bool,
+    route_state: String,
+    support_status: String,
+    next_action: String,
 }
 
 #[derive(Serialize)]
@@ -1062,6 +1094,15 @@ fn parse_target_choice(choice: &str, action: &str) -> Result<Vec<LifecycleTarget
 }
 
 fn prompt_targets(action: &str) -> Result<Vec<LifecycleTarget>> {
+    if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        match prompt_targets_tui(action) {
+            Ok(targets) => return Ok(targets),
+            Err(err) if raw_terminal_unavailable(&err) => {
+                eprintln!("TFY {action}: TUI unavailable ({err}); falling back to line prompt");
+            }
+            Err(err) => return Err(err),
+        }
+    }
     eprintln!("TFY {action}: choose target: agent, human, or both");
     let input = read_lifecycle_prompt_input()?;
     let choice = input
@@ -1069,6 +1110,21 @@ fn prompt_targets(action: &str) -> Result<Vec<LifecycleTarget>> {
         .find(|line| !line.trim().is_empty())
         .unwrap_or("");
     parse_target_choice(choice, action)
+}
+
+fn prompt_targets_tui(action: &str) -> Result<Vec<LifecycleTarget>> {
+    let choices = [
+        ("agent", "AI agent only"),
+        ("human", "Human explicit wrapper/session only"),
+        ("both", "Agent and human"),
+        ("cancel", "Cancel without writing state"),
+    ];
+    let labels: Vec<&str> = choices.iter().map(|(_, label)| *label).collect();
+    let selected = prompt_menu_tui(&format!("TFY {action}: choose target"), &labels)?;
+    match choices[selected].0 {
+        "cancel" => bail!("tfy {action} cancelled"),
+        choice => parse_target_choice(choice, action),
+    }
 }
 
 fn read_lifecycle_prompt_input() -> Result<String> {
@@ -1086,12 +1142,179 @@ fn confirm_fuckyou(yes: bool) -> Result<()> {
     if yes {
         return Ok(());
     }
+    if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        let choices = ["No, cancel", "Yes, clean scoped TFY lifecycle state"];
+        match prompt_menu_tui("TFY fuckyou confirmation", &choices) {
+            Ok(1) => return Ok(()),
+            Ok(_) => bail!("tfy fuckyou cancelled"),
+            Err(err) if raw_terminal_unavailable(&err) => {
+                eprintln!("TFY fuckyou: TUI unavailable ({err}); falling back to line prompt");
+            }
+            Err(err) => return Err(err),
+        }
+    }
     eprintln!("TFY fuckyou will remove scoped TFY-owned lifecycle state. Type yes to continue.");
     let input = read_lifecycle_prompt_input()?;
     if input.lines().any(|line| line.trim() == "yes") {
         Ok(())
     } else {
         bail!("tfy fuckyou requires confirmation; rerun with --yes or type yes")
+    }
+}
+
+fn prompt_menu_tui(title: &str, choices: &[&str]) -> Result<usize> {
+    let mut selected = 0usize;
+    let mut stderr = std::io::stderr();
+    let _raw = RawTerminalMode::enter()?;
+    loop {
+        render_menu(&mut stderr, title, choices, selected)?;
+        match read_menu_key()? {
+            MenuKey::Up => selected = selected.saturating_sub(1),
+            MenuKey::Down => {
+                if selected + 1 < choices.len() {
+                    selected += 1;
+                }
+            }
+            MenuKey::Enter => {
+                clear_menu(&mut stderr, choices.len() + 2)?;
+                return Ok(selected);
+            }
+            MenuKey::Cancel => {
+                clear_menu(&mut stderr, choices.len() + 2)?;
+                bail!("selection cancelled");
+            }
+            MenuKey::Ignore => {}
+        }
+    }
+}
+
+fn raw_terminal_unavailable(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains("raw terminal unavailable"))
+}
+
+fn render_menu(
+    mut writer: impl Write,
+    title: &str,
+    choices: &[&str],
+    selected: usize,
+) -> Result<()> {
+    write!(writer, "\x1b[?25l\x1b[2K\r{title}\n")?;
+    writeln!(
+        writer,
+        "Use ↑/↓ or j/k to move, Enter to select, Esc/q to cancel."
+    )?;
+    for (index, choice) in choices.iter().enumerate() {
+        if index == selected {
+            writeln!(writer, "  ❯ {choice}")?;
+        } else {
+            writeln!(writer, "    {choice}")?;
+        }
+    }
+    write!(writer, "\x1b[{}A", choices.len() + 2)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn clear_menu(mut writer: impl Write, lines: usize) -> Result<()> {
+    write!(writer, "\x1b[?25h")?;
+    for line in 0..lines {
+        write!(writer, "\x1b[2K\r")?;
+        if line + 1 < lines {
+            write!(writer, "\x1b[1B")?;
+        }
+    }
+    if lines > 1 {
+        write!(writer, "\x1b[{}A", lines - 1)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuKey {
+    Up,
+    Down,
+    Enter,
+    Cancel,
+    Ignore,
+}
+
+fn read_menu_key() -> Result<MenuKey> {
+    let mut input = std::io::stdin().lock();
+    let mut byte = [0u8; 1];
+    loop {
+        if input.read(&mut byte)? == 1 {
+            break;
+        }
+    }
+    match byte[0] {
+        b'\n' | b'\r' => Ok(MenuKey::Enter),
+        b'q' | b'Q' | 0x03 => Ok(MenuKey::Cancel),
+        b'k' | b'K' => Ok(MenuKey::Up),
+        b'j' | b'J' => Ok(MenuKey::Down),
+        0x1b => {
+            let mut seq = [0u8; 2];
+            let first = input.read(&mut seq[0..1])?;
+            if first == 0 {
+                return Ok(MenuKey::Cancel);
+            }
+            let second = input.read(&mut seq[1..2])?;
+            if second == 0 {
+                return Ok(MenuKey::Ignore);
+            }
+            match seq {
+                [b'[', b'A'] => Ok(MenuKey::Up),
+                [b'[', b'B'] => Ok(MenuKey::Down),
+                _ => Ok(MenuKey::Ignore),
+            }
+        }
+        _ => Ok(MenuKey::Ignore),
+    }
+}
+
+struct RawTerminalMode {
+    saved: Option<String>,
+}
+
+impl RawTerminalMode {
+    fn enter() -> Result<Self> {
+        let saved = Command::new("stty")
+            .arg("-g")
+            .stdin(Stdio::inherit())
+            .output()
+            .context("raw terminal unavailable: could not read terminal mode")?;
+        if !saved.status.success() {
+            bail!("raw terminal unavailable: stty -g failed");
+        }
+        let saved = Some(saved)
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
+        if saved.is_none() {
+            bail!("raw terminal unavailable: empty stty state");
+        }
+        let status = Command::new("stty")
+            .args(["-echo", "-icanon", "-isig", "min", "0", "time", "1"])
+            .stdin(Stdio::inherit())
+            .status()
+            .context("raw terminal unavailable: could not set raw mode")?;
+        if !status.success() {
+            bail!("raw terminal unavailable: stty raw mode failed");
+        }
+        Ok(Self { saved })
+    }
+}
+
+impl Drop for RawTerminalMode {
+    fn drop(&mut self) {
+        if let Some(saved) = self.saved.as_deref() {
+            let _ = Command::new("stty")
+                .arg(saved)
+                .stdin(Stdio::inherit())
+                .status();
+        }
+        let _ = write!(std::io::stderr(), "\x1b[?25h");
     }
 }
 
@@ -1190,6 +1413,16 @@ pub(crate) fn execute_global(cmd: GlobalCmd) -> Result<()> {
     }
 }
 
+pub(crate) fn execute_use(cmd: UseCmd) -> Result<()> {
+    match cmd {
+        UseCmd::Always(cmd) => execute_lifecycle_start(LifecycleScope::Global, cmd),
+        UseCmd::Stop(cmd) | UseCmd::Cancel(cmd) => {
+            execute_lifecycle_stop(LifecycleScope::Global, cmd)
+        }
+        UseCmd::Fuckyou(cmd) => execute_lifecycle_fuckyou(LifecycleScope::Global, cmd),
+    }
+}
+
 fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
     let targets = targets_from_args(&cmd.target, cmd.target_alias.as_deref(), "start")?;
     if (cmd.host.is_some() || cmd.apply || cmd.verify) && scope == LifecycleScope::Global {
@@ -1275,7 +1508,12 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         target_names(&targets)
     );
     if targets.contains(&LifecycleTarget::Agent) {
-        println!("agent route_state=intent_recorded active=false support_status=host_route_configuration_required private_hook_interception=false provider_prompt_gateway=false");
+        let support_status = state
+            .agent
+            .as_ref()
+            .map(|agent| agent.support_status.as_str())
+            .unwrap_or("host_route_configuration_required");
+        println!("agent route_state=intent_recorded active=false support_status={support_status} private_hook_interception=false provider_prompt_gateway=false");
         println!("Configure supported host routing through tfy mcp serve, tfy agent run, or tfy adapter run; lifecycle start does not mark any host launch-supported.");
         for host in &selected_hosts {
             if host.id == "cursor" && cmd.apply {
@@ -1351,10 +1589,14 @@ fn execute_lifecycle_fuckyou(scope: LifecycleScope, cmd: FuckyouCmd) -> Result<(
         let targets = targets_from_args(&cmd.target, cmd.target_alias.as_deref(), "fuckyou")?;
         confirm_fuckyou(cmd.yes)?;
         targets
+    } else if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        let targets = prompt_targets("fuckyou")?;
+        confirm_fuckyou(cmd.yes)?;
+        targets
     } else {
         eprintln!("TFY fuckyou: choose target: agent, human, or both; then type yes to confirm");
-        let stdin = std::io::stdin();
         let mut input = String::new();
+        let stdin = std::io::stdin();
         if stdin.is_terminal() {
             let mut lock = stdin.lock();
             lock.read_line(&mut input)?;
@@ -1792,6 +2034,34 @@ pub(crate) fn execute_status(cmd: StatusCmd) -> Result<()> {
     } else {
         println!("TFY status: {}", report.status);
         println!("target_filter: {}", report.target_filter);
+        if !cmd.human {
+            if let Some(agent) = &report.effective_lifecycle.agent {
+                println!(
+                    "effective agent: desired={} source={} configured={} active={} route_state={} support_status={}",
+                    agent.desired,
+                    agent.desired_source,
+                    agent.configured,
+                    agent.active,
+                    agent.route_state,
+                    agent.support_status
+                );
+                println!("next agent action: {}", agent.next_action);
+            }
+        }
+        if !cmd.agent {
+            if let Some(human) = &report.effective_lifecycle.human {
+                println!(
+                    "effective human: desired={} source={} configured={} active={} route_state={} support_status={}",
+                    human.desired,
+                    human.desired_source,
+                    human.configured,
+                    human.active,
+                    human.route_state,
+                    human.support_status
+                );
+                println!("next human action: {}", human.next_action);
+            }
+        }
         if !cmd.human {
             if let Some(agent) = &report.project_lifecycle.agent {
                 println!("project agent: configured={} desired={} route_state={} active={} support_status={} private_hook_interception={} provider_prompt_gateway={}", agent.configured, agent.desired, agent.route_state, agent.active, agent.support_status, agent.private_hook_interception, agent.provider_prompt_gateway);
@@ -2755,6 +3025,9 @@ fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
     };
     let mut project_lifecycle = lifecycle_status_view(LifecycleScope::Project);
     let mut global_lifecycle = lifecycle_status_view(LifecycleScope::Global);
+    let project_parse_error = project_lifecycle.parse_error.is_some();
+    let include_agent = !cmd.human;
+    let include_human = !cmd.agent;
     if cmd.agent && !cmd.human {
         project_lifecycle.human = None;
         global_lifecycle.human = None;
@@ -2762,11 +3035,21 @@ fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
         project_lifecycle.agent = None;
         global_lifecycle.agent = None;
     }
+    let effective_lifecycle = effective_lifecycle_status(
+        project_lifecycle.agent.as_ref(),
+        global_lifecycle.agent.as_ref(),
+        project_lifecycle.human.as_ref(),
+        global_lifecycle.human.as_ref(),
+        project_parse_error,
+        include_agent,
+        include_human,
+    );
     ProductStatusReport {
         status: "active".into(),
         target_filter: target_filter.into(),
         project_lifecycle,
         global_lifecycle,
+        effective_lifecycle,
         minimum_v1_host_matrix: minimum_v1_host_matrix(),
         surfaces: vec![
             SurfaceStatus { name: "command_output".into(), status: "active".into(), message: "AI-origin commands can route through tfy agent/adapter/MCP; normal human terminal commands are not intercepted.".into() },
@@ -2784,6 +3067,110 @@ fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
         launch_claim_gate: "A host is launch-supported only after config snippet, config write/apply proof, host launch, verified host MCP or official hook invocation, route evidence, raw recovery, no-negative-savings, and positive-savings checks pass.".into(),
         not_supported: not_supported_surfaces(),
         truthfulness_boundary: "automatic configuration is limited to supported AI-host routes; no provider proxy, editor hook, private Codex hook, or universal shell interception".into(),
+    }
+}
+
+fn effective_lifecycle_status(
+    project_agent: Option<&AgentLifecycleState>,
+    global_agent: Option<&AgentLifecycleState>,
+    project_human: Option<&HumanLifecycleState>,
+    global_human: Option<&HumanLifecycleState>,
+    project_parse_error: bool,
+    include_agent: bool,
+    include_human: bool,
+) -> EffectiveLifecycleStatus {
+    EffectiveLifecycleStatus {
+        agent: include_agent
+            .then(|| effective_agent_status(project_agent, global_agent, project_parse_error)),
+        human: include_human
+            .then(|| effective_human_status(project_human, global_human, project_parse_error)),
+    }
+}
+
+fn effective_agent_status(
+    project: Option<&AgentLifecycleState>,
+    global: Option<&AgentLifecycleState>,
+    project_parse_error: bool,
+) -> EffectiveRouteStatus {
+    if project_parse_error {
+        return EffectiveRouteStatus {
+            desired: false,
+            desired_source: "project_parse_error".into(),
+            configured: false,
+            active: false,
+            route_state: "lifecycle_parse_error".into(),
+            support_status: "lifecycle_parse_error".into(),
+            next_action: "Fix or remove .tfy/lifecycle.json before TFY can inherit project or global agent lifecycle state.".into(),
+        };
+    }
+    let selected = project
+        .map(|state| (state, "project"))
+        .or_else(|| global.map(|state| (state, "global")));
+    let desired = selected.is_some_and(|(state, _)| state.desired);
+    let active = selected.is_some_and(|(state, _)| state.active);
+    let host_routes_empty = selected.is_none_or(|(state, _)| state.host_routes.is_empty());
+    EffectiveRouteStatus {
+        desired,
+        desired_source: selected.map(|(_, source)| source).unwrap_or("none").into(),
+        configured: selected.is_some_and(|(state, _)| state.configured),
+        active,
+        route_state: selected
+            .map(|(state, _)| state.route_state.clone())
+            .unwrap_or_else(|| "not_configured".into()),
+        support_status: selected
+            .map(|(state, _)| state.support_status.clone())
+            .unwrap_or_else(|| "host_route_configuration_required".into()),
+        next_action: if active {
+            "Route is active from verified host invocation and savings evidence.".into()
+        } else if !desired {
+            "Run `tfy start --agent` in this project, or configure global agent defaults with `tfy use always --agent`.".into()
+        } else if host_routes_empty {
+            "Configure a supported route, e.g. `tfy start agent --host cursor --apply`, then collect host invocation raw/ledger/savings evidence.".into()
+        } else {
+            "Run the configured host and collect route-bound raw/ledger/no-negative/positive-savings evidence before active=true.".into()
+        },
+    }
+}
+
+fn effective_human_status(
+    project: Option<&HumanLifecycleState>,
+    global: Option<&HumanLifecycleState>,
+    project_parse_error: bool,
+) -> EffectiveRouteStatus {
+    if project_parse_error {
+        return EffectiveRouteStatus {
+            desired: false,
+            desired_source: "project_parse_error".into(),
+            configured: false,
+            active: false,
+            route_state: "lifecycle_parse_error".into(),
+            support_status: "lifecycle_parse_error".into(),
+            next_action: "Fix or remove .tfy/lifecycle.json before TFY can inherit project or global human lifecycle state.".into(),
+        };
+    }
+    let selected = project
+        .map(|state| (state, "project"))
+        .or_else(|| global.map(|state| (state, "global")));
+    let desired = selected.is_some_and(|(state, _)| state.desired);
+    let active = selected.is_some_and(|(state, _)| state.active);
+    EffectiveRouteStatus {
+        desired,
+        desired_source: selected.map(|(_, source)| source).unwrap_or("none").into(),
+        configured: selected.is_some_and(|(state, _)| state.configured),
+        active,
+        route_state: selected
+            .map(|(state, _)| state.route_state.clone())
+            .unwrap_or_else(|| "not_configured".into()),
+        support_status: selected
+            .map(|(state, _)| state.support_status.clone())
+            .unwrap_or_else(|| "manual_explicit_route_required".into()),
+        next_action: if active {
+            "Human route is active from explicit wrapper/session evidence.".into()
+        } else if !desired {
+            "Run `tfy start --human` to opt into explicit human wrapper/session cleanup.".into()
+        } else {
+            "Use an explicit wrapper such as `tfy adapter run --session human -- <command>`; ordinary terminals are not globally intercepted.".into()
+        },
     }
 }
 

@@ -2802,6 +2802,46 @@ fn lifecycle_status_exposes_malformed_state_parse_error() {
         .as_str()
         .unwrap()
         .contains("parse .tfy/lifecycle.json"));
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["desired_source"],
+        "project_parse_error"
+    );
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["route_state"],
+        "lifecycle_parse_error"
+    );
+}
+
+#[test]
+fn lifecycle_status_filters_effective_target_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(json["project_lifecycle"]["human"].is_null());
+    assert!(json["effective_lifecycle"]["human"].is_null());
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["desired_source"],
+        "none"
+    );
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--human", "--json"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(json["project_lifecycle"]["agent"].is_null());
+    assert!(json["effective_lifecycle"]["agent"].is_null());
+    assert_eq!(
+        json["effective_lifecycle"]["human"]["desired_source"],
+        "none"
+    );
 }
 
 #[test]
@@ -2848,6 +2888,217 @@ fn lifecycle_bare_commands_fail_closed_without_target_choice() {
         assert!(!output.status.success(), "{command} should fail closed");
         assert!(!dir.path().join(".tfy/lifecycle.json").exists());
     }
+}
+
+#[test]
+fn lifecycle_help_advertises_bare_tui_wizard() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("target TUI wizard"), "{text}");
+    assert!(text.contains("confirmation TUI wizards"), "{text}");
+}
+
+#[test]
+fn lifecycle_bare_commands_accept_explicit_stdin_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .arg("start")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    start.stdin.as_mut().unwrap().write_all(b"both\n").unwrap();
+    let output = start.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut stop = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .arg("stop")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    stop.stdin.as_mut().unwrap().write_all(b"human\n").unwrap();
+    let output = stop.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["project_lifecycle"]["agent"]["desired"], true);
+    assert_eq!(json["project_lifecycle"]["human"]["desired"], false);
+}
+
+#[test]
+fn lifecycle_status_reports_effective_state_and_next_actions() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let fresh_status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    assert!(fresh_status.status.success());
+    let fresh_json: serde_json::Value = serde_json::from_slice(&fresh_status.stdout).unwrap();
+    assert_eq!(
+        fresh_json["effective_lifecycle"]["agent"]["desired_source"],
+        "none"
+    );
+    assert_eq!(fresh_json["effective_lifecycle"]["agent"]["desired"], false);
+    assert_eq!(
+        fresh_json["effective_lifecycle"]["agent"]["configured"],
+        false
+    );
+    assert_eq!(fresh_json["effective_lifecycle"]["agent"]["active"], false);
+
+    let global_start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["global", "start", "agent"])
+        .output()
+        .unwrap();
+    assert!(global_start.status.success());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["effective_lifecycle"]["agent"]["desired"], true);
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["desired_source"],
+        "global"
+    );
+    assert_eq!(json["effective_lifecycle"]["agent"]["active"], false);
+    assert!(json["effective_lifecycle"]["agent"]["next_action"]
+        .as_str()
+        .unwrap()
+        .contains("tfy start agent --host cursor --apply"));
+
+    let project_start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["start", "agent", "--host", "cursor", "--apply"])
+        .output()
+        .unwrap();
+    assert!(project_start.status.success());
+    let text_status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .arg("status")
+        .output()
+        .unwrap();
+    assert!(text_status.status.success());
+    let text = String::from_utf8_lossy(&text_status.stdout);
+    assert!(
+        text.contains("effective agent: desired=true source=project"),
+        "{text}"
+    );
+    assert!(text.contains("next agent action:"), "{text}");
+    assert!(text.contains("active=false"), "{text}");
+}
+
+#[test]
+fn lifecycle_use_always_alias_controls_global_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["use", "always", "--agent"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let typo_alias = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["use", "alwais", "--human"])
+        .output()
+        .unwrap();
+    assert!(typo_alias.status.success());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["global_lifecycle"]["agent"]["desired"], true);
+    assert_eq!(json["global_lifecycle"]["human"]["desired"], true);
+
+    let cancel = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["use", "cancel", "--agent"])
+        .output()
+        .unwrap();
+    assert!(cancel.status.success());
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["global_lifecycle"]["agent"]["desired"], false);
+}
+
+#[test]
+fn lifecycle_start_verify_prints_persisted_support_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "agent", "--host", "cursor", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&start.stdout);
+    assert!(
+        stdout.contains("support_status=verification_requested_route_evidence_required"),
+        "{stdout}"
+    );
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["support_status"],
+        "verification_requested_route_evidence_required"
+    );
 }
 
 #[test]
