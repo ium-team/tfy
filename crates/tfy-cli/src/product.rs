@@ -1,12 +1,12 @@
 use crate::util::{print_json, stable_id};
 use anyhow::{anyhow, bail, Context, Result};
-use clap::Args;
+use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use tfy_core::{raw_output_bytes, summarize_command_output_with_policy, ToolPolicy};
@@ -117,7 +117,54 @@ pub(crate) struct SetupCmd {
 }
 
 #[derive(Args, Clone)]
+pub(crate) struct LifecycleTargetArgs {
+    /// Configure only AI-agent lifecycle intent.
+    #[arg(long)]
+    pub agent: bool,
+    /// Configure only human explicit-wrapper/session lifecycle intent.
+    #[arg(long)]
+    pub human: bool,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct StartCmd {
+    #[command(flatten)]
+    pub target: LifecycleTargetArgs,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct StopCmd {
+    #[command(flatten)]
+    pub target: LifecycleTargetArgs,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct FuckyouCmd {
+    #[command(flatten)]
+    pub target: LifecycleTargetArgs,
+    /// Confirm scoped TFY-owned lifecycle cleanup. Required for non-interactive destructive cleanup.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+#[derive(Subcommand, Clone)]
+pub(crate) enum GlobalCmd {
+    /// Start global TFY lifecycle intent.
+    Start(StartCmd),
+    /// Stop global TFY lifecycle intent without deleting data.
+    Stop(StopCmd),
+    /// Scoped global TFY-owned lifecycle cleanup.
+    Fuckyou(FuckyouCmd),
+}
+
+#[derive(Args, Clone)]
 pub(crate) struct StatusCmd {
+    /// Show only AI-agent lifecycle/status information.
+    #[arg(long)]
+    pub agent: bool,
+    /// Show only human explicit-wrapper/session lifecycle/status information.
+    #[arg(long)]
+    pub human: bool,
     #[arg(long)]
     pub json: bool,
 }
@@ -259,9 +306,84 @@ struct SurfaceStatus {
     message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LifecycleTarget {
+    Agent,
+    Human,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LifecycleScope {
+    Project,
+    Global,
+}
+
+impl LifecycleScope {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Global => "global",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgentLifecycleState {
+    configured: bool,
+    desired: bool,
+    active_routes: Vec<String>,
+    private_hook_interception: bool,
+    provider_prompt_gateway: bool,
+    support_status: String,
+    started_at: Option<String>,
+    stopped_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HumanLifecycleState {
+    configured: bool,
+    desired: bool,
+    active_route: String,
+    ordinary_terminal_interception: bool,
+    support_status: String,
+    started_at: Option<String>,
+    stopped_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LifecycleLedgers {
+    state: String,
+    adapter: String,
+    agent: String,
+    mcp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LifecycleFile {
+    schema_version: u8,
+    scope: String,
+    agent: Option<AgentLifecycleState>,
+    human: Option<HumanLifecycleState>,
+    raw_dir: String,
+    ledgers: LifecycleLedgers,
+}
+
+#[derive(Serialize)]
+struct LifecycleStatusView {
+    path: String,
+    exists: bool,
+    agent: Option<AgentLifecycleState>,
+    human: Option<HumanLifecycleState>,
+    raw_dir: String,
+    ledgers: LifecycleLedgers,
+}
+
 #[derive(Serialize)]
 struct ProductStatusReport {
     status: String,
+    target_filter: String,
+    project_lifecycle: LifecycleStatusView,
+    global_lifecycle: LifecycleStatusView,
     minimum_v1_host_matrix: Vec<HostReadiness>,
     surfaces: Vec<SurfaceStatus>,
     claim_evidence_ladder: Vec<String>,
@@ -672,6 +794,331 @@ struct RtkComparatorReport {
     required_for_public_superiority_claim: Vec<String>,
 }
 
+fn now_stamp() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("unix:{seconds}")
+}
+
+fn default_ledgers(scope: LifecycleScope) -> LifecycleLedgers {
+    let prefix = match scope {
+        LifecycleScope::Project => ".tfy".to_string(),
+        LifecycleScope::Global => global_tfy_dir().display().to_string(),
+    };
+    LifecycleLedgers {
+        state: format!("{prefix}/state/ledger.jsonl"),
+        adapter: format!("{prefix}/adapter/ledger.jsonl"),
+        agent: format!("{prefix}/agent/ledger.jsonl"),
+        mcp: format!("{prefix}/mcp/ledger.jsonl"),
+    }
+}
+
+fn lifecycle_path(scope: LifecycleScope) -> PathBuf {
+    match scope {
+        LifecycleScope::Project => PathBuf::from(".tfy").join("lifecycle.json"),
+        LifecycleScope::Global => global_tfy_dir().join("lifecycle.json"),
+    }
+}
+
+fn global_tfy_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("TFY_HOME") {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(path).join("tfy");
+    }
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".tfy")
+}
+
+fn default_lifecycle(scope: LifecycleScope) -> LifecycleFile {
+    let raw_dir = match scope {
+        LifecycleScope::Project => ".tfy/raw".to_string(),
+        LifecycleScope::Global => global_tfy_dir().join("raw").display().to_string(),
+    };
+    LifecycleFile {
+        schema_version: 1,
+        scope: scope.label().into(),
+        agent: None,
+        human: None,
+        raw_dir,
+        ledgers: default_ledgers(scope),
+    }
+}
+
+fn read_lifecycle(scope: LifecycleScope) -> Result<LifecycleFile> {
+    let path = lifecycle_path(scope);
+    match fs::read_to_string(&path) {
+        Ok(text) => {
+            serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(default_lifecycle(scope)),
+        Err(err) => Err(err).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+fn write_lifecycle(scope: LifecycleScope, state: &LifecycleFile) -> Result<()> {
+    let path = lifecycle_path(scope);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(state)? + "\n")
+        .with_context(|| format!("write {}", path.display()))
+}
+
+fn remove_lifecycle_if_empty(scope: LifecycleScope, state: &LifecycleFile) -> Result<()> {
+    let path = lifecycle_path(scope);
+    if state.agent.is_none() && state.human.is_none() {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(err).with_context(|| format!("remove {}", path.display())),
+        }
+    } else {
+        write_lifecycle(scope, state)?;
+    }
+    Ok(())
+}
+
+fn agent_started(now: &str) -> AgentLifecycleState {
+    AgentLifecycleState {
+        configured: true,
+        desired: true,
+        active_routes: vec![
+            "mcp_stdio".into(),
+            "agent_wrapper".into(),
+            "generic_shell_adapter".into(),
+        ],
+        private_hook_interception: false,
+        provider_prompt_gateway: false,
+        support_status: "host_route_configuration_required".into(),
+        started_at: Some(now.into()),
+        stopped_at: None,
+    }
+}
+
+fn human_started(now: &str) -> HumanLifecycleState {
+    HumanLifecycleState {
+        configured: true,
+        desired: true,
+        active_route: "explicit_wrapper_required".into(),
+        ordinary_terminal_interception: false,
+        support_status: "manual_explicit_route_required".into(),
+        started_at: Some(now.into()),
+        stopped_at: None,
+    }
+}
+
+fn lifecycle_status_view(scope: LifecycleScope) -> LifecycleStatusView {
+    let path = lifecycle_path(scope);
+    let exists = path.exists();
+    let state = read_lifecycle(scope).unwrap_or_else(|_| default_lifecycle(scope));
+    LifecycleStatusView {
+        path: path.display().to_string(),
+        exists,
+        agent: state.agent,
+        human: state.human,
+        raw_dir: state.raw_dir,
+        ledgers: state.ledgers,
+    }
+}
+
+fn targets_from_args(args: &LifecycleTargetArgs, action: &str) -> Result<Vec<LifecycleTarget>> {
+    let mut targets = Vec::new();
+    if args.agent {
+        targets.push(LifecycleTarget::Agent);
+    }
+    if args.human {
+        targets.push(LifecycleTarget::Human);
+    }
+    if !targets.is_empty() {
+        return Ok(targets);
+    }
+    prompt_targets(action)
+}
+
+fn parse_target_choice(choice: &str, action: &str) -> Result<Vec<LifecycleTarget>> {
+    match choice.trim().to_ascii_lowercase().as_str() {
+        "1" | "a" | "agent" => Ok(vec![LifecycleTarget::Agent]),
+        "2" | "h" | "human" => Ok(vec![LifecycleTarget::Human]),
+        "3" | "b" | "both" | "all" | "agent,human" | "human,agent" => {
+            Ok(vec![LifecycleTarget::Agent, LifecycleTarget::Human])
+        }
+        _ => bail!(
+            "tfy {action} requires --agent, --human, or an interactive choice of agent, human, or both"
+        ),
+    }
+}
+
+fn prompt_targets(action: &str) -> Result<Vec<LifecycleTarget>> {
+    eprintln!("TFY {action}: choose target: agent, human, or both");
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    let choice = input
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    parse_target_choice(choice, action)
+}
+
+fn confirm_fuckyou(yes: bool) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+    eprintln!("TFY fuckyou will remove scoped TFY-owned lifecycle state. Type yes to continue.");
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    if input.lines().any(|line| line.trim() == "yes") {
+        Ok(())
+    } else {
+        bail!("tfy fuckyou requires confirmation; rerun with --yes or type yes")
+    }
+}
+
+fn remove_target_dir(scope: LifecycleScope, target: LifecycleTarget) -> Result<()> {
+    let base = match scope {
+        LifecycleScope::Project => PathBuf::from(".tfy"),
+        LifecycleScope::Global => global_tfy_dir(),
+    };
+    let dir = match target {
+        LifecycleTarget::Agent => base.join("agent"),
+        LifecycleTarget::Human => base.join("human"),
+    };
+    match fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("remove {}", dir.display())),
+    }
+}
+
+fn target_names(targets: &[LifecycleTarget]) -> String {
+    targets
+        .iter()
+        .map(|target| match target {
+            LifecycleTarget::Agent => "agent",
+            LifecycleTarget::Human => "human",
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub(crate) fn execute_start(cmd: StartCmd) -> Result<()> {
+    execute_lifecycle_start(LifecycleScope::Project, cmd)
+}
+
+pub(crate) fn execute_stop(cmd: StopCmd) -> Result<()> {
+    execute_lifecycle_stop(LifecycleScope::Project, cmd)
+}
+
+pub(crate) fn execute_fuckyou(cmd: FuckyouCmd) -> Result<()> {
+    execute_lifecycle_fuckyou(LifecycleScope::Project, cmd)
+}
+
+pub(crate) fn execute_global(cmd: GlobalCmd) -> Result<()> {
+    match cmd {
+        GlobalCmd::Start(cmd) => execute_lifecycle_start(LifecycleScope::Global, cmd),
+        GlobalCmd::Stop(cmd) => execute_lifecycle_stop(LifecycleScope::Global, cmd),
+        GlobalCmd::Fuckyou(cmd) => execute_lifecycle_fuckyou(LifecycleScope::Global, cmd),
+    }
+}
+
+fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
+    let targets = targets_from_args(&cmd.target, "start")?;
+    let mut state = read_lifecycle(scope)?;
+    let now = now_stamp();
+    for target in &targets {
+        match target {
+            LifecycleTarget::Agent => state.agent = Some(agent_started(&now)),
+            LifecycleTarget::Human => state.human = Some(human_started(&now)),
+        }
+    }
+    write_lifecycle(scope, &state)?;
+    println!(
+        "TFY {} start: targets={} configured=true desired=true",
+        scope.label(),
+        target_names(&targets)
+    );
+    if targets.contains(&LifecycleTarget::Agent) {
+        println!("agent support_status=host_route_configuration_required private_hook_interception=false provider_prompt_gateway=false");
+        println!("Configure supported host routing through tfy mcp serve, tfy agent run, or tfy adapter run; lifecycle start does not mark any host launch-supported.");
+    }
+    if targets.contains(&LifecycleTarget::Human) {
+        println!("human support_status=manual_explicit_route_required ordinary_terminal_interception=false");
+        println!("ordinary terminal commands are not globally intercepted; use an explicit TFY wrapper/session such as `tfy shell -- <command>`.");
+    }
+    Ok(())
+}
+
+fn execute_lifecycle_stop(scope: LifecycleScope, cmd: StopCmd) -> Result<()> {
+    let targets = targets_from_args(&cmd.target, "stop")?;
+    let mut state = read_lifecycle(scope)?;
+    let now = now_stamp();
+    for target in &targets {
+        match target {
+            LifecycleTarget::Agent => {
+                let mut agent = state.agent.unwrap_or_else(|| agent_started(&now));
+                agent.configured = true;
+                agent.desired = false;
+                agent.stopped_at = Some(now.clone());
+                state.agent = Some(agent);
+            }
+            LifecycleTarget::Human => {
+                let mut human = state.human.unwrap_or_else(|| human_started(&now));
+                human.configured = true;
+                human.desired = false;
+                human.ordinary_terminal_interception = false;
+                human.support_status = "manual_explicit_route_required".into();
+                human.stopped_at = Some(now.clone());
+                state.human = Some(human);
+            }
+        }
+    }
+    write_lifecycle(scope, &state)?;
+    println!(
+        "TFY {} stop: targets={} configured=true desired=false data_preserved=true raw_preserved=true",
+        scope.label(),
+        target_names(&targets)
+    );
+    Ok(())
+}
+
+fn execute_lifecycle_fuckyou(scope: LifecycleScope, cmd: FuckyouCmd) -> Result<()> {
+    let targets = if cmd.target.agent || cmd.target.human {
+        let targets = targets_from_args(&cmd.target, "fuckyou")?;
+        confirm_fuckyou(cmd.yes)?;
+        targets
+    } else {
+        eprintln!("TFY fuckyou: choose target: agent, human, or both; then type yes to confirm");
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input)?;
+        let mut choices = input.lines().map(str::trim).filter(|line| !line.is_empty());
+        let choice = choices.next().unwrap_or("");
+        let targets = parse_target_choice(choice, "fuckyou")?;
+        if !cmd.yes && !choices.any(|line| line == "yes") {
+            bail!("tfy fuckyou requires confirmation; rerun with --yes or type yes")
+        }
+        targets
+    };
+    let mut state = read_lifecycle(scope)?;
+    for target in &targets {
+        remove_target_dir(scope, *target)?;
+        match target {
+            LifecycleTarget::Agent => state.agent = None,
+            LifecycleTarget::Human => state.human = None,
+        }
+    }
+    remove_lifecycle_if_empty(scope, &state)?;
+    println!(
+        "TFY {} fuckyou: targets={} scoped_cleanup=true raw_preserved=true shared_ledgers_preserved=true",
+        scope.label(),
+        target_names(&targets)
+    );
+    Ok(())
+}
+
 pub(crate) fn execute_raw(cmd: RawCmd) -> Result<()> {
     if cmd.list {
         let entries = raw_entries(&cmd.raw_dir)?;
@@ -1069,18 +1516,42 @@ pub(crate) fn execute_setup(cmd: SetupCmd) -> Result<()> {
 }
 
 pub(crate) fn execute_status(cmd: StatusCmd) -> Result<()> {
-    let report = build_product_status_report();
+    let report = build_product_status_report(&cmd);
     if cmd.json {
         print_json(&report)?;
     } else {
         println!("TFY status: {}", report.status);
-        for host in &report.minimum_v1_host_matrix {
-            println!(
-                "host {}: {} — {}",
-                host.host, host.status, host.launch_claim
-            );
+        println!("target_filter: {}", report.target_filter);
+        if !cmd.human {
+            if let Some(agent) = &report.project_lifecycle.agent {
+                println!("project agent: configured={} desired={} support_status={} private_hook_interception={} provider_prompt_gateway={}", agent.configured, agent.desired, agent.support_status, agent.private_hook_interception, agent.provider_prompt_gateway);
+            }
+            if let Some(agent) = &report.global_lifecycle.agent {
+                println!("global agent: configured={} desired={} support_status={} private_hook_interception={} provider_prompt_gateway={}", agent.configured, agent.desired, agent.support_status, agent.private_hook_interception, agent.provider_prompt_gateway);
+            }
+        }
+        if !cmd.agent {
+            if let Some(human) = &report.project_lifecycle.human {
+                println!("project human: configured={} desired={} support_status={} ordinary_terminal_interception={}", human.configured, human.desired, human.support_status, human.ordinary_terminal_interception);
+            }
+            if let Some(human) = &report.global_lifecycle.human {
+                println!("global human: configured={} desired={} support_status={} ordinary_terminal_interception={}", human.configured, human.desired, human.support_status, human.ordinary_terminal_interception);
+            }
+        }
+        if !cmd.human {
+            for host in &report.minimum_v1_host_matrix {
+                println!(
+                    "host {}: {} — {}",
+                    host.host, host.status, host.launch_claim
+                );
+            }
         }
         for surface in &report.surfaces {
+            if (cmd.agent && surface.name.contains("human"))
+                || (cmd.human && !surface.name.contains("human"))
+            {
+                continue;
+            }
             println!("{}: {} — {}", surface.name, surface.status, surface.message);
         }
         println!("not_supported: {}", report.not_supported.join(", "));
@@ -1120,7 +1591,11 @@ pub(crate) fn execute_launch_report(cmd: LaunchReportCmd) -> Result<()> {
     let gain = build_gain_report(&ledgers, session)?;
     let host_evidence = build_host_evidence_summary(&ledgers, session, &cmd.host_evidence);
     let release_evidence = build_release_evidence_summary(&cmd.release_evidence);
-    let status = build_product_status_report();
+    let status = build_product_status_report(&StatusCmd {
+        agent: false,
+        human: false,
+        json: true,
+    });
     let report = build_launch_readiness_report(status, gain, host_evidence, release_evidence);
     if cmd.json {
         print_json(&report)?;
@@ -2002,9 +2477,17 @@ fn marker_present(text: &str) -> bool {
     text.contains(TFY_CODEX_START) && text.contains(TFY_CODEX_END)
 }
 
-fn build_product_status_report() -> ProductStatusReport {
+fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
+    let target_filter = match (cmd.agent, cmd.human) {
+        (true, false) => "agent",
+        (false, true) => "human",
+        _ => "all",
+    };
     ProductStatusReport {
         status: "active".into(),
+        target_filter: target_filter.into(),
+        project_lifecycle: lifecycle_status_view(LifecycleScope::Project),
+        global_lifecycle: lifecycle_status_view(LifecycleScope::Global),
         minimum_v1_host_matrix: minimum_v1_host_matrix(),
         surfaces: vec![
             SurfaceStatus { name: "command_output".into(), status: "active".into(), message: "AI-origin commands can route through tfy agent/adapter/MCP; normal human terminal commands are not intercepted.".into() },

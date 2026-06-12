@@ -24,10 +24,10 @@ use gateways::{
 use hook::{execute_hook, HookCmd};
 use mcp::{execute_mcp, McpCmd};
 use product::{
-    execute_bench, execute_doctor, execute_explain, execute_gain, execute_init,
-    execute_launch_report, execute_raw, execute_setup, execute_smoke, execute_status, BenchCmd,
-    DoctorCmd, ExplainCmd, GainCmd, InitCmd, LaunchReportCmd, RawCmd, SetupCmd, SmokeCmd,
-    StatusCmd,
+    execute_bench, execute_doctor, execute_explain, execute_fuckyou, execute_gain, execute_global,
+    execute_init, execute_launch_report, execute_raw, execute_setup, execute_smoke, execute_start,
+    execute_status, execute_stop, BenchCmd, DoctorCmd, ExplainCmd, FuckyouCmd, GainCmd, GlobalCmd,
+    InitCmd, LaunchReportCmd, RawCmd, SetupCmd, SmokeCmd, StartCmd, StatusCmd, StopCmd,
 };
 use std::path::PathBuf;
 use tfy_core::*;
@@ -82,6 +82,17 @@ enum Cmd {
     LaunchReport(LaunchReportCmd),
     /// Generate deterministic benchmark manifests and optional RTK-safe comparator results.
     Bench(BenchCmd),
+    /// Start TFY lifecycle intent in this project. Bare command prompts for agent/human/both.
+    Start(StartCmd),
+    /// Stop TFY lifecycle intent in this project without deleting raw evidence.
+    Stop(StopCmd),
+    /// Scoped TFY-owned lifecycle cleanup in this project, confirmation-gated.
+    Fuckyou(FuckyouCmd),
+    /// Manage user-global TFY lifecycle intent.
+    Global {
+        #[command(subcommand)]
+        cmd: GlobalCmd,
+    },
     Index {
         path: PathBuf,
     },
@@ -261,6 +272,10 @@ fn main() -> Result<()> {
         Cmd::Gain(cmd) => execute_gain(cmd)?,
         Cmd::LaunchReport(cmd) => execute_launch_report(cmd)?,
         Cmd::Bench(cmd) => execute_bench(cmd)?,
+        Cmd::Start(cmd) => execute_start(cmd)?,
+        Cmd::Stop(cmd) => execute_stop(cmd)?,
+        Cmd::Fuckyou(cmd) => execute_fuckyou(cmd)?,
+        Cmd::Global { cmd } => execute_global(cmd)?,
         Cmd::Setup(cmd) => execute_setup(cmd)?,
         Cmd::Status(cmd) => execute_status(cmd)?,
         Cmd::Explain(cmd) => execute_explain(cmd)?,

@@ -20,6 +20,9 @@ TFY exposes an agent-neutral protocol so any AI agent, editor, shell wrapper, or
 - `tfy adapter install --target generic-shell --dry-run` — reversible setup instructions for command-wrapper interception.
 - `tfy adapter run --session <id> -- <command...>` — supported generic-shell command-boundary adapter.
 - `tfy adapter report --session <id>` — session savings/evidence report from adapter ledger.
+- `tfy start [--agent] [--human]` / `tfy stop [--agent] [--human]` / `tfy fuckyou [--agent] [--human] [--yes]` — project lifecycle intent commands backed by `.tfy/lifecycle.json`; `stop` preserves raw/shared evidence, while `fuckyou` performs scoped confirmed cleanup and preserves `.tfy/raw` by default.
+- `tfy global start|stop|fuckyou [--agent] [--human] [--yes]` — user-global lifecycle intent using `$TFY_HOME`, `$XDG_CONFIG_HOME/tfy`, or `~/.tfy`, separate from project state.
+- `tfy status [--agent] [--human] [--json]` — lifecycle/support status with project/global separation and truthful route limitations.
 - `tfy agent capabilities` — reports the configured AI-agent-wrapper-only automatic interception boundary and origin contract.
 - `tfy agent install --dry-run` — prints a reversible wrapper script without mutating shell startup files.
 - `tfy agent run --session <id> -- <command...>` — AI-runtime command wrapper that marks origin as agent runtime while leaving ordinary human terminals untouched.
@@ -176,6 +179,7 @@ tfy state-project
 
 `tfy init`, `tfy doctor`, `tfy smoke`, and `tfy gain` are product-facing wrappers around the lower-level protocol surfaces:
 
+- `tfy start` / `tfy stop` / `tfy fuckyou` manage lifecycle intent, not proof of interception. Agent lifecycle records supported route intent (`mcp_stdio`, `agent_wrapper`, `generic_shell_adapter`) while keeping `private_hook_interception=false` and `provider_prompt_gateway=false`; named-host launch support still requires launch-report evidence. Human lifecycle records explicit-wrapper/session intent with `ordinary_terminal_interception=false` and `support_status=manual_explicit_route_required`; ordinary terminal commands are not globally intercepted.
 - `tfy init --codex` defaults to project-scoped dry-run. `--apply` writes only a TFY-owned marker block in `AGENTS.md`; global mode targets `~/.codex/AGENTS.md`. P0 prints the Codex MCP command and does not directly mutate `~/.codex/config.toml`.
 - `tfy setup --ai --host <host> --dry-run` and `tfy mcp install --target <host> --dry-run` generate reversible setup guidance for Codex, Claude Code, Cursor, OpenCode, and Hermes. `tfy setup --ai --host cursor --apply --project` writes project `.cursor/mcp.json` safely with backup/idempotency/uninstall. Other non-Codex JSONC/YAML/TOML config apply remains dry-run/manual until a safe writer with backup/uninstall tests exists.
 - `tfy init --show` reports marker-block state. `tfy init --uninstall --codex --project --apply` removes only the TFY marker block and preserves all non-TFY content.
