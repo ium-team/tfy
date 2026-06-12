@@ -26,8 +26,9 @@ use mcp::{execute_mcp, McpCmd};
 use product::{
     execute_bench, execute_doctor, execute_explain, execute_fuckyou, execute_gain, execute_global,
     execute_init, execute_launch_report, execute_raw, execute_setup, execute_smoke, execute_start,
-    execute_status, execute_stop, BenchCmd, DoctorCmd, ExplainCmd, FuckyouCmd, GainCmd, GlobalCmd,
-    InitCmd, LaunchReportCmd, RawCmd, SetupCmd, SmokeCmd, StartCmd, StatusCmd, StopCmd,
+    execute_status, execute_stop, execute_use, BenchCmd, DoctorCmd, ExplainCmd, FuckyouCmd,
+    GainCmd, GlobalCmd, InitCmd, LaunchReportCmd, RawCmd, SetupCmd, SmokeCmd, StartCmd, StatusCmd,
+    StopCmd, UseCmd,
 };
 use std::path::PathBuf;
 use tfy_core::*;
@@ -82,16 +83,21 @@ enum Cmd {
     LaunchReport(LaunchReportCmd),
     /// Generate deterministic benchmark manifests and optional RTK-safe comparator results.
     Bench(BenchCmd),
-    /// Start TFY lifecycle intent in this project. Bare command prompts for agent/human/both.
+    /// Start TFY lifecycle intent in this project. Bare interactive command opens a target TUI wizard.
     Start(StartCmd),
-    /// Stop TFY lifecycle intent in this project without deleting raw evidence.
+    /// Stop TFY lifecycle intent in this project without deleting raw evidence. Bare interactive command opens a target TUI wizard.
     Stop(StopCmd),
-    /// Scoped TFY-owned lifecycle cleanup in this project, confirmation-gated.
+    /// Scoped TFY-owned lifecycle cleanup in this project, confirmation-gated. Bare interactive command opens target and confirmation TUI wizards.
     Fuckyou(FuckyouCmd),
     /// Manage user-global TFY lifecycle intent.
     Global {
         #[command(subcommand)]
         cmd: GlobalCmd,
+    },
+    /// Convenience aliases for user-global default TFY lifecycle intent.
+    Use {
+        #[command(subcommand)]
+        cmd: UseCmd,
     },
     Index {
         path: PathBuf,
@@ -276,6 +282,7 @@ fn main() -> Result<()> {
         Cmd::Stop(cmd) => execute_stop(cmd)?,
         Cmd::Fuckyou(cmd) => execute_fuckyou(cmd)?,
         Cmd::Global { cmd } => execute_global(cmd)?,
+        Cmd::Use { cmd } => execute_use(cmd)?,
         Cmd::Setup(cmd) => execute_setup(cmd)?,
         Cmd::Status(cmd) => execute_status(cmd)?,
         Cmd::Explain(cmd) => execute_explain(cmd)?,
