@@ -130,18 +130,39 @@ pub(crate) struct LifecycleTargetArgs {
 pub(crate) struct StartCmd {
     #[command(flatten)]
     pub target: LifecycleTargetArgs,
+    /// Target alias: agent/ai, human, or both.
+    #[arg(value_name = "TARGET")]
+    pub target_alias: Option<String>,
+    /// Named AI-agent host setup route (codex, claude-code, cursor, opencode, hermes, openclaw, all).
+    #[arg(long)]
+    pub host: Option<String>,
+    /// Apply only safe, implemented host configuration writers. Unsupported hosts stay guidance-only.
+    #[arg(long)]
+    pub apply: bool,
+    /// Request verification guidance/smoke. Does not promote lifecycle active without route evidence.
+    #[arg(long)]
+    pub verify: bool,
+    /// Session id for generated MCP/server configuration.
+    #[arg(long, default_value = "local-session")]
+    pub session: String,
 }
 
 #[derive(Args, Clone)]
 pub(crate) struct StopCmd {
     #[command(flatten)]
     pub target: LifecycleTargetArgs,
+    /// Target alias: agent/ai, human, or both.
+    #[arg(value_name = "TARGET")]
+    pub target_alias: Option<String>,
 }
 
 #[derive(Args, Clone)]
 pub(crate) struct FuckyouCmd {
     #[command(flatten)]
     pub target: LifecycleTargetArgs,
+    /// Target alias: agent/ai, human, or both.
+    #[arg(value_name = "TARGET")]
+    pub target_alias: Option<String>,
     /// Confirm scoped TFY-owned lifecycle cleanup. Required for non-interactive destructive cleanup.
     #[arg(long)]
     pub yes: bool,
@@ -331,8 +352,14 @@ impl LifecycleScope {
 struct AgentLifecycleState {
     configured: bool,
     desired: bool,
+    #[serde(default = "default_lifecycle_route_state")]
+    route_state: String,
+    #[serde(default)]
+    active: bool,
     #[serde(default = "default_agent_intended_routes", alias = "active_routes")]
     intended_routes: Vec<String>,
+    #[serde(default)]
+    host_routes: BTreeMap<String, LifecycleHostRoute>,
     private_hook_interception: bool,
     provider_prompt_gateway: bool,
     support_status: String,
@@ -344,11 +371,28 @@ struct AgentLifecycleState {
 struct HumanLifecycleState {
     configured: bool,
     desired: bool,
+    #[serde(default = "default_lifecycle_route_state")]
+    route_state: String,
+    #[serde(default)]
+    active: bool,
     active_route: String,
+    #[serde(default = "default_human_entrypoint")]
+    entrypoint: Vec<String>,
+    #[serde(default)]
+    session_wrapper_available: bool,
     ordinary_terminal_interception: bool,
     support_status: String,
     started_at: Option<String>,
     stopped_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LifecycleHostRoute {
+    route_state: String,
+    active: bool,
+    config_path: Option<String>,
+    claim_tier: String,
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,6 +418,19 @@ fn default_agent_intended_routes() -> Vec<String> {
         "mcp_stdio".into(),
         "agent_wrapper".into(),
         "generic_shell_adapter".into(),
+    ]
+}
+
+fn default_lifecycle_route_state() -> String {
+    "intent_recorded".into()
+}
+
+fn default_human_entrypoint() -> Vec<String> {
+    vec![
+        "tfy".into(),
+        "shell".into(),
+        "--".into(),
+        "<command>".into(),
     ]
 }
 
@@ -901,7 +958,10 @@ fn agent_state(
     AgentLifecycleState {
         configured: true,
         desired,
+        route_state: "intent_recorded".into(),
+        active: false,
         intended_routes: default_agent_intended_routes(),
+        host_routes: BTreeMap::new(),
         private_hook_interception: false,
         provider_prompt_gateway: false,
         support_status: "host_route_configuration_required".into(),
@@ -918,7 +978,11 @@ fn human_state(
     HumanLifecycleState {
         configured: true,
         desired,
+        route_state: "intent_recorded".into(),
+        active: false,
         active_route: "explicit_wrapper_required".into(),
+        entrypoint: default_human_entrypoint(),
+        session_wrapper_available: true,
         ordinary_terminal_interception: false,
         support_status: "manual_explicit_route_required".into(),
         started_at,
@@ -960,13 +1024,23 @@ fn lifecycle_status_view(scope: LifecycleScope) -> LifecycleStatusView {
     }
 }
 
-fn targets_from_args(args: &LifecycleTargetArgs, action: &str) -> Result<Vec<LifecycleTarget>> {
+fn targets_from_args(
+    args: &LifecycleTargetArgs,
+    alias: Option<&str>,
+    action: &str,
+) -> Result<Vec<LifecycleTarget>> {
     let mut targets = Vec::new();
     if args.agent {
         targets.push(LifecycleTarget::Agent);
     }
     if args.human {
         targets.push(LifecycleTarget::Human);
+    }
+    if let Some(alias) = alias {
+        if !targets.is_empty() {
+            bail!("tfy {action} target alias cannot be combined with --agent/--human");
+        }
+        return parse_target_choice(alias, action);
     }
     if !targets.is_empty() {
         return Ok(targets);
@@ -976,7 +1050,7 @@ fn targets_from_args(args: &LifecycleTargetArgs, action: &str) -> Result<Vec<Lif
 
 fn parse_target_choice(choice: &str, action: &str) -> Result<Vec<LifecycleTarget>> {
     match choice.trim().to_ascii_lowercase().as_str() {
-        "1" | "a" | "agent" => Ok(vec![LifecycleTarget::Agent]),
+        "1" | "a" | "agent" | "ai" => Ok(vec![LifecycleTarget::Agent]),
         "2" | "h" | "human" => Ok(vec![LifecycleTarget::Human]),
         "3" | "b" | "both" | "all" | "agent,human" | "human,agent" => {
             Ok(vec![LifecycleTarget::Agent, LifecycleTarget::Human])
@@ -1073,6 +1147,29 @@ fn target_names(targets: &[LifecycleTarget]) -> String {
         .join(",")
 }
 
+fn host_selection(host: Option<&str>) -> Result<Vec<HostIntegration>> {
+    match host {
+        Some(host) if host.trim().eq_ignore_ascii_case("all") => Ok(host_registry()),
+        Some(host) => Ok(vec![host_integration(host)?]),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn lifecycle_host_route(
+    route_state: &str,
+    config_path: Option<String>,
+    claim_tier: &str,
+    message: impl Into<String>,
+) -> LifecycleHostRoute {
+    LifecycleHostRoute {
+        route_state: route_state.into(),
+        active: false,
+        config_path,
+        claim_tier: claim_tier.into(),
+        message: message.into(),
+    }
+}
+
 pub(crate) fn execute_start(cmd: StartCmd) -> Result<()> {
     execute_lifecycle_start(LifecycleScope::Project, cmd)
 }
@@ -1094,12 +1191,80 @@ pub(crate) fn execute_global(cmd: GlobalCmd) -> Result<()> {
 }
 
 fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
-    let targets = targets_from_args(&cmd.target, "start")?;
+    let targets = targets_from_args(&cmd.target, cmd.target_alias.as_deref(), "start")?;
+    if (cmd.host.is_some() || cmd.apply || cmd.verify) && scope == LifecycleScope::Global {
+        bail!("tfy global start P1 records global lifecycle defaults only; host --apply/--verify is project-scoped");
+    }
+    if (cmd.apply || cmd.verify) && cmd.host.is_none() {
+        bail!("tfy start --apply/--verify requires --host <host|all> so TFY never mutates hidden host state implicitly");
+    }
+    if cmd.host.is_some() && !targets.contains(&LifecycleTarget::Agent) {
+        bail!("tfy start --host configures AI-agent routing; include agent/ai or both");
+    }
+    let host_all = cmd
+        .host
+        .as_deref()
+        .is_some_and(|host| host.trim().eq_ignore_ascii_case("all"));
+    let selected_hosts = host_selection(cmd.host.as_deref())?;
     let mut state = read_lifecycle(scope)?;
     let now = now_stamp();
     for target in &targets {
         match target {
-            LifecycleTarget::Agent => state.agent = Some(agent_started(&now)),
+            LifecycleTarget::Agent => {
+                let mut agent = agent_started(&now);
+                for host in &selected_hosts {
+                    if host.id == "cursor" && cmd.apply {
+                        let result = configure_cursor_project_mcp(
+                            &cmd.session,
+                            HostConfigScope::Project,
+                            false,
+                            false,
+                        )?;
+                        agent.host_routes.insert(
+                            host.id.into(),
+                            lifecycle_host_route(
+                                "applied_unverified",
+                                result
+                                    .get("config_path")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                                "applied_unverified",
+                                "safe project .cursor/mcp.json writer ran; still not launch-supported until real host invocation plus raw/ledger/no-negative/positive-savings evidence exists",
+                            ),
+                        );
+                    } else if cmd.apply && !host_all {
+                        bail!(
+                            "automatic --apply for host '{}' is not implemented safely yet; use `tfy setup --host {} --dry-run` and apply manually",
+                            host.id,
+                            host.id
+                        );
+                    } else if cmd.apply {
+                        agent.host_routes.insert(
+                            host.id.into(),
+                            lifecycle_host_route(
+                                host.status,
+                                None,
+                                host.status,
+                                "guidance-only in --host all; no unsafe writer ran for this host",
+                            ),
+                        );
+                    } else {
+                        agent.host_routes.insert(
+                            host.id.into(),
+                            lifecycle_host_route(
+                                host.status,
+                                None,
+                                host.status,
+                                "configuration snippet/guidance available; setup alone is not savings evidence",
+                            ),
+                        );
+                    }
+                }
+                if cmd.verify {
+                    agent.support_status = "verification_requested_route_evidence_required".into();
+                }
+                state.agent = Some(agent)
+            }
             LifecycleTarget::Human => state.human = Some(human_started(&now)),
         }
     }
@@ -1110,18 +1275,40 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         target_names(&targets)
     );
     if targets.contains(&LifecycleTarget::Agent) {
-        println!("agent support_status=host_route_configuration_required private_hook_interception=false provider_prompt_gateway=false");
+        println!("agent route_state=intent_recorded active=false support_status=host_route_configuration_required private_hook_interception=false provider_prompt_gateway=false");
         println!("Configure supported host routing through tfy mcp serve, tfy agent run, or tfy adapter run; lifecycle start does not mark any host launch-supported.");
+        for host in &selected_hosts {
+            if host.id == "cursor" && cmd.apply {
+                println!("host=cursor route_state=applied_unverified active=false config_path=.cursor/mcp.json");
+            } else if cmd.apply {
+                println!(
+                    "host={} route_state={} active=false apply=guidance_only",
+                    host.id, host.status
+                );
+            } else {
+                println!(
+                    "host={} route_state={} active=false apply=false",
+                    host.id, host.status
+                );
+                println!("--- snippet {} ---", host.id);
+                print!("{}", host_setup_snippet(host, &cmd.session));
+            }
+        }
+        if cmd.verify {
+            println!(
+                "verify_requested=true promotion=false reason=route_evidence_and_savings_required"
+            );
+        }
     }
     if targets.contains(&LifecycleTarget::Human) {
-        println!("human support_status=manual_explicit_route_required ordinary_terminal_interception=false");
+        println!("human route_state=intent_recorded active=false support_status=manual_explicit_route_required ordinary_terminal_interception=false session_wrapper_available=true");
         println!("ordinary terminal commands are not globally intercepted; use an explicit TFY wrapper/session such as `tfy shell -- <command>`.");
     }
     Ok(())
 }
 
 fn execute_lifecycle_stop(scope: LifecycleScope, cmd: StopCmd) -> Result<()> {
-    let targets = targets_from_args(&cmd.target, "stop")?;
+    let targets = targets_from_args(&cmd.target, cmd.target_alias.as_deref(), "stop")?;
     let mut state = read_lifecycle(scope)?;
     let now = now_stamp();
     for target in &targets {
@@ -1130,6 +1317,7 @@ fn execute_lifecycle_stop(scope: LifecycleScope, cmd: StopCmd) -> Result<()> {
                 let mut agent = state.agent.unwrap_or_else(|| agent_stopped(&now));
                 agent.configured = true;
                 agent.desired = false;
+                agent.active = false;
                 if agent.stopped_at.is_none() {
                     agent.stopped_at = Some(now.clone());
                 }
@@ -1139,6 +1327,7 @@ fn execute_lifecycle_stop(scope: LifecycleScope, cmd: StopCmd) -> Result<()> {
                 let mut human = state.human.unwrap_or_else(|| human_stopped(&now));
                 human.configured = true;
                 human.desired = false;
+                human.active = false;
                 human.ordinary_terminal_interception = false;
                 human.support_status = "manual_explicit_route_required".into();
                 if human.stopped_at.is_none() {
@@ -1158,8 +1347,8 @@ fn execute_lifecycle_stop(scope: LifecycleScope, cmd: StopCmd) -> Result<()> {
 }
 
 fn execute_lifecycle_fuckyou(scope: LifecycleScope, cmd: FuckyouCmd) -> Result<()> {
-    let targets = if cmd.target.agent || cmd.target.human {
-        let targets = targets_from_args(&cmd.target, "fuckyou")?;
+    let targets = if cmd.target.agent || cmd.target.human || cmd.target_alias.is_some() {
+        let targets = targets_from_args(&cmd.target, cmd.target_alias.as_deref(), "fuckyou")?;
         confirm_fuckyou(cmd.yes)?;
         targets
     } else {
@@ -1605,18 +1794,18 @@ pub(crate) fn execute_status(cmd: StatusCmd) -> Result<()> {
         println!("target_filter: {}", report.target_filter);
         if !cmd.human {
             if let Some(agent) = &report.project_lifecycle.agent {
-                println!("project agent: configured={} desired={} support_status={} private_hook_interception={} provider_prompt_gateway={}", agent.configured, agent.desired, agent.support_status, agent.private_hook_interception, agent.provider_prompt_gateway);
+                println!("project agent: configured={} desired={} route_state={} active={} support_status={} private_hook_interception={} provider_prompt_gateway={}", agent.configured, agent.desired, agent.route_state, agent.active, agent.support_status, agent.private_hook_interception, agent.provider_prompt_gateway);
             }
             if let Some(agent) = &report.global_lifecycle.agent {
-                println!("global agent: configured={} desired={} support_status={} private_hook_interception={} provider_prompt_gateway={}", agent.configured, agent.desired, agent.support_status, agent.private_hook_interception, agent.provider_prompt_gateway);
+                println!("global agent: configured={} desired={} route_state={} active={} support_status={} private_hook_interception={} provider_prompt_gateway={}", agent.configured, agent.desired, agent.route_state, agent.active, agent.support_status, agent.private_hook_interception, agent.provider_prompt_gateway);
             }
         }
         if !cmd.agent {
             if let Some(human) = &report.project_lifecycle.human {
-                println!("project human: configured={} desired={} support_status={} ordinary_terminal_interception={}", human.configured, human.desired, human.support_status, human.ordinary_terminal_interception);
+                println!("project human: configured={} desired={} route_state={} active={} support_status={} ordinary_terminal_interception={} session_wrapper_available={}", human.configured, human.desired, human.route_state, human.active, human.support_status, human.ordinary_terminal_interception, human.session_wrapper_available);
             }
             if let Some(human) = &report.global_lifecycle.human {
-                println!("global human: configured={} desired={} support_status={} ordinary_terminal_interception={}", human.configured, human.desired, human.support_status, human.ordinary_terminal_interception);
+                println!("global human: configured={} desired={} route_state={} active={} support_status={} ordinary_terminal_interception={} session_wrapper_available={}", human.configured, human.desired, human.route_state, human.active, human.support_status, human.ordinary_terminal_interception, human.session_wrapper_available);
             }
         }
         if !cmd.human {
