@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use tfy_core::{raw_output_bytes, summarize_command_output_with_policy, ToolPolicy};
@@ -331,7 +331,8 @@ impl LifecycleScope {
 struct AgentLifecycleState {
     configured: bool,
     desired: bool,
-    active_routes: Vec<String>,
+    #[serde(default = "default_agent_intended_routes", alias = "active_routes")]
+    intended_routes: Vec<String>,
     private_hook_interception: bool,
     provider_prompt_gateway: bool,
     support_status: String,
@@ -368,10 +369,19 @@ struct LifecycleFile {
     ledgers: LifecycleLedgers,
 }
 
+fn default_agent_intended_routes() -> Vec<String> {
+    vec![
+        "mcp_stdio".into(),
+        "agent_wrapper".into(),
+        "generic_shell_adapter".into(),
+    ]
+}
+
 #[derive(Serialize)]
 struct LifecycleStatusView {
     path: String,
     exists: bool,
+    parse_error: Option<String>,
     agent: Option<AgentLifecycleState>,
     human: Option<HumanLifecycleState>,
     raw_dir: String,
@@ -883,42 +893,66 @@ fn remove_lifecycle_if_empty(scope: LifecycleScope, state: &LifecycleFile) -> Re
     Ok(())
 }
 
-fn agent_started(now: &str) -> AgentLifecycleState {
+fn agent_state(
+    desired: bool,
+    started_at: Option<String>,
+    stopped_at: Option<String>,
+) -> AgentLifecycleState {
     AgentLifecycleState {
         configured: true,
-        desired: true,
-        active_routes: vec![
-            "mcp_stdio".into(),
-            "agent_wrapper".into(),
-            "generic_shell_adapter".into(),
-        ],
+        desired,
+        intended_routes: default_agent_intended_routes(),
         private_hook_interception: false,
         provider_prompt_gateway: false,
         support_status: "host_route_configuration_required".into(),
-        started_at: Some(now.into()),
-        stopped_at: None,
+        started_at,
+        stopped_at,
     }
 }
 
-fn human_started(now: &str) -> HumanLifecycleState {
+fn human_state(
+    desired: bool,
+    started_at: Option<String>,
+    stopped_at: Option<String>,
+) -> HumanLifecycleState {
     HumanLifecycleState {
         configured: true,
-        desired: true,
+        desired,
         active_route: "explicit_wrapper_required".into(),
         ordinary_terminal_interception: false,
         support_status: "manual_explicit_route_required".into(),
-        started_at: Some(now.into()),
-        stopped_at: None,
+        started_at,
+        stopped_at,
     }
+}
+
+fn agent_started(now: &str) -> AgentLifecycleState {
+    agent_state(true, Some(now.into()), None)
+}
+
+fn human_started(now: &str) -> HumanLifecycleState {
+    human_state(true, Some(now.into()), None)
+}
+
+fn agent_stopped(now: &str) -> AgentLifecycleState {
+    agent_state(false, None, Some(now.into()))
+}
+
+fn human_stopped(now: &str) -> HumanLifecycleState {
+    human_state(false, None, Some(now.into()))
 }
 
 fn lifecycle_status_view(scope: LifecycleScope) -> LifecycleStatusView {
     let path = lifecycle_path(scope);
     let exists = path.exists();
-    let state = read_lifecycle(scope).unwrap_or_else(|_| default_lifecycle(scope));
+    let (state, parse_error) = match read_lifecycle(scope) {
+        Ok(state) => (state, None),
+        Err(err) => (default_lifecycle(scope), Some(err.to_string())),
+    };
     LifecycleStatusView {
         path: path.display().to_string(),
         exists,
+        parse_error,
         agent: state.agent,
         human: state.human,
         raw_dir: state.raw_dir,
@@ -955,8 +989,7 @@ fn parse_target_choice(choice: &str, action: &str) -> Result<Vec<LifecycleTarget
 
 fn prompt_targets(action: &str) -> Result<Vec<LifecycleTarget>> {
     eprintln!("TFY {action}: choose target: agent, human, or both");
-    let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input)?;
+    let input = read_lifecycle_prompt_input()?;
     let choice = input
         .lines()
         .find(|line| !line.trim().is_empty())
@@ -964,13 +997,23 @@ fn prompt_targets(action: &str) -> Result<Vec<LifecycleTarget>> {
     parse_target_choice(choice, action)
 }
 
+fn read_lifecycle_prompt_input() -> Result<String> {
+    let stdin = std::io::stdin();
+    let mut input = String::new();
+    if stdin.is_terminal() {
+        stdin.lock().read_line(&mut input)?;
+    } else {
+        stdin.lock().read_to_string(&mut input)?;
+    }
+    Ok(input)
+}
+
 fn confirm_fuckyou(yes: bool) -> Result<()> {
     if yes {
         return Ok(());
     }
     eprintln!("TFY fuckyou will remove scoped TFY-owned lifecycle state. Type yes to continue.");
-    let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input)?;
+    let input = read_lifecycle_prompt_input()?;
     if input.lines().any(|line| line.trim() == "yes") {
         Ok(())
     } else {
@@ -987,10 +1030,35 @@ fn remove_target_dir(scope: LifecycleScope, target: LifecycleTarget) -> Result<(
         LifecycleTarget::Agent => base.join("agent"),
         LifecycleTarget::Human => base.join("human"),
     };
-    match fs::remove_dir_all(&dir) {
-        Ok(()) => Ok(()),
+    match fs::read_dir(&dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.with_context(|| format!("read {}", dir.display()))?;
+                let path = entry.path();
+                if entry.file_name() == "ledger.jsonl" {
+                    continue;
+                }
+                let file_type = entry
+                    .file_type()
+                    .with_context(|| format!("stat {}", path.display()))?;
+                if file_type.is_dir() {
+                    fs::remove_dir_all(&path)
+                        .with_context(|| format!("remove {}", path.display()))?;
+                } else {
+                    fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+                }
+            }
+            if fs::read_dir(&dir)
+                .with_context(|| format!("read {}", dir.display()))?
+                .next()
+                .is_none()
+            {
+                fs::remove_dir(&dir).with_context(|| format!("remove {}", dir.display()))?;
+            }
+            Ok(())
+        }
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err).with_context(|| format!("remove {}", dir.display())),
+        Err(err) => Err(err).with_context(|| format!("read {}", dir.display())),
     }
 }
 
@@ -1059,19 +1127,23 @@ fn execute_lifecycle_stop(scope: LifecycleScope, cmd: StopCmd) -> Result<()> {
     for target in &targets {
         match target {
             LifecycleTarget::Agent => {
-                let mut agent = state.agent.unwrap_or_else(|| agent_started(&now));
+                let mut agent = state.agent.unwrap_or_else(|| agent_stopped(&now));
                 agent.configured = true;
                 agent.desired = false;
-                agent.stopped_at = Some(now.clone());
+                if agent.stopped_at.is_none() {
+                    agent.stopped_at = Some(now.clone());
+                }
                 state.agent = Some(agent);
             }
             LifecycleTarget::Human => {
-                let mut human = state.human.unwrap_or_else(|| human_started(&now));
+                let mut human = state.human.unwrap_or_else(|| human_stopped(&now));
                 human.configured = true;
                 human.desired = false;
                 human.ordinary_terminal_interception = false;
                 human.support_status = "manual_explicit_route_required".into();
-                human.stopped_at = Some(now.clone());
+                if human.stopped_at.is_none() {
+                    human.stopped_at = Some(now.clone());
+                }
                 state.human = Some(human);
             }
         }
@@ -1092,8 +1164,17 @@ fn execute_lifecycle_fuckyou(scope: LifecycleScope, cmd: FuckyouCmd) -> Result<(
         targets
     } else {
         eprintln!("TFY fuckyou: choose target: agent, human, or both; then type yes to confirm");
+        let stdin = std::io::stdin();
         let mut input = String::new();
-        std::io::stdin().read_to_string(&mut input)?;
+        if stdin.is_terminal() {
+            let mut lock = stdin.lock();
+            lock.read_line(&mut input)?;
+            if !cmd.yes {
+                lock.read_line(&mut input)?;
+            }
+        } else {
+            stdin.lock().read_to_string(&mut input)?;
+        }
         let mut choices = input.lines().map(str::trim).filter(|line| !line.is_empty());
         let choice = choices.next().unwrap_or("");
         let targets = parse_target_choice(choice, "fuckyou")?;
@@ -2483,11 +2564,20 @@ fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
         (false, true) => "human",
         _ => "all",
     };
+    let mut project_lifecycle = lifecycle_status_view(LifecycleScope::Project);
+    let mut global_lifecycle = lifecycle_status_view(LifecycleScope::Global);
+    if cmd.agent && !cmd.human {
+        project_lifecycle.human = None;
+        global_lifecycle.human = None;
+    } else if cmd.human && !cmd.agent {
+        project_lifecycle.agent = None;
+        global_lifecycle.agent = None;
+    }
     ProductStatusReport {
         status: "active".into(),
         target_filter: target_filter.into(),
-        project_lifecycle: lifecycle_status_view(LifecycleScope::Project),
-        global_lifecycle: lifecycle_status_view(LifecycleScope::Global),
+        project_lifecycle,
+        global_lifecycle,
         minimum_v1_host_matrix: minimum_v1_host_matrix(),
         surfaces: vec![
             SurfaceStatus { name: "command_output".into(), status: "active".into(), message: "AI-origin commands can route through tfy agent/adapter/MCP; normal human terminal commands are not intercepted.".into() },

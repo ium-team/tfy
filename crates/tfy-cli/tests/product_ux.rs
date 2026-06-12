@@ -2501,6 +2501,14 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
         json["project_lifecycle"]["agent"]["support_status"],
         "host_route_configuration_required"
     );
+    assert!(json["project_lifecycle"]["agent"]["active_routes"].is_null());
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["intended_routes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
     assert_eq!(
         json["project_lifecycle"]["agent"]["private_hook_interception"],
         false
@@ -2544,7 +2552,7 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
         .as_str()
         .unwrap()
         .starts_with("unix:"));
-    assert_eq!(json["project_lifecycle"]["human"]["desired"], true);
+    assert!(json["project_lifecycle"]["human"].is_null());
 
     let restart = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -2570,6 +2578,7 @@ fn lifecycle_fuckyou_is_scoped_confirmed_and_preserves_raw_shared_ledgers() {
         std::fs::create_dir_all(tfy.join(sub)).unwrap();
         std::fs::write(tfy.join(sub).join("keep.txt"), sub).unwrap();
     }
+    std::fs::write(tfy.join("agent/ledger.jsonl"), "agent evidence").unwrap();
     Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
         .args(["start", "--agent", "--human"])
@@ -2594,7 +2603,8 @@ fn lifecycle_fuckyou_is_scoped_confirmed_and_preserves_raw_shared_ledgers() {
         "stderr={}",
         String::from_utf8_lossy(&cleaned.stderr)
     );
-    assert!(!tfy.join("agent").exists());
+    assert!(!tfy.join("agent/keep.txt").exists());
+    assert!(tfy.join("agent/ledger.jsonl").exists());
     for sub in ["raw", "mcp", "adapter", "state", "human"] {
         assert!(
             tfy.join(sub).join("keep.txt").exists(),
@@ -2701,6 +2711,129 @@ fn lifecycle_bare_fuckyou_reads_target_and_confirmation_from_one_prompt() {
     assert!(!tfy.join("human").exists());
     assert!(tfy.join("raw/keep.txt").exists());
     assert!(!tfy.join("lifecycle.json").exists());
+}
+
+#[test]
+fn lifecycle_status_and_stop_accept_legacy_active_routes_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let lifecycle = dir.path().join(".tfy/lifecycle.json");
+    std::fs::create_dir_all(lifecycle.parent().unwrap()).unwrap();
+    std::fs::write(
+        &lifecycle,
+        r#"{
+  "schema_version": 1,
+  "scope": "project",
+  "agent": {
+    "configured": true,
+    "desired": true,
+    "active_routes": ["mcp_stdio"],
+    "private_hook_interception": false,
+    "provider_prompt_gateway": false,
+    "support_status": "host_route_configuration_required",
+    "started_at": "unix:1",
+    "stopped_at": null
+  },
+  "human": null,
+  "raw_dir": ".tfy/raw",
+  "ledgers": {
+    "state": ".tfy/state/ledger.jsonl",
+    "adapter": ".tfy/adapter/ledger.jsonl",
+    "agent": ".tfy/agent/ledger.jsonl",
+    "mcp": ".tfy/mcp/ledger.jsonl"
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(json["project_lifecycle"]["parse_error"].is_null());
+    assert_eq!(json["project_lifecycle"]["agent"]["configured"], true);
+    assert!(json["project_lifecycle"]["agent"]["active_routes"].is_null());
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["intended_routes"][0],
+        "mcp_stdio"
+    );
+
+    let stop = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["stop", "--agent"])
+        .output()
+        .unwrap();
+    assert!(
+        stop.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let migrated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&lifecycle).unwrap()).unwrap();
+    assert!(migrated["agent"]["active_routes"].is_null());
+    assert_eq!(migrated["agent"]["intended_routes"][0], "mcp_stdio");
+    assert_eq!(migrated["agent"]["started_at"], "unix:1");
+    assert_eq!(migrated["agent"]["desired"], false);
+}
+
+#[test]
+fn lifecycle_status_exposes_malformed_state_parse_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let lifecycle = dir.path().join(".tfy/lifecycle.json");
+    std::fs::create_dir_all(lifecycle.parent().unwrap()).unwrap();
+    std::fs::write(&lifecycle, "not-json").unwrap();
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["project_lifecycle"]["exists"], true);
+    assert!(json["project_lifecycle"]["parse_error"]
+        .as_str()
+        .unwrap()
+        .contains("parse .tfy/lifecycle.json"));
+}
+
+#[test]
+fn lifecycle_stop_without_prior_start_does_not_fabricate_started_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let stop = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["stop", "--agent", "--human"])
+        .output()
+        .unwrap();
+    assert!(stop.status.success());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["project_lifecycle"]["agent"]["configured"], true);
+    assert_eq!(json["project_lifecycle"]["agent"]["desired"], false);
+    assert!(json["project_lifecycle"]["agent"]["started_at"].is_null());
+    assert!(json["project_lifecycle"]["agent"]["stopped_at"]
+        .as_str()
+        .unwrap()
+        .starts_with("unix:"));
+    assert_eq!(json["project_lifecycle"]["human"]["configured"], true);
+    assert_eq!(json["project_lifecycle"]["human"]["desired"], false);
+    assert!(json["project_lifecycle"]["human"]["started_at"].is_null());
+    assert!(json["project_lifecycle"]["human"]["stopped_at"]
+        .as_str()
+        .unwrap()
+        .starts_with("unix:"));
 }
 
 #[test]
