@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn append_smoke_launch_args(args: &mut Vec<String>, smoke_json: &serde_json::Value) {
     for entry in smoke_json["evidence"].as_array().unwrap() {
@@ -705,7 +706,7 @@ fn launch_report_keeps_named_host_setup_evidence_below_launch_supported() {
     let evidence = dir.path().join("host-evidence.json");
     std::fs::write(
         &evidence,
-        r#"{"hosts":[{"host":"cursor","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup.txt","invocation_artifact":"invoke.txt","overhead_ms":10,"baseline_ms":10}]}"#,
+        r#"{"hosts":[{"host":"cursor","tfy_version":"0.1.0","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup.txt","invocation_artifact":"invoke.txt","overhead_ms":10,"baseline_ms":10}]}"#,
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
@@ -801,6 +802,7 @@ fn launch_report_promotes_named_host_only_with_host_bound_evidence() {
           "hosts": [
             {
               "host":"cursor",
+              "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
               "setup_artifact":"setup.txt",
@@ -874,6 +876,7 @@ fn launch_report_keeps_setup_only_named_evidence_from_poisoning_byte_proof() {
           "hosts": [
             {
               "host":"cursor",
+              "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
               "setup_artifact":"setup.txt",
@@ -892,6 +895,7 @@ fn launch_report_keeps_setup_only_named_evidence_from_poisoning_byte_proof() {
           "hosts": [
             {
               "host":"cursor",
+              "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
               "setup_artifact":"setup.txt",
@@ -965,6 +969,7 @@ fn launch_report_does_not_promote_named_host_when_bytes_contradict_positive_labe
           "hosts": [
             {
               "host":"cursor",
+              "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
               "setup_artifact":"setup.txt",
@@ -1037,6 +1042,7 @@ fn launch_report_rejects_positive_label_without_byte_fields() {
           "hosts": [
             {
               "host":"cursor",
+              "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
               "setup_artifact":"setup.txt",
@@ -1107,6 +1113,7 @@ fn launch_report_rejects_substring_positive_savings_labels() {
           "hosts": [
             {
               "host":"cursor",
+              "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
               "setup_artifact":"setup.txt",
@@ -1189,7 +1196,7 @@ fn launch_report_caps_named_host_even_with_unrelated_mcp_savings() {
         &host_evidence,
         r#"{
           "hosts": [
-            {"host":"cursor","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":10,"baseline_ms":10}
+            {"host":"cursor","tfy_version":"0.1.0","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":10,"baseline_ms":10}
           ]
         }"#,
     )
@@ -1970,6 +1977,7 @@ fn launch_report_promotes_claims_only_from_route_bound_evidence_tiers() {
           "hosts": [
             {
               "host":"cursor",
+              "tfy_version":"0.1.0",
               "host_id":"cursor",
               "host_version":"test",
               "setup_verified":true,
@@ -2063,6 +2071,7 @@ fn launch_report_refuses_named_host_unsupported_route_type_even_with_artifacts_a
           "hosts": [
             {
               "host":"cursor",
+              "tfy_version":"0.1.0",
               "host_id":"cursor",
               "host_version":"test",
               "setup_verified":true,
@@ -2139,6 +2148,7 @@ fn launch_report_refuses_official_hook_promotion_without_supported_hook_authorit
           "hosts": [
             {
               "host":"cursor",
+              "tfy_version":"0.1.0",
               "host_id":"cursor",
               "host_version":"test",
               "setup_verified":true,
@@ -3252,4 +3262,208 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
     assert_eq!(human["ordinary_terminal_interception"], false);
     assert_eq!(human["entrypoint"][0], "tfy");
     assert_eq!(human["entrypoint"][1], "shell");
+}
+
+#[test]
+fn launch_report_demotes_stale_or_failed_reverify_named_host_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    for file in [
+        "setup-proof.txt",
+        "invocation-proof.txt",
+        "cursor-config.json",
+        "cursor-ledger.jsonl",
+        "cursor-raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "proof").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "tfy_version":"0.0.0-stale",
+              "reverify_failed":true,
+              "host_id":"cursor",
+              "host_version":"test",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup-proof.txt",
+              "invocation_artifact":"invocation-proof.txt",
+              "config_scope":"project",
+              "config_path":"cursor-config.json",
+              "route_type":"mcp_stdio",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"cursor-raw.txt",
+              "smoke_id":"cursor-mcp-smoke",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "redacted_public_bytes":1000,
+              "model_visible_bytes":100,
+              "overhead_ms":10,
+              "baseline_ms":10
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["host"] == "cursor")
+        .unwrap();
+    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert_eq!(
+        json["host_evidence"]["named_hosts"]["cursor"]["host_bound_evidence"], false,
+        "{json}"
+    );
+    assert!(
+        json["host_evidence"]["evidence_notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("evidence_fresh=false")),
+        "{json}"
+    );
+}
+
+#[test]
+fn lifecycle_status_exposes_derived_activation_vocabulary() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "agent", "--host", "cursor", "--apply"])
+        .output()
+        .unwrap();
+    assert!(start.status.success());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let agent = &json["effective_lifecycle"]["agent"];
+    assert_eq!(agent["lifecycle_started"], true, "{json}");
+    assert_eq!(agent["route_configured"], true, "{json}");
+    assert_eq!(agent["route_verified"], false, "{json}");
+    assert_eq!(agent["savings_verified"], false, "{json}");
+    assert_eq!(agent["normal_workflow_supported"], false, "{json}");
+    assert_eq!(agent["active"], false, "{json}");
+    assert!(agent["active_derivation"]
+        .as_str()
+        .unwrap()
+        .contains("active=false until a host+route evidence scope"));
+}
+
+#[test]
+fn launch_report_accepts_unexpired_unix_evidence_and_rejects_malformed_expiry() {
+    let dir = tempfile::tempdir().unwrap();
+    for file in [
+        "setup-proof.txt",
+        "invocation-proof.txt",
+        "cursor-config.json",
+        "cursor-ledger.jsonl",
+        "cursor-raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "proof").unwrap();
+    }
+    let future = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+    for (name, expires, should_launch) in [
+        ("future.json", format!("unix:{future}"), true),
+        ("malformed.json", "2026-06-12T00:00:00Z".to_string(), false),
+    ] {
+        let host_evidence = dir.path().join(name);
+        std::fs::write(
+            &host_evidence,
+            format!(
+                r#"{{
+                  "hosts": [
+                    {{
+                      "host":"cursor",
+                      "tfy_version":"0.1.0",
+                      "evidence_expires_at":"{expires}",
+                      "host_id":"cursor",
+                      "host_version":"test",
+                      "setup_verified":true,
+                      "real_invocation_verified":true,
+                      "setup_artifact":"setup-proof.txt",
+                      "invocation_artifact":"invocation-proof.txt",
+                      "config_scope":"project",
+                      "config_path":"cursor-config.json",
+                      "route_type":"mcp_stdio",
+                      "ledger_artifact":"cursor-ledger.jsonl",
+                      "raw_artifact":"cursor-raw.txt",
+                      "smoke_id":"cursor-mcp-smoke",
+                      "timestamp":"unix:{future}",
+                      "redacted_public_bytes":1000,
+                      "model_visible_bytes":100,
+                      "overhead_ms":10,
+                      "baseline_ms":10
+                    }}
+                  ]
+                }}"#
+            ),
+        )
+        .unwrap();
+        let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+            .current_dir(dir.path())
+            .args([
+                "launch-report",
+                "--json",
+                "--host-evidence",
+                host_evidence.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            report.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&report.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+        let cursor = json["host_matrix"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["host"] == "cursor")
+            .unwrap();
+        if should_launch {
+            assert_eq!(cursor["status"], "launch_supported", "{json}");
+        } else {
+            assert_ne!(cursor["status"], "launch_supported", "{json}");
+            assert!(
+                json["host_evidence"]["evidence_notes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|note| note
+                        .as_str()
+                        .unwrap()
+                        .contains("evidence_expires_at_invalid_format")),
+                "{json}"
+            );
+        }
+    }
 }
