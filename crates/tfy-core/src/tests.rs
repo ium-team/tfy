@@ -938,6 +938,10 @@ fn p0_command_family_golden_table_includes_only_deterministic_p0_families() {
         ("pnpm test", "pnpm_test"),
         ("yarn test", "yarn_test"),
         ("go test ./...", "go_test"),
+        ("mvn test", "maven_test"),
+        ("./mvnw verify", "maven_test"),
+        ("gradle test", "gradle_test"),
+        ("./gradlew :app:test", "gradle_test"),
         ("tsc --noEmit", "tsc_check"),
         ("npx tsc --noEmit", "tsc_check"),
         ("pnpm exec tsc --noEmit", "tsc_check"),
@@ -954,6 +958,58 @@ fn p0_command_family_golden_table_includes_only_deterministic_p0_families() {
     for (command, family) in cases {
         assert_eq!(crate::classify_command_family(command), family, "{command}");
     }
+}
+
+#[test]
+fn p0_java_test_summary_preserves_maven_failure_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut raw = String::new();
+    for i in 0..140 {
+        raw.push_str(&format!("[INFO] Running com.example.Generated{i}Test\n"));
+        raw.push_str("[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0\n");
+    }
+    raw.push_str("[INFO] Running com.example.AuthServiceTest\n");
+    raw.push_str("[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.21 s <<< FAILURE! -- in com.example.AuthServiceTest\n");
+    raw.push_str("[ERROR] com.example.AuthServiceTest.rejectsExpiredToken -- expected: <401> but was: <200>\n");
+    raw.push_str(
+        "[ERROR] at com.example.AuthServiceTest.rejectsExpiredToken(AuthServiceTest.java:42)\n",
+    );
+    raw.push_str("[ERROR] There are test failures.\n");
+    let summary = summarize_command_output("mvn test", &raw, 1, dir.path()).unwrap();
+    assert_eq!(summary.command_family, "maven_test");
+    assert_eq!(summary.risk, "critical");
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(
+        summary.model_text.contains("family=maven_test"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("failures_observed=1"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("AuthServiceTest.java:42"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("expected: <401>"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("raw_ref="),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.len() < raw.len(),
+        "{} >= {}",
+        summary.model_text.len(),
+        raw.len()
+    );
 }
 
 #[test]

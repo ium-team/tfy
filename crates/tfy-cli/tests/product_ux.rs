@@ -1,4 +1,74 @@
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+fn append_smoke_launch_args(args: &mut Vec<String>, smoke_json: &serde_json::Value) {
+    for entry in smoke_json["evidence"].as_array().unwrap() {
+        let text = entry.as_str().unwrap();
+        if let Some(path) = text.strip_prefix("ledger=") {
+            args.push("--ledger".into());
+            args.push(path.to_string());
+        } else if let Some(path) = text.strip_prefix("host_evidence=") {
+            args.push("--host-evidence".into());
+            args.push(path.to_string());
+        }
+    }
+}
+
+fn write_release_evidence_fixture(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    let root = dir.path();
+    let files = [
+        "install-bin",
+        "release-bin",
+        "archive.tar.gz",
+        "archive.sha256",
+        "docs.md",
+        "notes.md",
+        "review.json",
+        "ci.json",
+    ];
+    for file in files {
+        std::fs::write(root.join(file), "fixture evidence").unwrap();
+    }
+    std::fs::write(
+        root.join("bench-manifest.json"),
+        r#"{
+          "status": "pass",
+          "tfy_self_benchmark": {
+            "no_negative_savings": true,
+            "positive_savings": true
+          },
+          "scenarios": [
+            {"raw_ref": "cmdout_fixture", "no_negative_savings": true}
+          ]
+        }"#,
+    )
+    .unwrap();
+    let release_evidence = root.join("release-evidence.json");
+    std::fs::write(
+        &release_evidence,
+        r#"{
+          "cargo_install_verified": true,
+          "cargo_install_binary": "install-bin",
+          "cargo_build_release_verified": true,
+          "release_binary": "release-bin",
+          "archive_checksum_dry_run": true,
+          "archive_artifact": "archive.tar.gz",
+          "checksum_artifact": "archive.sha256",
+          "docs_demo_release_notes_complete": true,
+          "docs_artifact": "docs.md",
+          "release_notes_artifact": "notes.md",
+          "independent_reviews_approved": true,
+          "review_artifact": "review.json",
+          "pr_ci_green": true,
+          "ci_artifact": "ci.json",
+          "benchmark_manifest_generated": true,
+          "benchmark_manifest": "bench-manifest.json",
+          "notes": ["test fixture artifact-backed release evidence"]
+        }"#,
+    )
+    .unwrap();
+    release_evidence
+}
 
 #[test]
 fn init_codex_dry_run_writes_nothing_and_prints_tiers() {
@@ -265,7 +335,16 @@ fn smoke_all_produces_adapter_and_mcp_launch_evidence() {
         .map(|r| r["mode"].as_str().unwrap())
         .collect();
     assert!(modes.contains(&"adapter"), "{json}");
+    assert!(modes.contains(&"agent"), "{json}");
     assert!(modes.contains(&"mcp"), "{json}");
+    assert!(
+        json["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.as_str().unwrap().starts_with("host_evidence=")),
+        "{json}"
+    );
 }
 
 #[test]
@@ -598,6 +677,22 @@ fn status_json_exposes_canonical_named_host_taxonomy() {
     assert_eq!(find("codex")["claim_tier"], "configurable");
     assert_eq!(find("cursor")["claim_tier"], "configurable");
     assert_eq!(find("openclaw")["claim_tier"], "planned_discovery");
+    assert!(json["claim_evidence_ladder"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tier| tier == "verified_host_hook"));
+    assert_eq!(find("codex")["next_evidence_tier"], "config_written");
+    assert!(find("codex")["supported_ingress"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|ingress| ingress == "mcp_stdio"));
+    assert!(find("codex")["unsupported_ingress"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|ingress| ingress == "private_codex_hook_interception"));
 }
 
 #[test]
@@ -1647,36 +1742,11 @@ fn launch_report_passes_only_with_route_smoke_and_host_evidence() {
         String::from_utf8_lossy(&smoke.stderr)
     );
     let smoke_json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
-    let evidence = smoke_json["evidence"].as_array().unwrap();
     let mut owned_args: Vec<String> = vec!["launch-report", "--all", "--json"]
         .into_iter()
         .map(|s| s.to_string())
         .collect();
-    for entry in evidence {
-        let text = entry.as_str().unwrap();
-        if let Some(path) = text.strip_prefix("ledger=") {
-            owned_args.push("--ledger".into());
-            owned_args.push(path.to_string());
-        }
-    }
-    let setup_artifact = dir.path().join("setup-proof.txt");
-    let invocation_artifact = dir.path().join("invocation-proof.txt");
-    std::fs::write(&setup_artifact, "configured host wrapper/mcp").unwrap();
-    std::fs::write(&invocation_artifact, "real host invocation smoke observed").unwrap();
-    let host_evidence = dir.path().join("host-evidence.json");
-    std::fs::write(
-        &host_evidence,
-        r#"{
-          "hosts": [
-            {"host":"generic_shell","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":100,"baseline_ms":100},
-            {"host":"tfy_agent_adapter","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":100,"baseline_ms":100},
-            {"host":"mcp_stdio","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":100,"baseline_ms":100}
-          ]
-        }"#,
-    )
-    .unwrap();
-    owned_args.push("--host-evidence".into());
-    owned_args.push(host_evidence.display().to_string());
+    append_smoke_launch_args(&mut owned_args, &smoke_json);
     let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
         .args(&owned_args)
@@ -1850,29 +1920,7 @@ fn launch_report_accepts_artifact_backed_overhead_exception() {
         .into_iter()
         .map(|s| s.to_string())
         .collect();
-    for entry in smoke_json["evidence"].as_array().unwrap() {
-        let text = entry.as_str().unwrap();
-        if let Some(path) = text.strip_prefix("ledger=") {
-            owned_args.push("--ledger".into());
-            owned_args.push(path.to_string());
-        }
-    }
-    std::fs::write(dir.path().join("setup-proof.txt"), "configured").unwrap();
-    std::fs::write(dir.path().join("invocation-proof.txt"), "invoked").unwrap();
-    let host_evidence = dir.path().join("host-evidence.json");
-    std::fs::write(
-        &host_evidence,
-        r#"{
-          "hosts": [
-            {"host":"generic_shell","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_exception":"fixture host overhead accepted by release owner"},
-            {"host":"tfy_agent_adapter","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_exception":"fixture host overhead accepted by release owner"},
-            {"host":"mcp_stdio","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_exception":"fixture host overhead accepted by release owner"}
-          ]
-        }"#,
-    )
-    .unwrap();
-    owned_args.push("--host-evidence".into());
-    owned_args.push(host_evidence.display().to_string());
+    append_smoke_launch_args(&mut owned_args, &smoke_json);
     let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
         .args(&owned_args)
@@ -1901,4 +1949,1056 @@ fn launch_report_accepts_artifact_backed_overhead_exception() {
             "{json}"
         );
     }
+}
+
+#[test]
+fn launch_report_promotes_claims_only_from_route_bound_evidence_tiers() {
+    let dir = tempfile::tempdir().unwrap();
+    for file in [
+        "setup-proof.txt",
+        "invocation-proof.txt",
+        "cursor-config.json",
+        "cursor-ledger.jsonl",
+        "cursor-raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "proof").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "host_id":"cursor",
+              "host_version":"test",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup-proof.txt",
+              "invocation_artifact":"invocation-proof.txt",
+              "config_scope":"project",
+              "config_path":"cursor-config.json",
+              "route_type":"mcp_stdio",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"cursor-raw.txt",
+              "smoke_id":"cursor-mcp-smoke",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "redacted_public_bytes":1000,
+              "model_visible_bytes":100,
+              "overhead_ms":10,
+              "baseline_ms":10
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["host"] == "cursor")
+        .unwrap();
+    assert_eq!(cursor["status"], "launch_supported", "{json}");
+    for tier in [
+        "config_written",
+        "host_launched",
+        "verified_host_mcp_invocation",
+        "route_evidence_recorded",
+        "savings_verified",
+        "launch_supported",
+    ] {
+        assert!(
+            cursor["evidence_tiers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|observed| observed == tier),
+            "missing {tier}: {json}"
+        );
+    }
+    assert_eq!(cursor["next_evidence_tier"], "complete", "{json}");
+    assert!(json["unsupported_claim_audit"]["rule"]
+        .as_str()
+        .unwrap()
+        .contains("private Codex hook interception"));
+    assert!(json["not_supported"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|surface| surface == "provider_api_prompt_proxy"));
+}
+
+#[test]
+fn launch_report_refuses_named_host_unsupported_route_type_even_with_artifacts_and_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    for file in [
+        "setup-proof.txt",
+        "invocation-proof.txt",
+        "cursor-config.json",
+        "cursor-ledger.jsonl",
+        "cursor-raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "proof").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "host_id":"cursor",
+              "host_version":"test",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup-proof.txt",
+              "invocation_artifact":"invocation-proof.txt",
+              "config_scope":"project",
+              "config_path":"cursor-config.json",
+              "route_type":"provider_api_prompt_proxy",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"cursor-raw.txt",
+              "smoke_id":"cursor-provider-proxy-smoke",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "redacted_public_bytes":1000,
+              "model_visible_bytes":100,
+              "overhead_ms":10,
+              "baseline_ms":10
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["host"] == "cursor")
+        .unwrap();
+    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert!(!cursor["evidence_tiers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tier| tier == "route_evidence_recorded"));
+    assert!(json["not_supported"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|surface| surface == "provider_api_prompt_proxy"));
+}
+
+#[test]
+fn launch_report_refuses_official_hook_promotion_without_supported_hook_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    for file in [
+        "setup-proof.txt",
+        "invocation-proof.txt",
+        "cursor-config.json",
+        "cursor-ledger.jsonl",
+        "cursor-raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "proof").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"cursor",
+              "host_id":"cursor",
+              "host_version":"test",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup-proof.txt",
+              "invocation_artifact":"invocation-proof.txt",
+              "config_scope":"project",
+              "config_path":"cursor-config.json",
+              "route_type":"official_host_hook",
+              "ledger_artifact":"cursor-ledger.jsonl",
+              "raw_artifact":"cursor-raw.txt",
+              "smoke_id":"cursor-hook-smoke",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "redacted_public_bytes":1000,
+              "model_visible_bytes":100,
+              "official_docs_backed":true,
+              "kill_switch_available":true,
+              "uninstall_available":true,
+              "overhead_ms":10,
+              "baseline_ms":10
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let cursor = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["host"] == "cursor")
+        .unwrap();
+    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert!(!cursor["evidence_tiers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tier| tier == "verified_host_hook"));
+    assert!(json["host_evidence"]["evidence_notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("hook_authorized=false")));
+}
+
+#[test]
+fn raw_lifecycle_lists_inspects_exports_and_prunes_with_dry_run_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw_dir = dir.path().join("raw");
+    let ledger = dir.path().join("ledger.jsonl");
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "tool-gateway",
+            "--json",
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "for i in $(seq 1 40); do echo raw-life-$i; done",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let gateway_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let raw_ref = gateway_json["provenance"]["raw_refs"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let list = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "raw",
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--list",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(list.status.success());
+    let list_json: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(list_json["count"], 1);
+    assert_eq!(list_json["entries"][0]["raw_ref"], raw_ref);
+    assert_eq!(list_json["entries"][0]["command_present"], true);
+    assert!(list_json["entries"][0]["command"].is_null(), "{list_json}");
+    assert!(
+        list_json["entries"][0]["command_sha256"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 64),
+        "{list_json}"
+    );
+
+    let inspect = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "raw",
+            &raw_ref,
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--inspect",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(inspect.status.success());
+    let inspect_json: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(inspect_json["raw_ref"], raw_ref);
+    assert!(inspect_json["bytes"].as_u64().unwrap() > 0);
+    assert!(inspect_json["command"].is_null(), "{inspect_json}");
+
+    let export_dir = dir.path().join("exported");
+    let export = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "raw",
+            &raw_ref,
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--export",
+            export_dir.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(export.status.success());
+    assert!(export_dir.join(format!("{raw_ref}.json")).is_file());
+
+    let dry_prune = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "raw",
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--prune",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(dry_prune.status.success());
+    let dry_json: serde_json::Value = serde_json::from_slice(&dry_prune.stdout).unwrap();
+    assert_eq!(dry_json["dry_run"], true);
+    assert!(raw_dir.join(format!("{raw_ref}.json")).is_file());
+
+    let apply_prune = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "raw",
+            "--raw-dir",
+            raw_dir.to_str().unwrap(),
+            "--prune",
+            "--apply",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(apply_prune.status.success());
+    let apply_json: serde_json::Value = serde_json::from_slice(&apply_prune.stdout).unwrap();
+    assert_eq!(apply_json["applied"], true);
+    assert!(!raw_dir.join(format!("{raw_ref}.json")).exists());
+}
+
+#[test]
+fn bench_manifest_is_self_benchmark_and_fails_closed_for_public_rtk_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("bench-manifest.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "bench",
+            "--json",
+            "--output",
+            manifest_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["status"], "pass", "{json}");
+    assert_eq!(json["tfy_self_benchmark"]["no_negative_savings"], true);
+    assert_eq!(json["tfy_self_benchmark"]["positive_savings"], true);
+    assert_eq!(json["rtk_comparator"]["status"], "skipped_unavailable");
+    assert_eq!(json["public_superiority_claim_ready"], false);
+    assert!(json["claim_policy"]
+        .as_str()
+        .unwrap()
+        .contains("fails closed"));
+    assert!(manifest_path.is_file());
+}
+
+#[test]
+fn launch_report_release_tiers_require_release_evidence_and_keep_ga_blocked_without_named_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["smoke", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    let smoke_json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
+    let mut owned_args: Vec<String> = vec!["launch-report", "--all", "--json"]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+    append_smoke_launch_args(&mut owned_args, &smoke_json);
+    let release_evidence = write_release_evidence_fixture(&dir);
+    owned_args.push("--release-evidence".into());
+    owned_args.push(release_evidence.display().to_string());
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(&owned_args)
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(json["status"], "pass", "{json}");
+    assert_eq!(
+        json["release_tiers"]["developer_preview_ready"]["status"], "ready",
+        "{json}"
+    );
+    assert_eq!(
+        json["release_tiers"]["rc_ready"]["status"], "ready",
+        "{json}"
+    );
+    assert_eq!(
+        json["release_tiers"]["ga_ready"]["status"], "blocked",
+        "{json}"
+    );
+    assert!(json["release_tiers"]["ga_ready"]["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|blocker| blocker.as_str().unwrap().contains("no named AI host")));
+    assert_eq!(
+        json["release_tiers"]["public_superiority_claim_ready"]["status"],
+        "blocked"
+    );
+}
+
+#[test]
+fn lifecycle_help_preserves_existing_commands() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    for command in [
+        "start",
+        "stop",
+        "fuckyou",
+        "global",
+        "raw",
+        "setup",
+        "init",
+        "mcp",
+        "adapter",
+        "agent",
+        "tool-gateway",
+        "context-gateway",
+        "output-gateway",
+        "workspace",
+    ] {
+        assert!(text.contains(command), "missing {command} in {text}");
+    }
+
+    for args in [
+        vec!["start", "--help"],
+        vec!["stop", "--help"],
+        vec!["fuckyou", "--help"],
+        vec!["global", "--help"],
+        vec!["global", "start", "--help"],
+        vec!["raw", "--help"],
+        vec!["tool-gateway", "--help"],
+        vec!["context-gateway", "--help"],
+        vec!["output-gateway", "--help"],
+        vec!["workspace", "--help"],
+    ] {
+        let help = Command::new(env!("CARGO_BIN_EXE_tfy"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(help.status.success());
+    }
+}
+
+#[test]
+fn lifecycle_project_start_stop_restart_status_truthful() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--human"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let start_text = String::from_utf8_lossy(&start.stdout);
+    assert!(
+        start_text.contains("host_route_configuration_required"),
+        "{start_text}"
+    );
+    assert!(
+        start_text.contains("ordinary_terminal_interception=false"),
+        "{start_text}"
+    );
+    assert!(
+        start_text.contains("ordinary terminal commands are not globally intercepted"),
+        "{start_text}"
+    );
+    assert!(dir.path().join(".tfy/lifecycle.json").exists());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["project_lifecycle"]["agent"]["configured"], true);
+    assert_eq!(json["project_lifecycle"]["agent"]["desired"], true);
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["support_status"],
+        "host_route_configuration_required"
+    );
+    assert!(json["project_lifecycle"]["agent"]["active_routes"].is_null());
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["intended_routes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["private_hook_interception"],
+        false
+    );
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["provider_prompt_gateway"],
+        false
+    );
+    assert_eq!(json["project_lifecycle"]["human"]["configured"], true);
+    assert_eq!(json["project_lifecycle"]["human"]["desired"], true);
+    assert_eq!(
+        json["project_lifecycle"]["human"]["ordinary_terminal_interception"],
+        false
+    );
+    assert_eq!(
+        json["project_lifecycle"]["human"]["support_status"],
+        "manual_explicit_route_required"
+    );
+    assert!(json["minimum_v1_host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|h| h["host"] == "codex" && h["status"] != "launch_supported"));
+
+    let stop = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["stop", "--agent"])
+        .output()
+        .unwrap();
+    assert!(stop.status.success());
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["target_filter"], "agent");
+    assert_eq!(json["project_lifecycle"]["agent"]["configured"], true);
+    assert_eq!(json["project_lifecycle"]["agent"]["desired"], false);
+    assert!(json["project_lifecycle"]["agent"]["stopped_at"]
+        .as_str()
+        .unwrap()
+        .starts_with("unix:"));
+    assert!(json["project_lifecycle"]["human"].is_null());
+
+    let restart = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(restart.status.success());
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["project_lifecycle"]["agent"]["desired"], true);
+    assert!(json["project_lifecycle"]["agent"]["stopped_at"].is_null());
+}
+
+#[test]
+fn lifecycle_fuckyou_is_scoped_confirmed_and_preserves_raw_shared_ledgers() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    for sub in ["raw", "mcp", "adapter", "state", "agent", "human"] {
+        std::fs::create_dir_all(tfy.join(sub)).unwrap();
+        std::fs::write(tfy.join(sub).join("keep.txt"), sub).unwrap();
+    }
+    std::fs::write(tfy.join("agent/ledger.jsonl"), "agent evidence").unwrap();
+    Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--human"])
+        .output()
+        .unwrap();
+
+    let blocked = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["fuckyou", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!blocked.status.success());
+    assert!(tfy.join("agent/keep.txt").exists());
+
+    let cleaned = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["fuckyou", "--agent", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        cleaned.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&cleaned.stderr)
+    );
+    assert!(!tfy.join("agent/keep.txt").exists());
+    assert!(tfy.join("agent/ledger.jsonl").exists());
+    for sub in ["raw", "mcp", "adapter", "state", "human"] {
+        assert!(
+            tfy.join(sub).join("keep.txt").exists(),
+            "{sub} should remain"
+        );
+    }
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(json["project_lifecycle"]["agent"].is_null());
+    assert_eq!(json["project_lifecycle"]["human"]["configured"], true);
+}
+
+#[test]
+fn lifecycle_global_uses_tfy_home_and_stays_separate_from_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["global", "start", "--agent", "--human"])
+        .output()
+        .unwrap();
+    assert!(start.status.success());
+    assert!(home.path().join("lifecycle.json").exists());
+    assert!(!dir.path().join(".tfy/lifecycle.json").exists());
+
+    Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["project_lifecycle"]["agent"]["desired"], true);
+    assert_eq!(
+        json["global_lifecycle"]["human"]["ordinary_terminal_interception"],
+        false
+    );
+
+    let cleanup = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["global", "fuckyou", "--agent", "--yes"])
+        .output()
+        .unwrap();
+    assert!(cleanup.status.success());
+    assert!(dir.path().join(".tfy/lifecycle.json").exists());
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(json["global_lifecycle"]["agent"].is_null());
+    assert_eq!(json["global_lifecycle"]["human"]["desired"], true);
+}
+
+#[test]
+fn lifecycle_bare_fuckyou_reads_target_and_confirmation_from_one_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    std::fs::create_dir_all(tfy.join("raw")).unwrap();
+    std::fs::create_dir_all(tfy.join("human")).unwrap();
+    std::fs::write(tfy.join("raw/keep.txt"), "raw").unwrap();
+    std::fs::write(tfy.join("human/remove.txt"), "human").unwrap();
+
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--human"])
+        .output()
+        .unwrap();
+    assert!(start.status.success());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .arg("fuckyou")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"human\nyes\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!tfy.join("human").exists());
+    assert!(tfy.join("raw/keep.txt").exists());
+    assert!(!tfy.join("lifecycle.json").exists());
+}
+
+#[test]
+fn lifecycle_status_and_stop_accept_legacy_active_routes_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let lifecycle = dir.path().join(".tfy/lifecycle.json");
+    std::fs::create_dir_all(lifecycle.parent().unwrap()).unwrap();
+    std::fs::write(
+        &lifecycle,
+        r#"{
+  "schema_version": 1,
+  "scope": "project",
+  "agent": {
+    "configured": true,
+    "desired": true,
+    "active_routes": ["mcp_stdio"],
+    "private_hook_interception": false,
+    "provider_prompt_gateway": false,
+    "support_status": "host_route_configuration_required",
+    "started_at": "unix:1",
+    "stopped_at": null
+  },
+  "human": null,
+  "raw_dir": ".tfy/raw",
+  "ledgers": {
+    "state": ".tfy/state/ledger.jsonl",
+    "adapter": ".tfy/adapter/ledger.jsonl",
+    "agent": ".tfy/agent/ledger.jsonl",
+    "mcp": ".tfy/mcp/ledger.jsonl"
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(json["project_lifecycle"]["parse_error"].is_null());
+    assert_eq!(json["project_lifecycle"]["agent"]["configured"], true);
+    assert!(json["project_lifecycle"]["agent"]["active_routes"].is_null());
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["intended_routes"][0],
+        "mcp_stdio"
+    );
+
+    let stop = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["stop", "--agent"])
+        .output()
+        .unwrap();
+    assert!(
+        stop.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let migrated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&lifecycle).unwrap()).unwrap();
+    assert!(migrated["agent"]["active_routes"].is_null());
+    assert_eq!(migrated["agent"]["intended_routes"][0], "mcp_stdio");
+    assert_eq!(migrated["agent"]["started_at"], "unix:1");
+    assert_eq!(migrated["agent"]["desired"], false);
+}
+
+#[test]
+fn lifecycle_status_exposes_malformed_state_parse_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let lifecycle = dir.path().join(".tfy/lifecycle.json");
+    std::fs::create_dir_all(lifecycle.parent().unwrap()).unwrap();
+    std::fs::write(&lifecycle, "not-json").unwrap();
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["project_lifecycle"]["exists"], true);
+    assert!(json["project_lifecycle"]["parse_error"]
+        .as_str()
+        .unwrap()
+        .contains("parse .tfy/lifecycle.json"));
+}
+
+#[test]
+fn lifecycle_stop_without_prior_start_does_not_fabricate_started_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let stop = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["stop", "--agent", "--human"])
+        .output()
+        .unwrap();
+    assert!(stop.status.success());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["project_lifecycle"]["agent"]["configured"], true);
+    assert_eq!(json["project_lifecycle"]["agent"]["desired"], false);
+    assert!(json["project_lifecycle"]["agent"]["started_at"].is_null());
+    assert!(json["project_lifecycle"]["agent"]["stopped_at"]
+        .as_str()
+        .unwrap()
+        .starts_with("unix:"));
+    assert_eq!(json["project_lifecycle"]["human"]["configured"], true);
+    assert_eq!(json["project_lifecycle"]["human"]["desired"], false);
+    assert!(json["project_lifecycle"]["human"]["started_at"].is_null());
+    assert!(json["project_lifecycle"]["human"]["stopped_at"]
+        .as_str()
+        .unwrap()
+        .starts_with("unix:"));
+}
+
+#[test]
+fn lifecycle_bare_commands_fail_closed_without_target_choice() {
+    for command in ["start", "stop", "fuckyou"] {
+        let dir = tempfile::tempdir().unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+            .current_dir(dir.path())
+            .arg(command)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{command} should fail closed");
+        assert!(!dir.path().join(".tfy/lifecycle.json").exists());
+    }
+}
+
+#[test]
+fn lifecycle_target_aliases_match_flag_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "ai"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "human"])
+        .output()
+        .unwrap();
+    assert!(start.status.success());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["project_lifecycle"]["agent"]["desired"], true);
+    assert_eq!(json["project_lifecycle"]["human"]["desired"], true);
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["route_state"],
+        "intent_recorded"
+    );
+    assert_eq!(json["project_lifecycle"]["agent"]["active"], false);
+    assert_eq!(
+        json["project_lifecycle"]["human"]["route_state"],
+        "intent_recorded"
+    );
+    assert_eq!(json["project_lifecycle"]["human"]["active"], false);
+
+    let stop = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["stop", "both"])
+        .output()
+        .unwrap();
+    assert!(stop.status.success());
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["project_lifecycle"]["agent"]["desired"], false);
+    assert_eq!(json["project_lifecycle"]["human"]["desired"], false);
+}
+
+#[test]
+fn lifecycle_start_cursor_apply_caps_at_applied_unverified() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "agent", "--host", "cursor", "--apply"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let text = String::from_utf8_lossy(&start.stdout);
+    assert!(text.contains("route_state=applied_unverified"), "{text}");
+    assert!(text.contains("active=false"), "{text}");
+    assert!(dir.path().join(".cursor/mcp.json").exists());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let cursor = &json["project_lifecycle"]["agent"]["host_routes"]["cursor"];
+    assert_eq!(cursor["route_state"], "applied_unverified");
+    assert_eq!(cursor["active"], false);
+    assert_eq!(json["project_lifecycle"]["agent"]["active"], false);
+    assert!(json["minimum_v1_host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|h| h["host"] == "cursor" && h["status"] != "launch_supported"));
+}
+
+#[test]
+fn lifecycle_start_host_all_apply_only_uses_safe_writers() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "agent", "--host", "all", "--apply"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let text = String::from_utf8_lossy(&start.stdout);
+    assert!(
+        text.contains("host=cursor route_state=applied_unverified"),
+        "{text}"
+    );
+    assert!(text.contains("apply=guidance_only"), "{text}");
+    assert!(dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["host_routes"]["cursor"]["route_state"],
+        "applied_unverified"
+    );
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["host_routes"]["claude-code"]["active"],
+        false
+    );
+}
+
+#[test]
+fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "human"])
+        .output()
+        .unwrap();
+    assert!(start.status.success());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--human", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let human = &json["project_lifecycle"]["human"];
+    assert_eq!(human["route_state"], "intent_recorded");
+    assert_eq!(human["active"], false);
+    assert_eq!(human["session_wrapper_available"], true);
+    assert_eq!(human["ordinary_terminal_interception"], false);
+    assert_eq!(human["entrypoint"][0], "tfy");
+    assert_eq!(human["entrypoint"][1], "shell");
 }

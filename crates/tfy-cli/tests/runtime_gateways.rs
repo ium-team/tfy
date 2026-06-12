@@ -63,7 +63,11 @@ fn tool_gateway_jsonl_emits_event_response_and_state_projection() {
         .collect();
     assert_eq!(lines.len(), 2);
     assert_eq!(lines[0]["payload"]["kind"], "tool_command_completed");
+    assert_eq!(lines[0]["route"]["ingress"], "cli_gateway");
+    assert_eq!(lines[0]["route"]["claim_tier"], "route_evidence_recorded");
+    assert_eq!(lines[0]["route"]["no_negative_savings_proven"], true);
     assert_eq!(lines[1]["payload"]["kind"], "tool_command");
+    assert_eq!(lines[1]["route"]["ingress"], "cli_gateway");
     assert_eq!(lines[1]["request_id"], "r1");
     assert!(lines[1]["provenance"]["raw_refs"].as_array().unwrap().len() == 1);
 
@@ -88,6 +92,8 @@ fn tool_gateway_jsonl_emits_event_response_and_state_projection() {
     assert_eq!(shell_json["payload"]["summary"], "shell-ok");
     assert_eq!(shell_json["payload"]["model_text"], "shell-ok");
     assert_eq!(shell_json["payload"]["rendering_kind"], "pass_through");
+    assert_eq!(shell_json["route"]["ingress"], "generic_shell_adapter");
+    assert_eq!(shell_json["route"]["kill_switch_available"], true);
 
     let projection = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args(["state-project", "--ledger", ledger.to_str().unwrap()])
@@ -177,6 +183,14 @@ fn context_and_output_gateways_return_runtime_envelopes() {
     assert_eq!(output_json["payload"]["kind"], "output");
     assert_eq!(output_json["parent_event_id"], "ctx1");
     assert_eq!(output_json["payload"]["validation_status"], "valid");
+    assert_eq!(
+        output_json["provenance"]["apply_authority"]["parent_event_id_only"],
+        true
+    );
+    assert_eq!(
+        output_json["provenance"]["apply_authority"]["validate_succeeded"],
+        false
+    );
     assert!(output_json["payload"]["restored_code"]
         .as_str()
         .unwrap()
@@ -249,6 +263,14 @@ fn output_gateway_without_parent_provenance_is_non_authoritative() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["payload"]["validation_status"], "non_authoritative");
     assert_eq!(json["provenance"]["validation_status"], "non_authoritative");
+    assert_eq!(
+        json["provenance"]["apply_authority"]["parent_event_id_only"],
+        false
+    );
+    assert_eq!(
+        json["provenance"]["apply_authority"]["validate_succeeded"],
+        false
+    );
 }
 
 fn python_apply_fixture() -> (tempfile::TempDir, std::path::PathBuf, serde_json::Value) {
@@ -331,6 +353,22 @@ fn output_gateway_apply_replaces_only_proven_selected_scope() {
     assert_eq!(json["payload"]["applied_path"], file.to_str().unwrap());
     assert!(json["payload"]["before_hash"].as_str().is_some());
     assert!(json["payload"]["after_hash"].as_str().is_some());
+    assert_eq!(
+        json["provenance"]["apply_authority"]["context_ref"],
+        compact["apply_proof"]["context_ref"]
+    );
+    assert_eq!(
+        json["provenance"]["apply_authority"]["base_content_hash"],
+        compact["apply_proof"]["source_sha256"]
+    );
+    assert_eq!(
+        json["provenance"]["apply_authority"]["validate_succeeded"],
+        true
+    );
+    assert_eq!(
+        json["provenance"]["apply_authority"]["parent_event_id_only"],
+        false
+    );
 
     let source = std::fs::read_to_string(file).unwrap();
     assert!(

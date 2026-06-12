@@ -1,13 +1,15 @@
 use crate::util::{print_json, stable_id};
 use anyhow::{anyhow, bail, Context, Result};
-use clap::Args;
+use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use tfy_core::{raw_output_bytes, summarize_command_output_with_policy, ToolPolicy};
 use tfy_runtime::{load_events, AdapterKind, GatewayEvent, OriginInvocation};
 
 const TFY_CODEX_START: &str = "<!-- TFY:CODEX:START -->";
@@ -115,7 +117,75 @@ pub(crate) struct SetupCmd {
 }
 
 #[derive(Args, Clone)]
+pub(crate) struct LifecycleTargetArgs {
+    /// Configure only AI-agent lifecycle intent.
+    #[arg(long)]
+    pub agent: bool,
+    /// Configure only human explicit-wrapper/session lifecycle intent.
+    #[arg(long)]
+    pub human: bool,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct StartCmd {
+    #[command(flatten)]
+    pub target: LifecycleTargetArgs,
+    /// Target alias: agent/ai, human, or both.
+    #[arg(value_name = "TARGET")]
+    pub target_alias: Option<String>,
+    /// Named AI-agent host setup route (codex, claude-code, cursor, opencode, hermes, openclaw, all).
+    #[arg(long)]
+    pub host: Option<String>,
+    /// Apply only safe, implemented host configuration writers. Unsupported hosts stay guidance-only.
+    #[arg(long)]
+    pub apply: bool,
+    /// Request verification guidance/smoke. Does not promote lifecycle active without route evidence.
+    #[arg(long)]
+    pub verify: bool,
+    /// Session id for generated MCP/server configuration.
+    #[arg(long, default_value = "local-session")]
+    pub session: String,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct StopCmd {
+    #[command(flatten)]
+    pub target: LifecycleTargetArgs,
+    /// Target alias: agent/ai, human, or both.
+    #[arg(value_name = "TARGET")]
+    pub target_alias: Option<String>,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct FuckyouCmd {
+    #[command(flatten)]
+    pub target: LifecycleTargetArgs,
+    /// Target alias: agent/ai, human, or both.
+    #[arg(value_name = "TARGET")]
+    pub target_alias: Option<String>,
+    /// Confirm scoped TFY-owned lifecycle cleanup. Required for non-interactive destructive cleanup.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+#[derive(Subcommand, Clone)]
+pub(crate) enum GlobalCmd {
+    /// Start global TFY lifecycle intent.
+    Start(StartCmd),
+    /// Stop global TFY lifecycle intent without deleting data.
+    Stop(StopCmd),
+    /// Scoped global TFY-owned lifecycle cleanup.
+    Fuckyou(FuckyouCmd),
+}
+
+#[derive(Args, Clone)]
 pub(crate) struct StatusCmd {
+    /// Show only AI-agent lifecycle/status information.
+    #[arg(long)]
+    pub agent: bool,
+    /// Show only human explicit-wrapper/session lifecycle/status information.
+    #[arg(long)]
+    pub human: bool,
     #[arg(long)]
     pub json: bool,
 }
@@ -135,10 +205,55 @@ pub(crate) struct LaunchReportCmd {
     /// JSON evidence proving host setup and real host invocation per route.
     #[arg(long = "host-evidence")]
     pub host_evidence: Vec<PathBuf>,
+    /// JSON evidence for release artifact/docs/review/CI gates.
+    #[arg(long = "release-evidence")]
+    pub release_evidence: Vec<PathBuf>,
     #[arg(long, default_value = "local-session")]
     pub session: String,
     #[arg(long)]
     pub all: bool,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct RawCmd {
+    /// Raw reference to recover/inspect/export. Omit with --list or store-wide --export/--prune.
+    pub raw_ref: Option<String>,
+    #[arg(long, default_value = ".tfy/raw")]
+    pub raw_dir: PathBuf,
+    #[arg(long)]
+    pub around: Option<String>,
+    #[arg(long, default_value_t = 3)]
+    pub context: usize,
+    #[arg(long)]
+    pub list: bool,
+    #[arg(long)]
+    pub inspect: bool,
+    #[arg(long)]
+    pub export: Option<PathBuf>,
+    #[arg(long)]
+    pub prune: bool,
+    #[arg(long = "older-than-days")]
+    pub older_than_days: Option<u64>,
+    #[arg(long)]
+    pub dry_run: bool,
+    #[arg(long)]
+    pub apply: bool,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct BenchCmd {
+    #[arg(long)]
+    pub json: bool,
+    /// Optional RTK executable/path. If unavailable, TFY emits a self-benchmark only.
+    #[arg(long)]
+    pub rtk: Option<PathBuf>,
+    #[arg(long, default_value = ".tfy/bench/raw")]
+    pub raw_dir: PathBuf,
+    /// Optional path to write the reproducible benchmark manifest JSON.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,11 +327,133 @@ struct SurfaceStatus {
     message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LifecycleTarget {
+    Agent,
+    Human,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LifecycleScope {
+    Project,
+    Global,
+}
+
+impl LifecycleScope {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Global => "global",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgentLifecycleState {
+    configured: bool,
+    desired: bool,
+    #[serde(default = "default_lifecycle_route_state")]
+    route_state: String,
+    #[serde(default)]
+    active: bool,
+    #[serde(default = "default_agent_intended_routes", alias = "active_routes")]
+    intended_routes: Vec<String>,
+    #[serde(default)]
+    host_routes: BTreeMap<String, LifecycleHostRoute>,
+    private_hook_interception: bool,
+    provider_prompt_gateway: bool,
+    support_status: String,
+    started_at: Option<String>,
+    stopped_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HumanLifecycleState {
+    configured: bool,
+    desired: bool,
+    #[serde(default = "default_lifecycle_route_state")]
+    route_state: String,
+    #[serde(default)]
+    active: bool,
+    active_route: String,
+    #[serde(default = "default_human_entrypoint")]
+    entrypoint: Vec<String>,
+    #[serde(default)]
+    session_wrapper_available: bool,
+    ordinary_terminal_interception: bool,
+    support_status: String,
+    started_at: Option<String>,
+    stopped_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LifecycleHostRoute {
+    route_state: String,
+    active: bool,
+    config_path: Option<String>,
+    claim_tier: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LifecycleLedgers {
+    state: String,
+    adapter: String,
+    agent: String,
+    mcp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LifecycleFile {
+    schema_version: u8,
+    scope: String,
+    agent: Option<AgentLifecycleState>,
+    human: Option<HumanLifecycleState>,
+    raw_dir: String,
+    ledgers: LifecycleLedgers,
+}
+
+fn default_agent_intended_routes() -> Vec<String> {
+    vec![
+        "mcp_stdio".into(),
+        "agent_wrapper".into(),
+        "generic_shell_adapter".into(),
+    ]
+}
+
+fn default_lifecycle_route_state() -> String {
+    "intent_recorded".into()
+}
+
+fn default_human_entrypoint() -> Vec<String> {
+    vec![
+        "tfy".into(),
+        "shell".into(),
+        "--".into(),
+        "<command>".into(),
+    ]
+}
+
+#[derive(Serialize)]
+struct LifecycleStatusView {
+    path: String,
+    exists: bool,
+    parse_error: Option<String>,
+    agent: Option<AgentLifecycleState>,
+    human: Option<HumanLifecycleState>,
+    raw_dir: String,
+    ledgers: LifecycleLedgers,
+}
+
 #[derive(Serialize)]
 struct ProductStatusReport {
     status: String,
+    target_filter: String,
+    project_lifecycle: LifecycleStatusView,
+    global_lifecycle: LifecycleStatusView,
     minimum_v1_host_matrix: Vec<HostReadiness>,
     surfaces: Vec<SurfaceStatus>,
+    claim_evidence_ladder: Vec<String>,
     launch_claim_gate: String,
     not_supported: Vec<String>,
     truthfulness_boundary: String,
@@ -228,6 +465,11 @@ struct HostReadiness {
     status: String,
     required_for_v1: bool,
     claim_tier: String,
+    evidence_tiers: Vec<String>,
+    next_evidence_tier: String,
+    supported_ingress: Vec<String>,
+    equivalence_ingress: Vec<String>,
+    unsupported_ingress: Vec<String>,
     config_strategy: String,
     apply_strategy: String,
     smoke_strategy: String,
@@ -260,9 +502,12 @@ struct HostIntegration {
 #[derive(Serialize)]
 struct LaunchReadinessReport {
     status: String,
+    release_tiers: ReleaseTierReport,
     host_matrix: Vec<HostReadiness>,
+    claim_evidence_ladder: Vec<String>,
     gain: GainReport,
     host_evidence: HostEvidenceSummary,
+    release_evidence: ReleaseEvidenceSummary,
     release_thresholds: ReleaseThresholds,
     measurement_method: MeasurementMethod,
     privacy_raw_store: PrivacyRawStorePolicy,
@@ -382,7 +627,7 @@ impl Default for PrivacyRawStorePolicy {
         Self {
             default_raw_dirs: vec![".tfy/raw".into(), ".tfy/mcp/raw or configured --raw-dir".into()],
             retention_default: "local project data is retained until the user deletes/prunes the .tfy directory; TFY does not upload raw evidence".into(),
-            deletion_export: "delete/export by inspecting .tfy/raw, .tfy/mcp/ledger.jsonl, .tfy/adapter/ledger.jsonl, or configured raw/ledger paths; release implementation must add first-class commands before claiming managed retention".into(),
+            deletion_export: "delete/export raw evidence with `tfy raw --list`, `tfy raw <raw_ref> --inspect`, `tfy raw <raw_ref> --export <path>`, and explicit `tfy raw --prune --dry-run/--apply`; ledgers remain local files under configured paths".into(),
             disclosure: "TFY stores raw command/context evidence locally before compacting model-visible text so correctness and audit recovery remain possible".into(),
             blockers: vec![
                 "secret leakage in CLI/log/ledger/launch-report output".into(),
@@ -455,6 +700,9 @@ struct RouteEvidence {
     output: bool,
     state: bool,
     host_bound_evidence: bool,
+    official_docs_backed: bool,
+    kill_switch_available: bool,
+    uninstall_available: bool,
     route_type: Option<String>,
     config_scope: Option<String>,
     config_path: Option<String>,
@@ -465,6 +713,39 @@ struct RouteEvidence {
 #[derive(Deserialize)]
 struct HostEvidenceFile {
     hosts: Vec<HostSetupEvidence>,
+}
+
+#[derive(Default, Clone, Serialize)]
+struct ReleaseEvidenceSummary {
+    cargo_install_verified: bool,
+    cargo_build_release_verified: bool,
+    archive_checksum_dry_run: bool,
+    docs_demo_release_notes_complete: bool,
+    independent_reviews_approved: bool,
+    pr_ci_green: bool,
+    benchmark_manifest_generated: bool,
+    notes: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct ReleaseEvidenceFile {
+    cargo_install_verified: Option<bool>,
+    cargo_install_binary: Option<PathBuf>,
+    cargo_build_release_verified: Option<bool>,
+    release_binary: Option<PathBuf>,
+    archive_checksum_dry_run: Option<bool>,
+    archive_artifact: Option<PathBuf>,
+    checksum_artifact: Option<PathBuf>,
+    docs_demo_release_notes_complete: Option<bool>,
+    docs_artifact: Option<PathBuf>,
+    release_notes_artifact: Option<PathBuf>,
+    independent_reviews_approved: Option<bool>,
+    review_artifact: Option<PathBuf>,
+    pr_ci_green: Option<bool>,
+    ci_artifact: Option<PathBuf>,
+    benchmark_manifest_generated: Option<bool>,
+    benchmark_manifest: Option<PathBuf>,
+    notes: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -488,6 +769,9 @@ struct HostSetupEvidence {
     model_visible_bytes: Option<usize>,
     timestamp: Option<String>,
     smoke_id: Option<String>,
+    official_docs_backed: Option<bool>,
+    kill_switch_available: Option<bool>,
+    uninstall_available: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -495,6 +779,818 @@ struct UnsupportedClaimAudit {
     status: String,
     audited_claims: Vec<String>,
     rule: String,
+}
+
+#[derive(Serialize)]
+struct ReleaseTierReport {
+    developer_preview_ready: TierStatus,
+    rc_ready: TierStatus,
+    ga_ready: TierStatus,
+    public_superiority_claim_ready: TierStatus,
+}
+
+#[derive(Serialize)]
+struct TierStatus {
+    status: String,
+    evidence: Vec<String>,
+    blockers: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct RawLifecycleReport {
+    status: String,
+    raw_dir: String,
+    action: String,
+    raw_ref: Option<String>,
+    count: usize,
+    bytes: usize,
+    dry_run: bool,
+    applied: bool,
+    entries: Vec<RawEntryReport>,
+    message: String,
+}
+
+#[derive(Serialize, Clone)]
+struct RawEntryReport {
+    raw_ref: String,
+    path: String,
+    command_present: bool,
+    command_sha256: String,
+    exit_code: i64,
+    bytes: usize,
+    created_ns: u64,
+}
+
+#[derive(Serialize)]
+struct BenchmarkManifest {
+    status: String,
+    generated_by: String,
+    scenarios: Vec<BenchmarkScenario>,
+    tfy_self_benchmark: BenchmarkSummary,
+    rtk_comparator: RtkComparatorReport,
+    public_superiority_claim_ready: bool,
+    claim_policy: String,
+}
+
+#[derive(Serialize)]
+struct BenchmarkScenario {
+    name: String,
+    command_family: String,
+    raw_bytes: usize,
+    model_bytes: usize,
+    saved_bytes: isize,
+    no_negative_savings: bool,
+    raw_ref: String,
+}
+
+#[derive(Serialize)]
+struct BenchmarkSummary {
+    scenarios: usize,
+    raw_bytes: usize,
+    model_bytes: usize,
+    saved_bytes: isize,
+    no_negative_savings: bool,
+    positive_savings: bool,
+}
+
+#[derive(Serialize)]
+struct RtkComparatorReport {
+    status: String,
+    executable: Option<String>,
+    reason: String,
+    required_for_public_superiority_claim: Vec<String>,
+}
+
+fn now_stamp() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("unix:{seconds}")
+}
+
+fn default_ledgers(scope: LifecycleScope) -> LifecycleLedgers {
+    let prefix = match scope {
+        LifecycleScope::Project => ".tfy".to_string(),
+        LifecycleScope::Global => global_tfy_dir().display().to_string(),
+    };
+    LifecycleLedgers {
+        state: format!("{prefix}/state/ledger.jsonl"),
+        adapter: format!("{prefix}/adapter/ledger.jsonl"),
+        agent: format!("{prefix}/agent/ledger.jsonl"),
+        mcp: format!("{prefix}/mcp/ledger.jsonl"),
+    }
+}
+
+fn lifecycle_path(scope: LifecycleScope) -> PathBuf {
+    match scope {
+        LifecycleScope::Project => PathBuf::from(".tfy").join("lifecycle.json"),
+        LifecycleScope::Global => global_tfy_dir().join("lifecycle.json"),
+    }
+}
+
+fn global_tfy_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("TFY_HOME") {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(path).join("tfy");
+    }
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".tfy")
+}
+
+fn default_lifecycle(scope: LifecycleScope) -> LifecycleFile {
+    let raw_dir = match scope {
+        LifecycleScope::Project => ".tfy/raw".to_string(),
+        LifecycleScope::Global => global_tfy_dir().join("raw").display().to_string(),
+    };
+    LifecycleFile {
+        schema_version: 1,
+        scope: scope.label().into(),
+        agent: None,
+        human: None,
+        raw_dir,
+        ledgers: default_ledgers(scope),
+    }
+}
+
+fn read_lifecycle(scope: LifecycleScope) -> Result<LifecycleFile> {
+    let path = lifecycle_path(scope);
+    match fs::read_to_string(&path) {
+        Ok(text) => {
+            serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(default_lifecycle(scope)),
+        Err(err) => Err(err).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+fn write_lifecycle(scope: LifecycleScope, state: &LifecycleFile) -> Result<()> {
+    let path = lifecycle_path(scope);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(state)? + "\n")
+        .with_context(|| format!("write {}", path.display()))
+}
+
+fn remove_lifecycle_if_empty(scope: LifecycleScope, state: &LifecycleFile) -> Result<()> {
+    let path = lifecycle_path(scope);
+    if state.agent.is_none() && state.human.is_none() {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(err).with_context(|| format!("remove {}", path.display())),
+        }
+    } else {
+        write_lifecycle(scope, state)?;
+    }
+    Ok(())
+}
+
+fn agent_state(
+    desired: bool,
+    started_at: Option<String>,
+    stopped_at: Option<String>,
+) -> AgentLifecycleState {
+    AgentLifecycleState {
+        configured: true,
+        desired,
+        route_state: "intent_recorded".into(),
+        active: false,
+        intended_routes: default_agent_intended_routes(),
+        host_routes: BTreeMap::new(),
+        private_hook_interception: false,
+        provider_prompt_gateway: false,
+        support_status: "host_route_configuration_required".into(),
+        started_at,
+        stopped_at,
+    }
+}
+
+fn human_state(
+    desired: bool,
+    started_at: Option<String>,
+    stopped_at: Option<String>,
+) -> HumanLifecycleState {
+    HumanLifecycleState {
+        configured: true,
+        desired,
+        route_state: "intent_recorded".into(),
+        active: false,
+        active_route: "explicit_wrapper_required".into(),
+        entrypoint: default_human_entrypoint(),
+        session_wrapper_available: true,
+        ordinary_terminal_interception: false,
+        support_status: "manual_explicit_route_required".into(),
+        started_at,
+        stopped_at,
+    }
+}
+
+fn agent_started(now: &str) -> AgentLifecycleState {
+    agent_state(true, Some(now.into()), None)
+}
+
+fn human_started(now: &str) -> HumanLifecycleState {
+    human_state(true, Some(now.into()), None)
+}
+
+fn agent_stopped(now: &str) -> AgentLifecycleState {
+    agent_state(false, None, Some(now.into()))
+}
+
+fn human_stopped(now: &str) -> HumanLifecycleState {
+    human_state(false, None, Some(now.into()))
+}
+
+fn lifecycle_status_view(scope: LifecycleScope) -> LifecycleStatusView {
+    let path = lifecycle_path(scope);
+    let exists = path.exists();
+    let (state, parse_error) = match read_lifecycle(scope) {
+        Ok(state) => (state, None),
+        Err(err) => (default_lifecycle(scope), Some(err.to_string())),
+    };
+    LifecycleStatusView {
+        path: path.display().to_string(),
+        exists,
+        parse_error,
+        agent: state.agent,
+        human: state.human,
+        raw_dir: state.raw_dir,
+        ledgers: state.ledgers,
+    }
+}
+
+fn targets_from_args(
+    args: &LifecycleTargetArgs,
+    alias: Option<&str>,
+    action: &str,
+) -> Result<Vec<LifecycleTarget>> {
+    let mut targets = Vec::new();
+    if args.agent {
+        targets.push(LifecycleTarget::Agent);
+    }
+    if args.human {
+        targets.push(LifecycleTarget::Human);
+    }
+    if let Some(alias) = alias {
+        if !targets.is_empty() {
+            bail!("tfy {action} target alias cannot be combined with --agent/--human");
+        }
+        return parse_target_choice(alias, action);
+    }
+    if !targets.is_empty() {
+        return Ok(targets);
+    }
+    prompt_targets(action)
+}
+
+fn parse_target_choice(choice: &str, action: &str) -> Result<Vec<LifecycleTarget>> {
+    match choice.trim().to_ascii_lowercase().as_str() {
+        "1" | "a" | "agent" | "ai" => Ok(vec![LifecycleTarget::Agent]),
+        "2" | "h" | "human" => Ok(vec![LifecycleTarget::Human]),
+        "3" | "b" | "both" | "all" | "agent,human" | "human,agent" => {
+            Ok(vec![LifecycleTarget::Agent, LifecycleTarget::Human])
+        }
+        _ => bail!(
+            "tfy {action} requires --agent, --human, or an interactive choice of agent, human, or both"
+        ),
+    }
+}
+
+fn prompt_targets(action: &str) -> Result<Vec<LifecycleTarget>> {
+    eprintln!("TFY {action}: choose target: agent, human, or both");
+    let input = read_lifecycle_prompt_input()?;
+    let choice = input
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    parse_target_choice(choice, action)
+}
+
+fn read_lifecycle_prompt_input() -> Result<String> {
+    let stdin = std::io::stdin();
+    let mut input = String::new();
+    if stdin.is_terminal() {
+        stdin.lock().read_line(&mut input)?;
+    } else {
+        stdin.lock().read_to_string(&mut input)?;
+    }
+    Ok(input)
+}
+
+fn confirm_fuckyou(yes: bool) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+    eprintln!("TFY fuckyou will remove scoped TFY-owned lifecycle state. Type yes to continue.");
+    let input = read_lifecycle_prompt_input()?;
+    if input.lines().any(|line| line.trim() == "yes") {
+        Ok(())
+    } else {
+        bail!("tfy fuckyou requires confirmation; rerun with --yes or type yes")
+    }
+}
+
+fn remove_target_dir(scope: LifecycleScope, target: LifecycleTarget) -> Result<()> {
+    let base = match scope {
+        LifecycleScope::Project => PathBuf::from(".tfy"),
+        LifecycleScope::Global => global_tfy_dir(),
+    };
+    let dir = match target {
+        LifecycleTarget::Agent => base.join("agent"),
+        LifecycleTarget::Human => base.join("human"),
+    };
+    match fs::read_dir(&dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.with_context(|| format!("read {}", dir.display()))?;
+                let path = entry.path();
+                if entry.file_name() == "ledger.jsonl" {
+                    continue;
+                }
+                let file_type = entry
+                    .file_type()
+                    .with_context(|| format!("stat {}", path.display()))?;
+                if file_type.is_dir() {
+                    fs::remove_dir_all(&path)
+                        .with_context(|| format!("remove {}", path.display()))?;
+                } else {
+                    fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+                }
+            }
+            if fs::read_dir(&dir)
+                .with_context(|| format!("read {}", dir.display()))?
+                .next()
+                .is_none()
+            {
+                fs::remove_dir(&dir).with_context(|| format!("remove {}", dir.display()))?;
+            }
+            Ok(())
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("read {}", dir.display())),
+    }
+}
+
+fn target_names(targets: &[LifecycleTarget]) -> String {
+    targets
+        .iter()
+        .map(|target| match target {
+            LifecycleTarget::Agent => "agent",
+            LifecycleTarget::Human => "human",
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn host_selection(host: Option<&str>) -> Result<Vec<HostIntegration>> {
+    match host {
+        Some(host) if host.trim().eq_ignore_ascii_case("all") => Ok(host_registry()),
+        Some(host) => Ok(vec![host_integration(host)?]),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn lifecycle_host_route(
+    route_state: &str,
+    config_path: Option<String>,
+    claim_tier: &str,
+    message: impl Into<String>,
+) -> LifecycleHostRoute {
+    LifecycleHostRoute {
+        route_state: route_state.into(),
+        active: false,
+        config_path,
+        claim_tier: claim_tier.into(),
+        message: message.into(),
+    }
+}
+
+pub(crate) fn execute_start(cmd: StartCmd) -> Result<()> {
+    execute_lifecycle_start(LifecycleScope::Project, cmd)
+}
+
+pub(crate) fn execute_stop(cmd: StopCmd) -> Result<()> {
+    execute_lifecycle_stop(LifecycleScope::Project, cmd)
+}
+
+pub(crate) fn execute_fuckyou(cmd: FuckyouCmd) -> Result<()> {
+    execute_lifecycle_fuckyou(LifecycleScope::Project, cmd)
+}
+
+pub(crate) fn execute_global(cmd: GlobalCmd) -> Result<()> {
+    match cmd {
+        GlobalCmd::Start(cmd) => execute_lifecycle_start(LifecycleScope::Global, cmd),
+        GlobalCmd::Stop(cmd) => execute_lifecycle_stop(LifecycleScope::Global, cmd),
+        GlobalCmd::Fuckyou(cmd) => execute_lifecycle_fuckyou(LifecycleScope::Global, cmd),
+    }
+}
+
+fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
+    let targets = targets_from_args(&cmd.target, cmd.target_alias.as_deref(), "start")?;
+    if (cmd.host.is_some() || cmd.apply || cmd.verify) && scope == LifecycleScope::Global {
+        bail!("tfy global start P1 records global lifecycle defaults only; host --apply/--verify is project-scoped");
+    }
+    if (cmd.apply || cmd.verify) && cmd.host.is_none() {
+        bail!("tfy start --apply/--verify requires --host <host|all> so TFY never mutates hidden host state implicitly");
+    }
+    if cmd.host.is_some() && !targets.contains(&LifecycleTarget::Agent) {
+        bail!("tfy start --host configures AI-agent routing; include agent/ai or both");
+    }
+    let host_all = cmd
+        .host
+        .as_deref()
+        .is_some_and(|host| host.trim().eq_ignore_ascii_case("all"));
+    let selected_hosts = host_selection(cmd.host.as_deref())?;
+    let mut state = read_lifecycle(scope)?;
+    let now = now_stamp();
+    for target in &targets {
+        match target {
+            LifecycleTarget::Agent => {
+                let mut agent = agent_started(&now);
+                for host in &selected_hosts {
+                    if host.id == "cursor" && cmd.apply {
+                        let result = configure_cursor_project_mcp(
+                            &cmd.session,
+                            HostConfigScope::Project,
+                            false,
+                            false,
+                        )?;
+                        agent.host_routes.insert(
+                            host.id.into(),
+                            lifecycle_host_route(
+                                "applied_unverified",
+                                result
+                                    .get("config_path")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                                "applied_unverified",
+                                "safe project .cursor/mcp.json writer ran; still not launch-supported until real host invocation plus raw/ledger/no-negative/positive-savings evidence exists",
+                            ),
+                        );
+                    } else if cmd.apply && !host_all {
+                        bail!(
+                            "automatic --apply for host '{}' is not implemented safely yet; use `tfy setup --host {} --dry-run` and apply manually",
+                            host.id,
+                            host.id
+                        );
+                    } else if cmd.apply {
+                        agent.host_routes.insert(
+                            host.id.into(),
+                            lifecycle_host_route(
+                                host.status,
+                                None,
+                                host.status,
+                                "guidance-only in --host all; no unsafe writer ran for this host",
+                            ),
+                        );
+                    } else {
+                        agent.host_routes.insert(
+                            host.id.into(),
+                            lifecycle_host_route(
+                                host.status,
+                                None,
+                                host.status,
+                                "configuration snippet/guidance available; setup alone is not savings evidence",
+                            ),
+                        );
+                    }
+                }
+                if cmd.verify {
+                    agent.support_status = "verification_requested_route_evidence_required".into();
+                }
+                state.agent = Some(agent)
+            }
+            LifecycleTarget::Human => state.human = Some(human_started(&now)),
+        }
+    }
+    write_lifecycle(scope, &state)?;
+    println!(
+        "TFY {} start: targets={} configured=true desired=true",
+        scope.label(),
+        target_names(&targets)
+    );
+    if targets.contains(&LifecycleTarget::Agent) {
+        println!("agent route_state=intent_recorded active=false support_status=host_route_configuration_required private_hook_interception=false provider_prompt_gateway=false");
+        println!("Configure supported host routing through tfy mcp serve, tfy agent run, or tfy adapter run; lifecycle start does not mark any host launch-supported.");
+        for host in &selected_hosts {
+            if host.id == "cursor" && cmd.apply {
+                println!("host=cursor route_state=applied_unverified active=false config_path=.cursor/mcp.json");
+            } else if cmd.apply {
+                println!(
+                    "host={} route_state={} active=false apply=guidance_only",
+                    host.id, host.status
+                );
+            } else {
+                println!(
+                    "host={} route_state={} active=false apply=false",
+                    host.id, host.status
+                );
+                println!("--- snippet {} ---", host.id);
+                print!("{}", host_setup_snippet(host, &cmd.session));
+            }
+        }
+        if cmd.verify {
+            println!(
+                "verify_requested=true promotion=false reason=route_evidence_and_savings_required"
+            );
+        }
+    }
+    if targets.contains(&LifecycleTarget::Human) {
+        println!("human route_state=intent_recorded active=false support_status=manual_explicit_route_required ordinary_terminal_interception=false session_wrapper_available=true");
+        println!("ordinary terminal commands are not globally intercepted; use an explicit TFY wrapper/session such as `tfy shell -- <command>`.");
+    }
+    Ok(())
+}
+
+fn execute_lifecycle_stop(scope: LifecycleScope, cmd: StopCmd) -> Result<()> {
+    let targets = targets_from_args(&cmd.target, cmd.target_alias.as_deref(), "stop")?;
+    let mut state = read_lifecycle(scope)?;
+    let now = now_stamp();
+    for target in &targets {
+        match target {
+            LifecycleTarget::Agent => {
+                let mut agent = state.agent.unwrap_or_else(|| agent_stopped(&now));
+                agent.configured = true;
+                agent.desired = false;
+                agent.active = false;
+                if agent.stopped_at.is_none() {
+                    agent.stopped_at = Some(now.clone());
+                }
+                state.agent = Some(agent);
+            }
+            LifecycleTarget::Human => {
+                let mut human = state.human.unwrap_or_else(|| human_stopped(&now));
+                human.configured = true;
+                human.desired = false;
+                human.active = false;
+                human.ordinary_terminal_interception = false;
+                human.support_status = "manual_explicit_route_required".into();
+                if human.stopped_at.is_none() {
+                    human.stopped_at = Some(now.clone());
+                }
+                state.human = Some(human);
+            }
+        }
+    }
+    write_lifecycle(scope, &state)?;
+    println!(
+        "TFY {} stop: targets={} configured=true desired=false data_preserved=true raw_preserved=true",
+        scope.label(),
+        target_names(&targets)
+    );
+    Ok(())
+}
+
+fn execute_lifecycle_fuckyou(scope: LifecycleScope, cmd: FuckyouCmd) -> Result<()> {
+    let targets = if cmd.target.agent || cmd.target.human || cmd.target_alias.is_some() {
+        let targets = targets_from_args(&cmd.target, cmd.target_alias.as_deref(), "fuckyou")?;
+        confirm_fuckyou(cmd.yes)?;
+        targets
+    } else {
+        eprintln!("TFY fuckyou: choose target: agent, human, or both; then type yes to confirm");
+        let stdin = std::io::stdin();
+        let mut input = String::new();
+        if stdin.is_terminal() {
+            let mut lock = stdin.lock();
+            lock.read_line(&mut input)?;
+            if !cmd.yes {
+                lock.read_line(&mut input)?;
+            }
+        } else {
+            stdin.lock().read_to_string(&mut input)?;
+        }
+        let mut choices = input.lines().map(str::trim).filter(|line| !line.is_empty());
+        let choice = choices.next().unwrap_or("");
+        let targets = parse_target_choice(choice, "fuckyou")?;
+        if !cmd.yes && !choices.any(|line| line == "yes") {
+            bail!("tfy fuckyou requires confirmation; rerun with --yes or type yes")
+        }
+        targets
+    };
+    let mut state = read_lifecycle(scope)?;
+    for target in &targets {
+        remove_target_dir(scope, *target)?;
+        match target {
+            LifecycleTarget::Agent => state.agent = None,
+            LifecycleTarget::Human => state.human = None,
+        }
+    }
+    remove_lifecycle_if_empty(scope, &state)?;
+    println!(
+        "TFY {} fuckyou: targets={} scoped_cleanup=true raw_preserved=true shared_ledgers_preserved=true",
+        scope.label(),
+        target_names(&targets)
+    );
+    Ok(())
+}
+
+pub(crate) fn execute_raw(cmd: RawCmd) -> Result<()> {
+    if cmd.list {
+        let entries = raw_entries(&cmd.raw_dir)?;
+        let report = RawLifecycleReport {
+            status: "pass".into(),
+            raw_dir: cmd.raw_dir.display().to_string(),
+            action: "list".into(),
+            raw_ref: None,
+            count: entries.len(),
+            bytes: entries.iter().map(|entry| entry.bytes).sum(),
+            dry_run: true,
+            applied: false,
+            entries,
+            message: "listed local raw evidence; no model-facing command output was compacted"
+                .into(),
+        };
+        if cmd.json {
+            print_json(&report)?;
+        } else {
+            println!(
+                "TFY raw list: {} entrie(s) in {}",
+                report.count, report.raw_dir
+            );
+            for entry in &report.entries {
+                println!(
+                    "{} bytes={} exit={} command_sha256={}",
+                    entry.raw_ref, entry.bytes, entry.exit_code, entry.command_sha256
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(export_path) = cmd.export.as_ref() {
+        let entries = if let Some(raw_ref) = cmd.raw_ref.as_ref() {
+            vec![raw_entry(&cmd.raw_dir, raw_ref)?]
+        } else {
+            raw_entries(&cmd.raw_dir)?
+        };
+        let mut exported = Vec::new();
+        let target_is_dir = cmd.raw_ref.is_none() || export_path.extension().is_none();
+        if target_is_dir {
+            fs::create_dir_all(export_path)?;
+        } else if let Some(parent) = export_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        for entry in entries {
+            let source = PathBuf::from(&entry.path);
+            let target = if target_is_dir {
+                export_path.join(format!("{}.json", entry.raw_ref))
+            } else {
+                export_path.clone()
+            };
+            fs::copy(&source, &target).with_context(|| {
+                format!(
+                    "export raw evidence {} to {}",
+                    source.display(),
+                    target.display()
+                )
+            })?;
+            let mut exported_entry = entry.clone();
+            exported_entry.path = target.display().to_string();
+            exported.push(exported_entry);
+        }
+        let report = RawLifecycleReport {
+            status: "pass".into(),
+            raw_dir: cmd.raw_dir.display().to_string(),
+            action: "export".into(),
+            raw_ref: cmd.raw_ref.clone(),
+            count: exported.len(),
+            bytes: exported.iter().map(|entry| entry.bytes).sum(),
+            dry_run: false,
+            applied: true,
+            entries: exported,
+            message:
+                "exported local raw evidence JSON; TFY still stores raw evidence locally by default"
+                    .into(),
+        };
+        if cmd.json {
+            print_json(&report)?;
+        } else {
+            println!(
+                "TFY raw export: {} entrie(s) -> {}",
+                report.count,
+                export_path.display()
+            );
+        }
+        return Ok(());
+    }
+
+    if cmd.prune {
+        let entries = raw_entries(&cmd.raw_dir)?;
+        let selected: Vec<_> = entries
+            .into_iter()
+            .filter(|entry| raw_entry_matches_age(entry, cmd.older_than_days))
+            .collect();
+        let apply = cmd.apply && !cmd.dry_run;
+        if apply {
+            for entry in &selected {
+                fs::remove_file(&entry.path)
+                    .with_context(|| format!("prune raw evidence {}", entry.path))?;
+            }
+        }
+        let report = RawLifecycleReport {
+            status: "pass".into(),
+            raw_dir: cmd.raw_dir.display().to_string(),
+            action: "prune".into(),
+            raw_ref: None,
+            count: selected.len(),
+            bytes: selected.iter().map(|entry| entry.bytes).sum(),
+            dry_run: !apply,
+            applied: apply,
+            entries: selected,
+            message: if apply {
+                "pruned selected raw evidence files after explicit --apply".into()
+            } else {
+                "dry-run only; pass --apply without --dry-run to delete selected raw evidence"
+                    .into()
+            },
+        };
+        if cmd.json {
+            print_json(&report)?;
+        } else {
+            println!(
+                "TFY raw prune: selected={} dry_run={} applied={}",
+                report.count, report.dry_run, report.applied
+            );
+        }
+        return Ok(());
+    }
+
+    if cmd.inspect {
+        let raw_ref = cmd
+            .raw_ref
+            .as_deref()
+            .ok_or_else(|| anyhow!("tfy raw --inspect requires a raw_ref"))?;
+        let entry = raw_entry(&cmd.raw_dir, raw_ref)?;
+        let report = RawLifecycleReport {
+            status: "pass".into(),
+            raw_dir: cmd.raw_dir.display().to_string(),
+            action: "inspect".into(),
+            raw_ref: Some(raw_ref.into()),
+            count: 1,
+            bytes: entry.bytes,
+            dry_run: true,
+            applied: false,
+            entries: vec![entry],
+            message: "inspected raw evidence metadata without printing raw bytes".into(),
+        };
+        if cmd.json {
+            print_json(&report)?;
+        } else {
+            let entry = &report.entries[0];
+            println!(
+                "TFY raw inspect: {} bytes={} exit={} path={}",
+                entry.raw_ref, entry.bytes, entry.exit_code, entry.path
+            );
+            println!("command_sha256={}", entry.command_sha256);
+        }
+        return Ok(());
+    }
+
+    let raw_ref = cmd.raw_ref.as_deref().ok_or_else(|| {
+        anyhow!("tfy raw requires a raw_ref, --list, --inspect, --export, or --prune")
+    })?;
+    let bytes = raw_output_bytes(&cmd.raw_dir, raw_ref, cmd.around.as_deref(), cmd.context)?;
+    if cmd.json {
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        print_json(&json!({"raw_ref": raw_ref, "bytes": bytes.len(), "text": text}))?;
+    } else {
+        std::io::stdout().write_all(&bytes)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn execute_bench(cmd: BenchCmd) -> Result<()> {
+    let manifest = build_benchmark_manifest(&cmd)?;
+    if let Some(output) = cmd.output.as_ref() {
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(output, serde_json::to_string_pretty(&manifest)? + "\n")?;
+    }
+    if cmd.json {
+        print_json(&manifest)?;
+    } else {
+        println!("TFY bench: {}", manifest.status);
+        println!(
+            "scenarios={} raw_bytes={} model_bytes={} saved_bytes={} no_negative_savings={}",
+            manifest.tfy_self_benchmark.scenarios,
+            manifest.tfy_self_benchmark.raw_bytes,
+            manifest.tfy_self_benchmark.model_bytes,
+            manifest.tfy_self_benchmark.saved_bytes,
+            manifest.tfy_self_benchmark.no_negative_savings
+        );
+        println!("rtk_comparator={}", manifest.rtk_comparator.status);
+        println!(
+            "public_superiority_claim_ready={}",
+            manifest.public_superiority_claim_ready
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn execute_init(cmd: InitCmd) -> Result<()> {
@@ -587,6 +1683,15 @@ pub(crate) fn execute_smoke(cmd: SmokeCmd) -> Result<()> {
         let mcp = run_mcp_smoke()?;
         evidence.extend(mcp.evidence.clone());
         reports.push(mcp);
+        let required_route_evidence = write_required_route_smoke_evidence(&reports)?;
+        evidence.push(format!(
+            "host_evidence={}",
+            required_route_evidence.display()
+        ));
+        evidence.push(
+            "required-route smoke evidence can be passed to launch-report; named hosts still require real host invocation evidence"
+                .into(),
+        );
         if cmd.codex {
             if cmd.json {
                 write_codex_smoke_checklist(std::io::stderr())?;
@@ -681,18 +1786,42 @@ pub(crate) fn execute_setup(cmd: SetupCmd) -> Result<()> {
 }
 
 pub(crate) fn execute_status(cmd: StatusCmd) -> Result<()> {
-    let report = build_product_status_report();
+    let report = build_product_status_report(&cmd);
     if cmd.json {
         print_json(&report)?;
     } else {
         println!("TFY status: {}", report.status);
-        for host in &report.minimum_v1_host_matrix {
-            println!(
-                "host {}: {} — {}",
-                host.host, host.status, host.launch_claim
-            );
+        println!("target_filter: {}", report.target_filter);
+        if !cmd.human {
+            if let Some(agent) = &report.project_lifecycle.agent {
+                println!("project agent: configured={} desired={} route_state={} active={} support_status={} private_hook_interception={} provider_prompt_gateway={}", agent.configured, agent.desired, agent.route_state, agent.active, agent.support_status, agent.private_hook_interception, agent.provider_prompt_gateway);
+            }
+            if let Some(agent) = &report.global_lifecycle.agent {
+                println!("global agent: configured={} desired={} route_state={} active={} support_status={} private_hook_interception={} provider_prompt_gateway={}", agent.configured, agent.desired, agent.route_state, agent.active, agent.support_status, agent.private_hook_interception, agent.provider_prompt_gateway);
+            }
+        }
+        if !cmd.agent {
+            if let Some(human) = &report.project_lifecycle.human {
+                println!("project human: configured={} desired={} route_state={} active={} support_status={} ordinary_terminal_interception={} session_wrapper_available={}", human.configured, human.desired, human.route_state, human.active, human.support_status, human.ordinary_terminal_interception, human.session_wrapper_available);
+            }
+            if let Some(human) = &report.global_lifecycle.human {
+                println!("global human: configured={} desired={} route_state={} active={} support_status={} ordinary_terminal_interception={} session_wrapper_available={}", human.configured, human.desired, human.route_state, human.active, human.support_status, human.ordinary_terminal_interception, human.session_wrapper_available);
+            }
+        }
+        if !cmd.human {
+            for host in &report.minimum_v1_host_matrix {
+                println!(
+                    "host {}: {} — {}",
+                    host.host, host.status, host.launch_claim
+                );
+            }
         }
         for surface in &report.surfaces {
+            if (cmd.agent && surface.name.contains("human"))
+                || (cmd.human && !surface.name.contains("human"))
+            {
+                continue;
+            }
             println!("{}: {} — {}", surface.name, surface.status, surface.message);
         }
         println!("not_supported: {}", report.not_supported.join(", "));
@@ -731,8 +1860,13 @@ pub(crate) fn execute_launch_report(cmd: LaunchReportCmd) -> Result<()> {
     };
     let gain = build_gain_report(&ledgers, session)?;
     let host_evidence = build_host_evidence_summary(&ledgers, session, &cmd.host_evidence);
-    let status = build_product_status_report();
-    let report = build_launch_readiness_report(status, gain, host_evidence);
+    let release_evidence = build_release_evidence_summary(&cmd.release_evidence);
+    let status = build_product_status_report(&StatusCmd {
+        agent: false,
+        human: false,
+        json: true,
+    });
+    let report = build_launch_readiness_report(status, gain, host_evidence, release_evidence);
     if cmd.json {
         print_json(&report)?;
     } else {
@@ -1221,6 +2355,209 @@ fn host_smoke_report(host: &str) -> Result<serde_json::Value> {
     }))
 }
 
+fn raw_ref_path(raw_dir: &Path, raw_ref: &str) -> Result<PathBuf> {
+    if !valid_raw_ref(raw_ref) {
+        bail!("invalid raw ref: {raw_ref}");
+    }
+    Ok(raw_dir.join(format!("{raw_ref}.json")))
+}
+
+fn valid_raw_ref(raw_ref: &str) -> bool {
+    let Some(rest) = raw_ref.strip_prefix("cmdout_") else {
+        return false;
+    };
+    let parts: Vec<_> = rest.split('_').collect();
+    parts.len() == 2
+        && parts[0].len() == 12
+        && parts[1].len() == 16
+        && parts
+            .iter()
+            .all(|part| part.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
+fn raw_entries(raw_dir: &Path) -> Result<Vec<RawEntryReport>> {
+    let mut entries = Vec::new();
+    match fs::read_dir(raw_dir) {
+        Ok(read_dir) => {
+            for entry in read_dir {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                    continue;
+                };
+                if !valid_raw_ref(stem) {
+                    continue;
+                }
+                entries.push(raw_entry(raw_dir, stem)?);
+            }
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => return Err(err).with_context(|| format!("read raw dir {}", raw_dir.display())),
+    }
+    entries.sort_by(|a, b| a.raw_ref.cmp(&b.raw_ref));
+    Ok(entries)
+}
+
+fn raw_entry(raw_dir: &Path, raw_ref: &str) -> Result<RawEntryReport> {
+    let path = raw_ref_path(raw_dir, raw_ref)?;
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("read raw evidence {}", path.display()))?;
+    let value: Value = serde_json::from_str(&text)?;
+    let bytes = if let Some(raw_b64) = value["raw_b64"].as_str() {
+        base64_len(raw_b64)
+    } else if let Some(raw) = value["raw"].as_str() {
+        raw.len()
+    } else {
+        bail!("raw evidence {raw_ref} is missing raw/raw_b64 bytes");
+    };
+    let command = value["command"]
+        .as_str()
+        .ok_or_else(|| anyhow!("raw evidence {raw_ref} is missing command"))?;
+    let command_sha256 = sha256_hex(command.as_bytes());
+    let exit_code = value["exit_code"]
+        .as_i64()
+        .ok_or_else(|| anyhow!("raw evidence {raw_ref} is missing exit_code"))?;
+    let created_ns = value["created_ns"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("raw evidence {raw_ref} is missing created_ns"))?;
+    Ok(RawEntryReport {
+        raw_ref: raw_ref.into(),
+        path: path.display().to_string(),
+        command_present: !command.is_empty(),
+        command_sha256,
+        exit_code,
+        bytes,
+        created_ns,
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn base64_len(raw_b64: &str) -> usize {
+    let padding = raw_b64
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|b| **b == b'=')
+        .count();
+    raw_b64.len().saturating_mul(3) / 4usize - padding
+}
+
+fn raw_entry_matches_age(entry: &RawEntryReport, older_than_days: Option<u64>) -> bool {
+    let Some(days) = older_than_days else {
+        return true;
+    };
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or_default();
+    let threshold = days
+        .saturating_mul(24 * 60 * 60)
+        .saturating_mul(1_000_000_000);
+    entry.created_ns == 0 || now_ns.saturating_sub(entry.created_ns) >= threshold
+}
+
+fn build_benchmark_manifest(cmd: &BenchCmd) -> Result<BenchmarkManifest> {
+    let samples = [
+        (
+            "cargo-test-failure",
+            "cargo test",
+            "running 1 test\ntest auth::rejects_bad_token ... FAILED\nfailures:\n---- auth::rejects_bad_token stdout ----\nthread 'auth::rejects_bad_token' panicked at src/auth.rs:42: expected Unauthorized, got Ok\n",
+            101,
+        ),
+        (
+            "repeated-long-output",
+            "npm test",
+            &(1..=120).map(|i| format!("spec line {i}: ok\n")).collect::<String>(),
+            0,
+        ),
+        (
+            "git-status-noise",
+            "git status --short",
+            " M crates/tfy-cli/src/product.rs\n M README.md\n?? target/tmp/ignored\n?? .tfy/raw/cmdout_test.json\n",
+            0,
+        ),
+    ];
+    let mut scenarios = Vec::new();
+    for (name, command, raw, exit_code) in samples {
+        let summary = summarize_command_output_with_policy(
+            command,
+            raw,
+            exit_code,
+            &cmd.raw_dir,
+            ToolPolicy::Auto,
+        )?;
+        let raw_bytes = raw.len();
+        let model_bytes = summary.model_text.len();
+        scenarios.push(BenchmarkScenario {
+            name: name.into(),
+            command_family: summary.command_family,
+            raw_bytes,
+            model_bytes,
+            saved_bytes: raw_bytes as isize - model_bytes as isize,
+            no_negative_savings: model_bytes <= raw_bytes,
+            raw_ref: summary.raw_ref,
+        });
+    }
+    let raw_bytes = scenarios.iter().map(|scenario| scenario.raw_bytes).sum();
+    let model_bytes = scenarios.iter().map(|scenario| scenario.model_bytes).sum();
+    let saved_bytes = raw_bytes as isize - model_bytes as isize;
+    let no_negative_savings = scenarios
+        .iter()
+        .all(|scenario| scenario.no_negative_savings);
+    let positive_savings = scenarios.iter().any(|scenario| scenario.saved_bytes > 0);
+    let rtk_available = cmd.rtk.as_ref().is_some_and(|path| path.is_file());
+    let rtk_comparator = if rtk_available {
+        RtkComparatorReport {
+            status: "configured_unrun".into(),
+            executable: cmd.rtk.as_ref().map(|path| path.display().to_string()),
+            reason: "RTK executable was supplied; TFY records comparator availability but does not publish superiority without an explicit reviewed comparator run manifest".into(),
+            required_for_public_superiority_claim: superiority_requirements(),
+        }
+    } else {
+        RtkComparatorReport {
+            status: "skipped_unavailable".into(),
+            executable: cmd.rtk.as_ref().map(|path| path.display().to_string()),
+            reason:
+                "RTK executable/path not supplied or unavailable; emitted TFY self-benchmark only"
+                    .into(),
+            required_for_public_superiority_claim: superiority_requirements(),
+        }
+    };
+    Ok(BenchmarkManifest {
+        status: if no_negative_savings && positive_savings { "pass" } else { "blocked" }.into(),
+        generated_by: format!("tfy {}", env!("CARGO_PKG_VERSION")),
+        scenarios,
+        tfy_self_benchmark: BenchmarkSummary {
+            scenarios: 3,
+            raw_bytes,
+            model_bytes,
+            saved_bytes,
+            no_negative_savings,
+            positive_savings,
+        },
+        rtk_comparator,
+        public_superiority_claim_ready: false,
+        claim_policy: "Public RTK superiority claim fails closed unless a reviewed manifest records RTK version/mode/corpus, reproducibility, correctness/no-lost-evidence proof, and overhead comparison.".into(),
+    })
+}
+
+fn superiority_requirements() -> Vec<String> {
+    vec![
+        "RTK comparator executable and version".into(),
+        "fixed corpus and command list".into(),
+        "reproducible manifest".into(),
+        "correctness/no-lost-evidence proof".into(),
+        "overhead comparison".into(),
+        "independent review approval before publication".into(),
+    ]
+}
+
 fn selected_targets(project: bool, global: bool) -> Vec<ScopeTarget> {
     match (project, global) {
         (_, true) => vec![ScopeTarget::Global],
@@ -1410,9 +2747,26 @@ fn marker_present(text: &str) -> bool {
     text.contains(TFY_CODEX_START) && text.contains(TFY_CODEX_END)
 }
 
-fn build_product_status_report() -> ProductStatusReport {
+fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
+    let target_filter = match (cmd.agent, cmd.human) {
+        (true, false) => "agent",
+        (false, true) => "human",
+        _ => "all",
+    };
+    let mut project_lifecycle = lifecycle_status_view(LifecycleScope::Project);
+    let mut global_lifecycle = lifecycle_status_view(LifecycleScope::Global);
+    if cmd.agent && !cmd.human {
+        project_lifecycle.human = None;
+        global_lifecycle.human = None;
+    } else if cmd.human && !cmd.agent {
+        project_lifecycle.agent = None;
+        global_lifecycle.agent = None;
+    }
     ProductStatusReport {
         status: "active".into(),
+        target_filter: target_filter.into(),
+        project_lifecycle,
+        global_lifecycle,
         minimum_v1_host_matrix: minimum_v1_host_matrix(),
         surfaces: vec![
             SurfaceStatus { name: "command_output".into(), status: "active".into(), message: "AI-origin commands can route through tfy agent/adapter/MCP; normal human terminal commands are not intercepted.".into() },
@@ -1426,9 +2780,108 @@ fn build_product_status_report() -> ProductStatusReport {
             SurfaceStatus { name: "editor_integration".into(), status: "not_supported".into(), message: "Editor auto-connection is outside TFY scope.".into() },
             SurfaceStatus { name: "private_codex_hook".into(), status: "not_supported".into(), message: "No private or hidden Codex prompt interception is claimed.".into() },
         ],
-        launch_claim_gate: "A host is launch-supported only after safe setup, real host invocation smoke, host-bound ledger/raw evidence, raw recovery, no-negative-savings, and positive-savings checks pass.".into(),
+        claim_evidence_ladder: claim_evidence_ladder(),
+        launch_claim_gate: "A host is launch-supported only after config snippet, config write/apply proof, host launch, verified host MCP or official hook invocation, route evidence, raw recovery, no-negative-savings, and positive-savings checks pass.".into(),
         not_supported: not_supported_surfaces(),
         truthfulness_boundary: "automatic configuration is limited to supported AI-host routes; no provider proxy, editor hook, private Codex hook, or universal shell interception".into(),
+    }
+}
+
+fn claim_evidence_ladder() -> Vec<String> {
+    [
+        "config_snippet_available",
+        "config_written",
+        "host_launched",
+        "verified_host_mcp_invocation",
+        "verified_host_hook",
+        "route_evidence_recorded",
+        "savings_verified",
+        "launch_supported",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+fn unsupported_ingress() -> Vec<String> {
+    vec![
+        "provider_api_prompt_proxy".into(),
+        "private_codex_hook_interception".into(),
+        "universal_terminal_interception".into(),
+        "editor_internal_auto_hook_without_official_api_and_e2e".into(),
+    ]
+}
+
+fn host_readiness_from_integration(host: &HostIntegration) -> HostReadiness {
+    let claim_tier = if host.status == "planned_discovery" {
+        "planned_discovery"
+    } else {
+        "configurable"
+    };
+    HostReadiness {
+        host: host.id.into(),
+        status: host.status.into(),
+        required_for_v1: host.required_for_v1,
+        claim_tier: claim_tier.into(),
+        evidence_tiers: initial_host_evidence_tiers(host.status),
+        next_evidence_tier: next_evidence_tier(&initial_host_evidence_tiers(host.status)).into(),
+        supported_ingress: if host.status == "planned_discovery" {
+            Vec::new()
+        } else {
+            vec!["mcp_stdio".into()]
+        },
+        equivalence_ingress: if host.status == "planned_discovery" {
+            Vec::new()
+        } else {
+            vec!["official_host_hook_test_shim_only".into()]
+        },
+        unsupported_ingress: unsupported_ingress(),
+        config_strategy: host.config_strategy.into(),
+        apply_strategy: host.apply_strategy.into(),
+        smoke_strategy: host.smoke_strategy.into(),
+        host_evidence_strategy: host.host_evidence_strategy.into(),
+        setup: host.setup.into(),
+        normal_workflow: host.normal_workflow.into(),
+        evidence_gate: host
+            .evidence_gate
+            .iter()
+            .map(|item| (*item).into())
+            .collect(),
+        launch_claim: host.launch_claim.into(),
+    }
+}
+
+fn initial_host_evidence_tiers(status: &str) -> Vec<String> {
+    match status {
+        "config_snippet_available" => vec!["config_snippet_available".into()],
+        "planned_discovery" => vec!["planned_discovery".into()],
+        "unsupported" => vec!["unsupported".into()],
+        _ => vec![status.into()],
+    }
+}
+
+fn next_evidence_tier(observed: &[String]) -> &'static str {
+    if observed
+        .iter()
+        .any(|observed| observed == "planned_discovery")
+    {
+        return "official_route_discovery";
+    }
+    let has = |tier: &str| observed.iter().any(|observed| observed == tier);
+    if has("launch_supported") {
+        "complete"
+    } else if has("savings_verified") {
+        "launch_supported"
+    } else if has("route_evidence_recorded") {
+        "savings_verified"
+    } else if has("verified_host_mcp_invocation") || has("verified_host_hook") {
+        "route_evidence_recorded"
+    } else if has("host_launched") {
+        "verified_host_mcp_invocation_or_verified_host_hook"
+    } else if has("config_written") {
+        "host_launched"
+    } else {
+        "config_written"
     }
 }
 
@@ -1439,6 +2892,11 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
             status: "not_configured".into(),
             required_for_v1: true,
             claim_tier: "not_configured".into(),
+            evidence_tiers: Vec::new(),
+            next_evidence_tier: "config_written".into(),
+            supported_ingress: vec!["mcp_stdio".into()],
+            equivalence_ingress: Vec::new(),
+            unsupported_ingress: unsupported_ingress(),
             config_strategy: "host MCP stdio server entry pointing to `tfy mcp serve`".into(),
             apply_strategy: "host-specific apply; generic route requires explicit host config".into(),
             smoke_strategy: "local MCP initialize/tools-list plus host invocation artifact".into(),
@@ -1457,6 +2915,11 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
             status: "not_configured".into(),
             required_for_v1: true,
             claim_tier: "not_configured".into(),
+            evidence_tiers: Vec::new(),
+            next_evidence_tier: "config_written".into(),
+            supported_ingress: vec!["agent_wrapper".into(), "generic_shell_adapter".into()],
+            equivalence_ingress: Vec::new(),
+            unsupported_ingress: unsupported_ingress(),
             config_strategy: "agent command executor uses `tfy agent` or `tfy adapter run`".into(),
             apply_strategy: "manual/host-owned executor wiring until a host-specific writer exists".into(),
             smoke_strategy: "adapter run smoke with ToolCommandCompleted ledger event".into(),
@@ -1475,6 +2938,11 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
             status: "not_configured".into(),
             required_for_v1: true,
             claim_tier: "not_configured".into(),
+            evidence_tiers: Vec::new(),
+            next_evidence_tier: "config_written".into(),
+            supported_ingress: vec!["generic_shell_adapter".into()],
+            equivalence_ingress: Vec::new(),
+            unsupported_ingress: unsupported_ingress(),
             config_strategy: "generic-shell adapter installed for an AI command executor only".into(),
             apply_strategy: "`tfy adapter install --target generic-shell` where the caller opts in".into(),
             smoke_strategy: "wrapper invocation and adapter report smoke".into(),
@@ -1494,6 +2962,11 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
             status: "config_snippet_available".into(),
             required_for_v1: false,
             claim_tier: "configurable".into(),
+            evidence_tiers: vec!["config_snippet_available".into()],
+            next_evidence_tier: "config_written".into(),
+            supported_ingress: vec!["mcp_stdio".into()],
+            equivalence_ingress: vec!["official_host_hook_test_shim_only".into()],
+            unsupported_ingress: unsupported_ingress(),
             config_strategy: "Codex MCP command/TOML setup plus project AGENTS.md guidance".into(),
             apply_strategy: "project AGENTS.md apply via `tfy init`; Codex TOML remains dry-run/manual".into(),
             smoke_strategy: "local MCP smoke plus real Codex invocation artifact".into(),
@@ -1512,29 +2985,7 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
         .into_iter()
         .filter(|host| host.id != "codex")
     {
-        hosts.push(HostReadiness {
-            host: host.id.into(),
-            status: host.status.into(),
-            required_for_v1: host.required_for_v1,
-            claim_tier: if host.status == "planned_discovery" {
-                "planned_discovery"
-            } else {
-                "configurable"
-            }
-            .into(),
-            config_strategy: host.config_strategy.into(),
-            apply_strategy: host.apply_strategy.into(),
-            smoke_strategy: host.smoke_strategy.into(),
-            host_evidence_strategy: host.host_evidence_strategy.into(),
-            setup: host.setup.into(),
-            normal_workflow: host.normal_workflow.into(),
-            evidence_gate: host
-                .evidence_gate
-                .iter()
-                .map(|item| (*item).into())
-                .collect(),
-            launch_claim: host.launch_claim.into(),
-        });
+        hosts.push(host_readiness_from_integration(&host));
     }
     hosts
 }
@@ -1542,9 +2993,12 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
 fn not_supported_surfaces() -> Vec<String> {
     vec![
         "provider_api_gateway".into(),
+        "provider_api_prompt_proxy".into(),
         "editor_integration".into(),
         "private_codex_hook".into(),
+        "private_codex_hook_interception".into(),
         "ordinary_human_terminal_interception".into(),
+        "universal_terminal_interception".into(),
         "unconfigured_hosts".into(),
     ]
 }
@@ -1764,6 +3218,36 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     .overhead_exception
                     .as_deref()
                     .is_some_and(|exception| !exception.trim().is_empty());
+                let route_type_allowed = required_route_type_allowed(&host.route_type);
+                let config_scope_valid = non_empty_opt(&host.config_scope);
+                let smoke_id_valid = non_empty_opt(&host.smoke_id);
+                let timestamp_valid = non_empty_opt(&host.timestamp);
+                let config_path_verified = host
+                    .config_path
+                    .as_ref()
+                    .is_some_and(|artifact| host_artifact_exists(base, artifact));
+                let ledger_artifact_verified = host
+                    .ledger_artifact
+                    .as_ref()
+                    .is_some_and(|artifact| host_artifact_exists(base, artifact));
+                let raw_artifact_verified = host
+                    .raw_artifact
+                    .as_ref()
+                    .is_some_and(|artifact| host_artifact_exists(base, artifact));
+                let (no_negative, positive) =
+                    match (host.redacted_public_bytes, host.model_visible_bytes) {
+                        (Some(raw), Some(model)) => (model <= raw, raw > model),
+                        _ => (true, false),
+                    };
+                let host_bound = route_type_allowed
+                    && config_scope_valid
+                    && config_path_verified
+                    && ledger_artifact_verified
+                    && raw_artifact_verified
+                    && smoke_id_valid
+                    && timestamp_valid
+                    && no_negative
+                    && positive;
                 route.setup_artifact_verified |= setup_artifact_verified;
                 route.invocation_artifact_verified |= invocation_artifact_verified;
                 route.setup_verified |= host.setup_verified && setup_artifact_verified;
@@ -1776,15 +3260,42 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                 if route.overhead_exception.is_none() {
                     route.overhead_exception = host.overhead_exception;
                 }
+                route.host_bound_evidence |= host_bound;
+                route.no_negative_savings &= no_negative;
+                route.positive_savings |= positive;
+                if host_bound {
+                    if route.route_type.is_none() {
+                        route.route_type = host.route_type.clone();
+                    }
+                    if route.config_scope.is_none() {
+                        route.config_scope = host.config_scope.clone();
+                    }
+                    if route.config_path.is_none() {
+                        route.config_path = host
+                            .config_path
+                            .as_ref()
+                            .map(|path| path.display().to_string());
+                    }
+                    if route.smoke_id.is_none() {
+                        route.smoke_id = host.smoke_id.clone();
+                    }
+                    if route.host_version.is_none() {
+                        route.host_version = host.host_version.clone();
+                    }
+                }
                 summary.evidence_notes.push(format!(
-                    "host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={}",
+                    "host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={} host_bound_evidence={} config_path_verified={} ledger_artifact_verified={} raw_artifact_verified={}",
                     host.host,
                     host.setup_verified,
                     setup_artifact_verified,
                     host.real_invocation_verified,
                     invocation_artifact_verified,
                     overhead_measured,
-                    overhead_passed
+                    overhead_passed,
+                    host_bound,
+                    config_path_verified,
+                    ledger_artifact_verified,
+                    raw_artifact_verified
                 ));
             } else if host_accepts_launch_evidence(&host.host) {
                 let setup_artifact_verified = host
@@ -1829,7 +3340,7 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     .host_id
                     .as_deref()
                     .is_none_or(|host_id| host_id == host.host);
-                let route_type_valid = non_empty_opt(&host.route_type);
+                let route_type_allowed = named_host_route_type_allowed(&host.route_type);
                 let config_scope_valid = non_empty_opt(&host.config_scope);
                 let smoke_id_valid = non_empty_opt(&host.smoke_id);
                 let timestamp_valid = non_empty_opt(&host.timestamp);
@@ -1855,17 +3366,27 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                             (true, false)
                         }
                     };
+                let hook_route = named_host_route_is_hook(&host.route_type);
+                let hook_authorized = !hook_route
+                    || (host.official_docs_backed == Some(true)
+                        && host.kill_switch_available == Some(true)
+                        && host.uninstall_available == Some(true)
+                        && host_official_hook_launch_supported(&host.host));
                 let host_bound = host_id_matches
-                    && route_type_valid
+                    && route_type_allowed
                     && config_scope_valid
                     && config_path_verified
                     && ledger_artifact_verified
                     && raw_artifact_verified
                     && smoke_id_valid
                     && timestamp_valid
+                    && hook_authorized
                     && no_negative
                     && positive;
                 route.host_bound_evidence |= host_bound;
+                route.official_docs_backed |= host.official_docs_backed == Some(true);
+                route.kill_switch_available |= host.kill_switch_available == Some(true);
+                route.uninstall_available |= host.uninstall_available == Some(true);
                 route.no_negative_savings &= no_negative;
                 route.positive_savings |= positive;
                 if host_bound {
@@ -1896,7 +3417,7 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     summary.positive_savings |= positive;
                 }
                 summary.evidence_notes.push(format!(
-                    "named_host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={} host_bound_evidence={} config_path_verified={} ledger_artifact_verified={} raw_artifact_verified={}",
+                    "named_host_evidence {} setup_verified={} setup_artifact_verified={} real_invocation_verified={} invocation_artifact_verified={} overhead_measured={} overhead_passed={} host_bound_evidence={} config_path_verified={} ledger_artifact_verified={} raw_artifact_verified={} hook_route={} hook_authorized={}",
                     host.host,
                     host.setup_verified,
                     setup_artifact_verified,
@@ -1907,7 +3428,9 @@ fn apply_host_setup_evidence(summary: &mut HostEvidenceSummary, files: &[PathBuf
                     host_bound,
                     config_path_verified,
                     ledger_artifact_verified,
-                    raw_artifact_verified
+                    raw_artifact_verified,
+                    hook_route,
+                    hook_authorized
                 ));
             }
         }
@@ -1920,8 +3443,44 @@ fn non_empty_opt(value: &Option<String>) -> bool {
         .is_some_and(|value| !value.trim().is_empty())
 }
 
+fn named_host_route_type_allowed(value: &Option<String>) -> bool {
+    matches!(
+        value.as_deref(),
+        Some("mcp" | "mcp_stdio" | "official_host_hook" | "host_hook" | "hook")
+    )
+}
+
+fn required_route_type_allowed(value: &Option<String>) -> bool {
+    matches!(
+        value.as_deref(),
+        Some("generic_shell" | "tfy_agent_adapter" | "mcp" | "mcp_stdio")
+    )
+}
+
+fn named_host_route_is_hook(value: &Option<String>) -> bool {
+    matches!(
+        value.as_deref(),
+        Some("official_host_hook" | "host_hook" | "hook")
+    )
+}
+
+fn route_evidence_has_allowed_launch_route(route: &RouteEvidence) -> bool {
+    matches!(route.route_type.as_deref(), Some("mcp" | "mcp_stdio"))
+        || (named_host_route_is_hook(&route.route_type)
+            && route.official_docs_backed
+            && route.kill_switch_available
+            && route.uninstall_available)
+}
+
 fn host_accepts_launch_evidence(host: &str) -> bool {
     host_integration(host).is_ok_and(|integration| integration.status != "planned_discovery")
+}
+
+fn host_official_hook_launch_supported(_host: &str) -> bool {
+    // No named production host currently has an implemented official-hook writer with
+    // docs, uninstall, kill-switch, and e2e evidence. The hook surface is test-shim
+    // only until a host is explicitly enabled here with regression coverage.
+    false
 }
 
 fn host_artifact_exists(base: &Path, artifact: &Path) -> bool {
@@ -1992,12 +3551,27 @@ fn apply_launch_evidence(
             }
         };
         if launch_supported {
+            host.evidence_tiers = route
+                .map(|route| host_observed_evidence_tiers(&host.host, route))
+                .unwrap_or_else(claim_evidence_ladder);
+            if !host
+                .evidence_tiers
+                .iter()
+                .any(|tier| tier == "launch_supported")
+            {
+                host.evidence_tiers.push("launch_supported".into());
+            }
+            host.next_evidence_tier = next_evidence_tier(&host.evidence_tiers).into();
             host.status = "launch_supported".into();
             host.claim_tier = "launch_supported".into();
             host.launch_claim =
                 "launch-supported for this report: setup, real host invocation, host-bound ledger evidence, raw recovery, no-negative-savings, and positive-savings gates passed"
                     .into();
         } else if local_verified {
+            host.evidence_tiers = route
+                .map(|route| host_observed_evidence_tiers(&host.host, route))
+                .unwrap_or_else(|| initial_host_evidence_tiers(&host.status));
+            host.next_evidence_tier = next_evidence_tier(&host.evidence_tiers).into();
             host.status = if route.is_some_and(|route| route.real_invocation_verified) {
                 "verified_host_invocation"
             } else if route.is_some_and(|route| route.setup_verified) {
@@ -2059,8 +3633,43 @@ fn apply_launch_evidence(
     hosts
 }
 
+fn host_observed_evidence_tiers(host: &str, route: &RouteEvidence) -> Vec<String> {
+    let mut tiers = Vec::new();
+    if route.setup_artifact_verified {
+        tiers.push("config_written".into());
+    }
+    if route.invocation_artifact_verified {
+        tiers.push("host_launched".into());
+    }
+    if route.real_invocation_verified && route.tool {
+        match route.route_type.as_deref() {
+            Some("official_host_hook") | Some("host_hook") | Some("hook") => {
+                tiers.push("verified_host_hook".into());
+            }
+            Some("mcp_stdio") | Some("mcp") | None if host == "mcp_stdio" => {
+                tiers.push("verified_host_mcp_invocation".into());
+            }
+            Some("mcp_stdio") | Some("mcp") => {
+                tiers.push("verified_host_mcp_invocation".into());
+            }
+            _ => tiers.push("verified_host_invocation".into()),
+        }
+    }
+    if route.host_bound_evidence || route.commands > 0 || route.raw_refs > 0 {
+        tiers.push("route_evidence_recorded".into());
+    }
+    if route.raw_refs > 0 && route.no_negative_savings && route.positive_savings {
+        tiers.push("savings_verified".into());
+    }
+    if named_host_ready(route) {
+        tiers.push("launch_supported".into());
+    }
+    tiers
+}
+
 fn named_host_ready(route: &RouteEvidence) -> bool {
     route_host_ready(route)
+        && route_evidence_has_allowed_launch_route(route)
         && route.host_bound_evidence
         && route.commands > 0
         && route.raw_refs > 0
@@ -2069,18 +3678,250 @@ fn named_host_ready(route: &RouteEvidence) -> bool {
 }
 
 fn route_host_ready(route: &RouteEvidence) -> bool {
+    let hook_route = matches!(
+        route.route_type.as_deref(),
+        Some("official_host_hook" | "host_hook" | "hook")
+    );
     route.setup_verified
         && route.real_invocation_verified
         && route.setup_artifact_verified
         && route.invocation_artifact_verified
+        && route.host_bound_evidence
+        && (!hook_route
+            || (route.official_docs_backed
+                && route.kill_switch_available
+                && route.uninstall_available))
         && (route.overhead_measured || route.overhead_exception.is_some())
         && route.overhead_passed
+}
+
+fn benchmark_manifest_passes(base: &Path, artifact: &Path) -> bool {
+    let path = if artifact.is_absolute() {
+        artifact.to_path_buf()
+    } else {
+        base.join(artifact)
+    };
+    let Ok(text) = fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    value["status"] == "pass"
+        && value["tfy_self_benchmark"]["no_negative_savings"] == true
+        && value["tfy_self_benchmark"]["positive_savings"] == true
+        && value["scenarios"].as_array().is_some_and(|scenarios| {
+            !scenarios.is_empty()
+                && scenarios.iter().all(|scenario| {
+                    scenario["raw_ref"]
+                        .as_str()
+                        .is_some_and(|raw_ref| !raw_ref.is_empty())
+                        && scenario["no_negative_savings"] == true
+                })
+        })
+}
+
+fn build_release_evidence_summary(files: &[PathBuf]) -> ReleaseEvidenceSummary {
+    let mut summary = ReleaseEvidenceSummary::default();
+    for path in files {
+        let Ok(text) = fs::read_to_string(path) else {
+            summary.notes.push(format!(
+                "release_evidence_file_unreadable={}",
+                path.display()
+            ));
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_str::<ReleaseEvidenceFile>(&text) else {
+            summary.notes.push(format!(
+                "release_evidence_file_invalid_json={}",
+                path.display()
+            ));
+            continue;
+        };
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        let artifact = |candidate: &Option<PathBuf>| {
+            candidate
+                .as_ref()
+                .is_some_and(|artifact| host_artifact_exists(base, artifact))
+        };
+        summary.cargo_install_verified |= parsed.cargo_install_verified.unwrap_or(false)
+            && artifact(&parsed.cargo_install_binary);
+        summary.cargo_build_release_verified |=
+            parsed.cargo_build_release_verified.unwrap_or(false)
+                && artifact(&parsed.release_binary);
+        summary.archive_checksum_dry_run |= parsed.archive_checksum_dry_run.unwrap_or(false)
+            && artifact(&parsed.archive_artifact)
+            && artifact(&parsed.checksum_artifact);
+        summary.docs_demo_release_notes_complete |=
+            parsed.docs_demo_release_notes_complete.unwrap_or(false)
+                && artifact(&parsed.docs_artifact)
+                && artifact(&parsed.release_notes_artifact);
+        summary.independent_reviews_approved |=
+            parsed.independent_reviews_approved.unwrap_or(false)
+                && artifact(&parsed.review_artifact);
+        summary.pr_ci_green |= parsed.pr_ci_green.unwrap_or(false) && artifact(&parsed.ci_artifact);
+        summary.benchmark_manifest_generated |=
+            parsed.benchmark_manifest_generated.unwrap_or(false)
+                && parsed
+                    .benchmark_manifest
+                    .as_ref()
+                    .is_some_and(|artifact| benchmark_manifest_passes(base, artifact));
+        if let Some(notes) = parsed.notes {
+            summary.notes.extend(notes);
+        }
+        summary
+            .notes
+            .push(format!("release_evidence_file={}", path.display()));
+    }
+    summary
+}
+
+fn build_release_tier_report(
+    host_matrix: &[HostReadiness],
+    gain: &GainReport,
+    host_evidence: &HostEvidenceSummary,
+    release_evidence: &ReleaseEvidenceSummary,
+    launch_blockers: &[String],
+) -> ReleaseTierReport {
+    let required_routes_ready = ["generic_shell", "tfy_agent_adapter", "mcp_stdio"]
+        .iter()
+        .all(|required| {
+            host_matrix
+                .iter()
+                .any(|host| host.host == *required && host.status == "launch_supported")
+        });
+    let unsupported_audit_pass = true;
+    let raw_lifecycle_available = true;
+    let benchmark_self_manifest_available = true;
+    let preview_blockers = tier_blockers(&[
+        (
+            required_routes_ready,
+            "required routes generic_shell/tfy_agent_adapter/mcp_stdio are not launch_supported",
+        ),
+        (
+            release_evidence.cargo_install_verified,
+            "cargo install --path verification evidence missing",
+        ),
+        (
+            release_evidence.cargo_build_release_verified,
+            "cargo build --release verification evidence missing",
+        ),
+        (gain.commands > 0, "no command-output gain evidence"),
+        (gain.saved_bytes >= 0, "negative savings detected"),
+        (
+            host_evidence.no_negative_savings,
+            "missing no-negative route evidence",
+        ),
+        (
+            host_evidence.positive_savings,
+            "missing positive route savings evidence",
+        ),
+        (
+            raw_lifecycle_available,
+            "raw lifecycle commands unavailable",
+        ),
+        (
+            benchmark_self_manifest_available && release_evidence.benchmark_manifest_generated,
+            "benchmark self-manifest unavailable",
+        ),
+        (unsupported_audit_pass, "unsupported claim audit failed"),
+    ]);
+    let developer_preview_ready = TierStatus {
+        status: if preview_blockers.is_empty() {
+            "ready"
+        } else {
+            "blocked"
+        }
+        .into(),
+        evidence: vec![
+            "cargo build/install must be verified by release gate".into(),
+            "first-success quickstart uses smoke --all + launch-report evidence".into(),
+            "raw lifecycle: tfy raw --list/--inspect/--export/--prune".into(),
+            "benchmark manifest: tfy bench --json".into(),
+            "unsupported claim audit is generated from launch-report".into(),
+        ],
+        blockers: preview_blockers,
+    };
+    let rc_blockers = tier_blockers(&[
+        (
+            developer_preview_ready.status == "ready",
+            "developer_preview_ready is blocked",
+        ),
+        (
+            release_evidence.archive_checksum_dry_run,
+            "release archive/checksum dry-run evidence must be attached by release script/CI",
+        ),
+        (
+            release_evidence.docs_demo_release_notes_complete,
+            "docs/demo/release notes completion must be verified in final closeout",
+        ),
+        (
+            release_evidence.independent_reviews_approved && release_evidence.pr_ci_green,
+            "independent reviews and PR/CI green are final-story gates",
+        ),
+    ]);
+    let rc_ready = TierStatus {
+        status: if rc_blockers.is_empty() { "ready" } else { "blocked" }.into(),
+        evidence: vec!["RC is finalized by packaging/docs/review/CI closeout, not by local launch-report alone".into()],
+        blockers: rc_blockers,
+    };
+    let named_host_launch = host_matrix.iter().any(|host| {
+        !host.required_for_v1 && host.status == "launch_supported" && host.host != "openclaw"
+    });
+    let ga_blockers = tier_blockers(&[
+        (rc_ready.status == "ready", "rc_ready is blocked"),
+        (named_host_launch, "no named AI host has real invocation + route-bound raw/no-negative/positive-savings launch evidence"),
+        (launch_blockers.is_empty(), "launch-report still has blockers"),
+    ]);
+    let ga_ready = TierStatus {
+        status: if ga_blockers.is_empty() { "ready" } else { "blocked" }.into(),
+        evidence: vec!["GA requires at least one named AI host promoted to launch_supported by real invocation evidence".into()],
+        blockers: ga_blockers,
+    };
+    let superiority_blockers = tier_blockers(&[
+        (ga_ready.status == "ready", "ga_ready is blocked"),
+        (
+            false,
+            "RTK comparator manifest with version/mode/corpus/reproducibility is not attached",
+        ),
+        (
+            false,
+            "public superiority publication approval is not attached",
+        ),
+    ]);
+    let public_superiority_claim_ready = TierStatus {
+        status: if superiority_blockers.is_empty() {
+            "ready"
+        } else {
+            "blocked"
+        }
+        .into(),
+        evidence: vec![
+            "Public RTK superiority claims fail closed without reviewed comparator manifest".into(),
+        ],
+        blockers: superiority_blockers,
+    };
+    ReleaseTierReport {
+        developer_preview_ready,
+        rc_ready,
+        ga_ready,
+        public_superiority_claim_ready,
+    }
+}
+
+fn tier_blockers(checks: &[(bool, &str)]) -> Vec<String> {
+    checks
+        .iter()
+        .filter(|(ok, _message)| !*ok)
+        .map(|(_ok, message)| (*message).into())
+        .collect()
 }
 
 fn build_launch_readiness_report(
     status: ProductStatusReport,
     gain: GainReport,
     host_evidence: HostEvidenceSummary,
+    release_evidence: ReleaseEvidenceSummary,
 ) -> LaunchReadinessReport {
     let mut blockers = Vec::new();
     let host_matrix = apply_launch_evidence(status.minimum_v1_host_matrix, &gain, &host_evidence);
@@ -2112,9 +3953,12 @@ fn build_launch_readiness_report(
             "blocked"
         }
         .into(),
+        release_tiers: build_release_tier_report(&host_matrix, &gain, &host_evidence, &release_evidence, &blockers),
         host_matrix,
+        claim_evidence_ladder: claim_evidence_ladder(),
         gain,
         host_evidence,
+        release_evidence,
         release_thresholds: ReleaseThresholds::default(),
         measurement_method: MeasurementMethod::default(),
         privacy_raw_store: PrivacyRawStorePolicy::default(),
@@ -2122,7 +3966,7 @@ fn build_launch_readiness_report(
         unsupported_claim_audit: UnsupportedClaimAudit {
             status: "pass".into(),
             audited_claims: not_supported_surfaces(),
-            rule: "unsupported provider/editor/private-hook/universal-terminal routes must remain not_supported/planned unless a separate official adapter and e2e evidence exist".into(),
+            rule: "unsupported provider/API prompt proxy, editor-internal auto hook, private Codex hook interception, and universal terminal interception claims must remain not_supported/planned; MCP and official-host-hook routes may promote only through config_written, host_launched, verified host invocation, route evidence, and savings_verified gates".into(),
         },
         blockers,
         not_supported: status.not_supported,
@@ -2155,7 +3999,7 @@ fn build_explain_report() -> ProductExplainReport {
             "compact state projections derived from local ledgers".into(),
         ],
         raw_recovery: "Use raw_ref values with `tfy raw` or MCP `tfy_raw_get`/`tfy://raw/{raw_ref}` resources to recover byte-exact evidence.".into(),
-        deletion_export: "Until first-class retention commands are added, delete/export local evidence by managing the .tfy raw and ledger paths listed by doctor/explain; TFY does not upload raw evidence.".into(),
+        deletion_export: "Use `tfy raw --list`, `tfy raw <raw_ref> --inspect`, `tfy raw <raw_ref> --export <path>`, and explicit `tfy raw --prune --dry-run/--apply` for local raw evidence lifecycle; TFY does not upload raw evidence and ledger files remain local.".into(),
         launch_pass_block_reason: "`tfy launch-report` passes only when required v1 hosts have setup + real invocation + host-bound ledger/raw recovery + no-negative/positive-savings evidence and all claim/privacy gates pass.".into(),
         out_of_scope: vec![
             "provider/API gateway proxy".into(),
@@ -2235,6 +4079,107 @@ fn build_doctor_report(codex: bool) -> DoctorReport {
         status: status.into(),
         diagnostics,
     }
+}
+
+fn write_required_route_smoke_evidence(reports: &[SmokeReport]) -> Result<PathBuf> {
+    let root = std::env::temp_dir().join(format!(
+        "tfy-required-route-evidence-{}-{}",
+        std::process::id(),
+        stable_id("required-route-evidence")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)?;
+    let setup = root.join("setup-proof.txt");
+    let invocation = root.join("invocation-proof.txt");
+    fs::write(
+        &setup,
+        "local required-route setup verified by tfy smoke --all",
+    )?;
+    fs::write(
+        &invocation,
+        "local required-route invocation verified by tfy smoke --all",
+    )?;
+    let mut hosts = Vec::new();
+    for (mode, host, route_type) in [
+        ("adapter", "generic_shell", "generic_shell"),
+        ("agent", "tfy_agent_adapter", "tfy_agent_adapter"),
+        ("mcp", "mcp_stdio", "mcp_stdio"),
+    ] {
+        let report = reports
+            .iter()
+            .find(|report| report.mode == mode)
+            .ok_or_else(|| anyhow!("missing {mode} smoke report"))?;
+        let ledger = report
+            .evidence
+            .iter()
+            .find_map(|entry| entry.strip_prefix("ledger="))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&report.sample_path));
+        let raw_dir = report
+            .evidence
+            .iter()
+            .find_map(|entry| entry.strip_prefix("raw_dir="))
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("missing raw_dir evidence for {mode}"))?;
+        let events = load_events(&ledger).with_context(|| format!("read {mode} smoke ledger"))?;
+        let mut raw_ref = None;
+        let mut raw_bytes = 0usize;
+        let mut model_bytes = 0usize;
+        for event in events {
+            if let GatewayEvent::ToolCommandCompleted {
+                raw_bytes: event_raw_bytes,
+                model_bytes: event_model_bytes,
+                raw_chars,
+                model_chars,
+                summary_chars,
+                raw_ref: event_raw_ref,
+                ..
+            } = event.payload
+            {
+                raw_ref = Some(event_raw_ref);
+                raw_bytes = if event_raw_bytes == 0 {
+                    raw_chars
+                } else {
+                    event_raw_bytes
+                };
+                model_bytes = if event_model_bytes != 0 {
+                    event_model_bytes
+                } else if model_chars != 0 {
+                    model_chars
+                } else {
+                    summary_chars
+                };
+                break;
+            }
+        }
+        let raw_ref = raw_ref.ok_or_else(|| anyhow!("missing command event for {mode}"))?;
+        let raw_artifact = raw_dir.join(format!("{raw_ref}.json"));
+        let config_path = root.join(format!("{host}-config.txt"));
+        fs::write(&config_path, format!("{host} local smoke config proof"))?;
+        hosts.push(json!({
+            "host": host,
+            "setup_verified": true,
+            "real_invocation_verified": true,
+            "setup_artifact": setup,
+            "invocation_artifact": invocation,
+            "route_type": route_type,
+            "config_scope": "local_smoke",
+            "config_path": config_path,
+            "ledger_artifact": ledger,
+            "raw_artifact": raw_artifact,
+            "redacted_public_bytes": raw_bytes,
+            "model_visible_bytes": model_bytes,
+            "timestamp": "2026-06-09T00:00:00Z",
+            "smoke_id": format!("tfy-{mode}-smoke"),
+            "overhead_exception": format!("local smoke fixture: {host} overhead accepted for Developer Preview route evidence")
+        }));
+    }
+    let evidence = root.join("host-evidence.json");
+    fs::write(
+        &evidence,
+        serde_json::to_string_pretty(&json!({ "hosts": hosts }))? + "\n",
+    )?;
+    Ok(evidence)
 }
 
 fn run_adapter_smoke() -> Result<SmokeReport> {

@@ -1,5 +1,6 @@
 # Build outputs
 target/
+dist/
 
 # Python caches/test artifacts
 __pycache__/

@@ -2,6 +2,7 @@ mod adapter;
 mod agent;
 mod display;
 mod gateways;
+mod hook;
 mod mcp;
 mod product;
 mod util;
@@ -18,14 +19,16 @@ use display::{
 use gateways::{
     context_decision_from_value, execute_context_gateway, execute_output_gateway,
     execute_plain_tool_gateway, execute_structured_tool_gateway,
+    execute_structured_tool_gateway_with_origin,
 };
+use hook::{execute_hook, HookCmd};
 use mcp::{execute_mcp, McpCmd};
 use product::{
-    execute_doctor, execute_explain, execute_gain, execute_init, execute_launch_report,
-    execute_setup, execute_smoke, execute_status, DoctorCmd, ExplainCmd, GainCmd, InitCmd,
-    LaunchReportCmd, SetupCmd, SmokeCmd, StatusCmd,
+    execute_bench, execute_doctor, execute_explain, execute_fuckyou, execute_gain, execute_global,
+    execute_init, execute_launch_report, execute_raw, execute_setup, execute_smoke, execute_start,
+    execute_status, execute_stop, BenchCmd, DoctorCmd, ExplainCmd, FuckyouCmd, GainCmd, GlobalCmd,
+    InitCmd, LaunchReportCmd, RawCmd, SetupCmd, SmokeCmd, StartCmd, StatusCmd, StopCmd,
 };
-use std::io::{self, Write};
 use std::path::PathBuf;
 use tfy_core::*;
 use tfy_runtime::*;
@@ -56,6 +59,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: McpCmd,
     },
+    /// Optional official-host hook shims. Thin routers to shared TFY gateways, disabled unless configured.
+    Hook {
+        #[command(subcommand)]
+        cmd: HookCmd,
+    },
     /// Product-facing setup lifecycle for Codex/MCP guidance. Bare `tfy init` is a safe dry-run.
     Init(InitCmd),
     /// Diagnose local TFY and optional Codex-facing integration readiness.
@@ -72,6 +80,19 @@ enum Cmd {
     Explain(ExplainCmd),
     /// Report launch-readiness evidence, blockers, host readiness matrix, and measured savings.
     LaunchReport(LaunchReportCmd),
+    /// Generate deterministic benchmark manifests and optional RTK-safe comparator results.
+    Bench(BenchCmd),
+    /// Start TFY lifecycle intent in this project. Bare command prompts for agent/human/both.
+    Start(StartCmd),
+    /// Stop TFY lifecycle intent in this project without deleting raw evidence.
+    Stop(StopCmd),
+    /// Scoped TFY-owned lifecycle cleanup in this project, confirmation-gated.
+    Fuckyou(FuckyouCmd),
+    /// Manage user-global TFY lifecycle intent.
+    Global {
+        #[command(subcommand)]
+        cmd: GlobalCmd,
+    },
     Index {
         path: PathBuf,
     },
@@ -228,15 +249,8 @@ enum Cmd {
         #[arg(long, default_value = ".tfy/state/ledger.jsonl")]
         ledger: PathBuf,
     },
-    Raw {
-        raw_ref: String,
-        #[arg(long, default_value = ".tfy/raw")]
-        raw_dir: PathBuf,
-        #[arg(long)]
-        around: Option<String>,
-        #[arg(long, default_value_t = 3)]
-        context: usize,
-    },
+    /// Recover, inspect, export, or prune locally stored raw command evidence.
+    Raw(RawCmd),
     Languages,
     EvalCode {
         path: PathBuf,
@@ -251,11 +265,17 @@ fn main() -> Result<()> {
         Cmd::Agent { cmd } => execute_agent(cmd)?,
         Cmd::Adapter { cmd } => execute_adapter(cmd)?,
         Cmd::Mcp { cmd } => execute_mcp(cmd)?,
+        Cmd::Hook { cmd } => execute_hook(cmd)?,
         Cmd::Init(cmd) => execute_init(cmd)?,
         Cmd::Doctor(cmd) => execute_doctor(cmd)?,
         Cmd::Smoke(cmd) => execute_smoke(cmd)?,
         Cmd::Gain(cmd) => execute_gain(cmd)?,
         Cmd::LaunchReport(cmd) => execute_launch_report(cmd)?,
+        Cmd::Bench(cmd) => execute_bench(cmd)?,
+        Cmd::Start(cmd) => execute_start(cmd)?,
+        Cmd::Stop(cmd) => execute_stop(cmd)?,
+        Cmd::Fuckyou(cmd) => execute_fuckyou(cmd)?,
+        Cmd::Global { cmd } => execute_global(cmd)?,
         Cmd::Setup(cmd) => execute_setup(cmd)?,
         Cmd::Status(cmd) => execute_status(cmd)?,
         Cmd::Explain(cmd) => execute_explain(cmd)?,
@@ -295,18 +315,6 @@ fn main() -> Result<()> {
             trace_id,
             parent_event_id,
             command,
-        }
-        | Cmd::Shell {
-            raw_dir,
-            max_summary_bytes,
-            json,
-            jsonl,
-            ledger,
-            session_id,
-            request_id,
-            trace_id,
-            parent_event_id,
-            command,
         } => execute_structured_tool_gateway(
             command,
             raw_dir,
@@ -318,6 +326,32 @@ fn main() -> Result<()> {
             request_id,
             trace_id,
             parent_event_id,
+        )?,
+        Cmd::Shell {
+            raw_dir,
+            max_summary_bytes,
+            json,
+            jsonl,
+            ledger,
+            session_id,
+            request_id,
+            trace_id,
+            parent_event_id,
+            command,
+        } => execute_structured_tool_gateway_with_origin(
+            command,
+            raw_dir,
+            max_summary_bytes,
+            json,
+            jsonl,
+            ledger,
+            session_id,
+            request_id,
+            trace_id,
+            parent_event_id,
+            AdapterKind::Shell,
+            Origin::agent_runtime(OriginHost::Generic, OriginInvocation::Wrapper),
+            RouteEvidence::generic_shell_adapter(),
         )?,
         Cmd::RuntimeCapabilities => print_json(&AdapterCapabilities::cli_default())?,
         Cmd::RuntimeNegotiate {
@@ -399,15 +433,7 @@ fn main() -> Result<()> {
             );
             print_json(&response)?;
         }
-        Cmd::Raw {
-            raw_ref,
-            raw_dir,
-            around,
-            context,
-        } => {
-            let bytes = raw_output_bytes(raw_dir, &raw_ref, around.as_deref(), context)?;
-            io::stdout().write_all(&bytes)?;
-        }
+        Cmd::Raw(cmd) => execute_raw(cmd)?,
         Cmd::Languages => print_json(&serde_json::json!({"languages": supported_languages()}))?,
         Cmd::EvalCode {
             path,

@@ -1,6 +1,8 @@
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 struct McpChild {
@@ -11,8 +13,21 @@ struct McpChild {
 
 impl McpChild {
     fn start(session: &str, ledger: &std::path::Path, raw_dir: &std::path::Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tfy"))
-            .env("CARGO_TERM_COLOR", "never")
+        Self::start_with_env(session, ledger, raw_dir, None)
+    }
+
+    fn start_with_env(
+        session: &str,
+        ledger: &std::path::Path,
+        raw_dir: &std::path::Path,
+        path_override: Option<String>,
+    ) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tfy"));
+        command.env("CARGO_TERM_COLOR", "never");
+        if let Some(path) = path_override {
+            command.env("PATH", path);
+        }
+        let mut child = command
             .args([
                 "mcp",
                 "serve",
@@ -192,6 +207,8 @@ fn mcp_tool_run_raw_report_resources_and_failure_survival_work() {
     let text = run["result"]["content"][0]["text"].as_str().unwrap();
     let payload: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(payload["payload"]["exit_code"], 9);
+    assert_eq!(payload["route"]["ingress"], "mcp_tool");
+    assert_eq!(payload["route"]["claim_tier"], "route_evidence_recorded");
     let raw_ref = payload["payload"]["raw_ref"].as_str().unwrap().to_string();
     assert!(text.contains("error: broken"), "{text}");
 
@@ -302,7 +319,24 @@ fn mcp_tool_run_uses_p0_command_family_summary_and_report() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = dir.path().join("ledger.jsonl");
     let raw = dir.path().join("raw");
-    let mut mcp = McpChild::start("mcp-family", &ledger, &raw);
+    let fake_bin = dir.path().join("bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let fake_cargo = fake_bin.join("cargo");
+    let mut fake_cargo_script = String::from("#!/bin/sh\nprintf 'running 80 tests\n'\n");
+    for i in 0..80 {
+        fake_cargo_script.push_str(&format!(
+            "printf 'test route_family_case_{i:02} ... ok\n'\n"
+        ));
+    }
+    fake_cargo_script.push_str(
+        "printf 'test result: ok. 80 passed; 0 failed; 0 ignored; finished in 0.01s\n'\n",
+    );
+    std::fs::write(&fake_cargo, fake_cargo_script).unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&fake_cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let path_override = format!("{}:{}", fake_bin.display(), old_path);
+    let mut mcp = McpChild::start_with_env("mcp-family", &ledger, &raw, Some(path_override));
 
     let run = mcp.request(json!({
         "jsonrpc":"2.0",
@@ -312,7 +346,7 @@ fn mcp_tool_run_uses_p0_command_family_summary_and_report() {
             "name":"tfy_tool_run",
             "arguments":{
                 "session":"mcp-family",
-                "command":["cargo","test","--help"]
+                "command":["cargo","test"]
             }
         }
     }));
@@ -369,6 +403,15 @@ fn mcp_tool_run_repeated_output_uses_shared_elision_policy() {
         .as_str()
         .unwrap()
         .contains("previous_raw_ref="));
+    assert_eq!(
+        second_payload["route"]["model_bytes"],
+        second_payload["payload"]["model_text"]
+            .as_str()
+            .unwrap()
+            .len()
+    );
+    assert_eq!(second_payload["route"]["positive_savings_proven"], true);
+    assert_eq!(second_payload["route"]["claim_tier"], "savings_verified");
 
     let report = mcp.request(json!({"jsonrpc":"2.0","id":42,"method":"resources/read","params":{"uri":"tfy://report/mcp-repeat"}}));
     let report_text = report["result"]["contents"][0]["text"].as_str().unwrap();
@@ -519,6 +562,33 @@ fn mcp_code_io_workflow_lists_context_validates_and_applies() {
         .unwrap()
         .iter()
         .any(|line| line.as_str().unwrap().contains("output preview validation")));
+
+    let ledger_text = std::fs::read_to_string(&ledger).unwrap();
+    let mut saw_apply_authority = false;
+    for line in ledger_text.lines() {
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(event["route"]["ingress"], "mcp_tool", "{event}");
+        assert_eq!(
+            event["route"]["claim_tier"], "route_evidence_recorded",
+            "{event}"
+        );
+        if event["payload"]["kind"] == "output_validated" && event["payload"]["applied"] == true {
+            let authority = &event["provenance"]["apply_authority"];
+            assert_eq!(authority["context_ref"], compact["context_ref"], "{event}");
+            assert_eq!(
+                authority["base_content_hash"], compact["apply_proof"]["source_sha256"],
+                "{event}"
+            );
+            assert_eq!(
+                authority["proof_hash"], compact["apply_proof"]["compact_code_sha256"],
+                "{event}"
+            );
+            assert_eq!(authority["validate_succeeded"], true, "{event}");
+            assert_eq!(authority["parent_event_id_only"], false, "{event}");
+            saw_apply_authority = true;
+        }
+    }
+    assert!(saw_apply_authority, "{ledger_text}");
 }
 
 #[test]

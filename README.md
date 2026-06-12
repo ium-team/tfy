@@ -171,12 +171,29 @@ Current implementation status:
 - Implemented: Rust core primitives, Rust CLI, `tfy-runtime` envelope/capability/event contract with explicit origin/provenance fields, Tool Gateway text-first net-savings entrypoint, explicit debug/adapter JSON/JSONL entrypoints, shell wrapper, AI-agent wrapper, Context Gateway CLI, Output Gateway preview/validate CLI plus content-addressed single-file selected-scope `--apply`, display/file restore formatters, WorkspaceApplyPlan validate/apply for proof-gated multi-file modify/add/delete/rename/move and unique-anchor fuzzy operations, refactor chunk planning, State Gateway append/project CLI, raw refs, redaction, code index/expand/full/restore, evaluation.
 - Implemented adapter v1: `tfy adapter` generic-shell command-boundary shim, dry-run installer, session ledger, command-family-aware savings report, and P0 Tool Gateway summaries for Git, `gh pr checks`, Cargo, TypeScript no-emit, and common test-runner output.
 - Implemented MCP foundation v2: `tfy mcp serve` stdio JSON-RPC server, MCP tool/resource discovery, raw/report/state resources, Codex MCP dry-run/setup snippet generation, and an agent-native Code I/O workflow (`tfy_scope_list`, enriched `tfy_context_get`, preview-only `tfy_output_validate`, proof-gated `tfy_output_apply`, display-only `tfy_restore_display`, and workspace `tfy_workspace_validate`/`tfy_workspace_apply` for validated plans).
-- Implemented product UX P0: `tfy setup --ai --codex`, named-host setup snippets for Codex, Claude Code, Cursor, OpenCode, and Hermes through `tfy setup --ai --host <host>` / `tfy mcp install --target <host> --dry-run`, safe reversible Cursor project config apply/uninstall for `.cursor/mcp.json`, `tfy status`, `tfy explain`, `tfy launch-report`, `tfy init` marker-bounded Codex guidance, `tfy doctor` local readiness diagnostics, `tfy smoke --mcp` automated Code I/O smoke, `tfy smoke --all` combined adapter+MCP evidence smoke, host checklist smoke, and `tfy gain` command-output ledger-derived savings reporting. `status --json` and `launch-report --json` expose the minimum v1 host matrix (`mcp_stdio`, `tfy_agent_adapter`, `generic_shell`, plus non-required named hosts) with canonical evidence statuses (`config_snippet_available`, `not_configured`, `applied_unverified`, `verified_local_mcp`, `verified_host_invocation`, `launch_supported`, `unsupported`, `planned_discovery`) and claim tiers (`not_configured`, `configurable`, `applied_unverified`, `smoke_routed`, `verified_local_mcp`, `launch_supported`, `planned_discovery`). The v1 pass gate requires `mcp_stdio`, `tfy_agent_adapter`, and `generic_shell` to become `launch_supported`; named hosts remain below launch support until real host invocation plus host-bound TFY ledger/raw/no-negative/positive-savings evidence exists. OpenClaw is `planned_discovery`.
+- Implemented product UX P1: project/global lifecycle commands (`tfy start`, `tfy stop`, `tfy status --agent/--human`, `tfy fuckyou`, `tfy global start|stop|fuckyou`) as configuration-intent state, target aliases (`agent`/`ai`, `human`, `both`), lifecycle `route_state`/`active` fields that stay below launch support without evidence, `tfy start agent --host cursor --apply` as a safe project `.cursor/mcp.json` writer capped at `applied_unverified`, `tfy start agent --host all --apply` as safe-writers-only partial orchestration, `tfy setup --ai --codex`, named-host setup snippets for Codex, Claude Code, Cursor, OpenCode, and Hermes through `tfy setup --ai --host <host>` / `tfy mcp install --target <host> --dry-run`, safe reversible Cursor project config apply/uninstall for `.cursor/mcp.json`, `tfy hook capabilities` / `tfy hook install --dry-run` / `tfy hook run` test shim as an official-host-hook planning and equivalence surface, `tfy status`, `tfy explain`, `tfy launch-report`, `tfy init` marker-bounded Codex guidance, `tfy doctor` local readiness diagnostics, `tfy smoke --mcp` automated Code I/O smoke, `tfy smoke --all` combined adapter+MCP evidence smoke, host checklist smoke, and `tfy gain` command-output ledger-derived savings reporting. `status --json` and `launch-report --json` expose the minimum v1 host matrix (`mcp_stdio`, `tfy_agent_adapter`, `generic_shell`, plus non-required named hosts) with canonical evidence statuses plus a claim evidence ladder (`config_snippet_available` → `config_written` → `host_launched` → `verified_host_mcp_invocation` / `verified_host_hook` → `route_evidence_recorded` → `savings_verified` → `launch_supported`) and compatibility claim tiers (`not_configured`, `configurable`, `applied_unverified`, `smoke_routed`, `verified_local_mcp`, `launch_supported`, `planned_discovery`). The v1 pass gate requires `mcp_stdio`, `tfy_agent_adapter`, and `generic_shell` to become `launch_supported`; named hosts remain below launch support until real host invocation plus host-bound TFY ledger/raw/no-negative/positive-savings evidence exists. Hook targets remain dry-run/planned unless official host docs plus e2e route evidence exist; Codex hook support is unsupported without a public official hook route. OpenClaw is `planned_discovery`.
 - Explicitly out of scope: provider/API request proxying and editor auto-integration. Not claimed: private/hidden Codex prompt hooks or universal human-shell interception. Supported AI routing is through wrapper/adapter/MCP host configuration, and fuzzy workspace apply is implemented only for proof-gated unique-anchor edits.
 
-TFY can automatically configure only the supported host routes with implemented safe writers (currently Cursor project `.cursor/mcp.json`, plus Codex AGENTS.md guidance through `tfy init`). TFY should not claim automatic model input/output interception for a runtime until that runtime adapter exists and passes the relevant gates. The MCP foundation is a supported MCP tool/resource integration point; it still requires the host agent to route through MCP and is not a private Codex hook or universal shell interception layer. Setup/config success is not token-savings success: launch-supported status requires real host invocation plus route-bound TFY raw/ledger/no-negative/positive-savings evidence.
+TFY can automatically configure only the supported host routes with implemented safe writers (currently Cursor project `.cursor/mcp.json`, plus Codex AGENTS.md guidance through `tfy init`). TFY should not claim automatic model input/output interception for a runtime until that runtime adapter exists and passes the relevant gates. The MCP foundation is a supported MCP tool/resource integration point; it still requires the host agent to route through MCP and is not a private Codex hook or universal shell interception layer. Hook support is a thin router posture only: no hook route may implement summarization, redaction, restore, apply, or claim promotion outside the shared TFY gateways, and host-specific hook writers stay dry-run/planned until official docs, kill-switch, uninstall, and e2e evidence exist. Setup/config success is not token-savings success: launch-supported status requires real host invocation plus route-bound TFY raw/ledger/no-negative/positive-savings evidence.
 
 ## MCP/Codex adapter foundation
+
+Product-facing lifecycle path:
+
+```bash
+tfy start                 # prompts for agent/human/both
+tfy start --agent         # project AI-agent lifecycle intent
+tfy start --human         # project human explicit-wrapper/session intent
+tfy start ai              # positional alias for --agent
+tfy start both            # positional alias for --agent --human
+tfy start agent --host cursor --apply # writes project .cursor/mcp.json, active=false until evidence
+tfy status --agent --json
+tfy stop --agent          # disable intent without deleting raw evidence
+tfy fuckyou --agent --yes # scoped TFY-owned lifecycle cleanup; preserves .tfy/raw by default
+tfy global start --agent  # user-global lifecycle intent; separate from project .tfy
+```
+
+Lifecycle commands write project state to `.tfy/lifecycle.json` and global state under `$TFY_HOME`, `$XDG_CONFIG_HOME/tfy`, or `~/.tfy`. They do not prove host invocation or token savings by themselves: agent mode still requires supported MCP/wrapper/adapter routing, and human mode does not globally intercept ordinary terminal commands. `tfy start` records `route_state=intent_recorded` and `active=false`; Cursor project apply records host route `applied_unverified` and still keeps `active=false` until route-bound raw/ledger/no-negative/positive-savings evidence exists. Use explicit TFY wrappers such as `tfy shell -- <command>` for human command cleanup until a first-class human shell/session command exists. Raw evidence remains managed through `tfy raw`; `fuckyou` preserves `.tfy/raw` and shared ledgers by default.
 
 Product-facing happy path:
 
@@ -189,7 +206,7 @@ tfy smoke --mcp
 tfy smoke --all --json # emits adapter + agent + MCP ledger paths for launch-report evidence
 tfy smoke --codex
 tfy gain # reports no-data until command-output savings events exist
-# host-evidence JSON must include per-route setup/invocation artifact paths plus overhead_ms/baseline_ms or an explicit overhead_exception.
+# smoke --all emits ledger= and host_evidence= entries that can be passed to launch-report.
 tfy launch-report --all --ledger <adapter-ledger> --ledger <agent-ledger> --ledger <mcp-ledger> --host-evidence <host-evidence.json> --json
 ```
 
@@ -216,4 +233,25 @@ MCP Code I/O workflow:
 
 This is MCP tool/resource integration. It does not claim private Codex hook interception, provider prompt mutation, or universal shell interception without host MCP routing.
 
-Launch reporting uses exact byte counts recorded from raw/model-visible gateway payloads and a conservative `ceil(bytes/4)` token proxy when tokenizer-specific counts are unavailable. Local smoke ledgers can raise required routes to `verified_local_mcp`, but `launch_supported` additionally requires `--host-evidence` JSON proving setup, real host invocation, config scope/path, route type, smoke id, ledger/raw artifacts, and no-negative plus positive savings for each route. `tfy explain` discloses the local raw-store contract: TFY stores raw command/context evidence under `.tfy/raw` or configured `--raw-dir` plus gateway ledgers such as `.tfy/mcp/ledger.jsonl` and `.tfy/adapter/ledger.jsonl`; TFY does not upload raw evidence. Until first-class retention commands are added, deletion/export is explicit local file management of those raw/ledger paths.
+Launch reporting uses exact byte counts recorded from raw/model-visible gateway payloads and a conservative `ceil(bytes/4)` token proxy when tokenizer-specific counts are unavailable. Local smoke ledgers can raise required routes to `verified_local_mcp`, but `launch_supported` additionally requires `--host-evidence` JSON proving setup, real host invocation, config scope/path, route type, smoke id, ledger/raw artifacts, and no-negative plus positive savings for each route. `tfy explain` discloses the local raw-store contract: TFY stores raw command/context evidence under `.tfy/raw` or configured `--raw-dir` plus gateway ledgers such as `.tfy/mcp/ledger.jsonl` and `.tfy/adapter/ledger.jsonl`; TFY does not upload raw evidence. First-class raw lifecycle commands are available: `tfy raw --list`, `tfy raw <raw_ref> --inspect`, `tfy raw <raw_ref> --export <path>`, and `tfy raw --prune --dry-run/--apply`; ledger files remain explicit local files.
+
+### Release readiness dry-run
+
+Developer Preview/RC evidence is generated from local gates, not broad claims:
+
+```sh
+./scripts/verify.sh
+./scripts/release-dry-run.sh
+SMOKE_JSON=.tfy/release/smoke.json
+tfy smoke --all --json > "$SMOKE_JSON"
+ARGS=(launch-report --all --release-evidence .tfy/release/release-evidence.json --json)
+while IFS= read -r item; do
+  case "$item" in
+    ledger=*) ARGS+=(--ledger "${item#ledger=}") ;;
+    host_evidence=*) ARGS+=(--host-evidence "${item#host_evidence=}") ;;
+  esac
+done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["evidence"]))' "$SMOKE_JSON")
+tfy "${ARGS[@]}"
+```
+
+`tfy launch-report` now exposes release tiers (`developer_preview_ready`, `rc_ready`, `ga_ready`, `public_superiority_claim_ready`). GA and public RTK-superiority claims remain blocked unless named-host and comparator evidence gates pass.

@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use tfy_core::classify_command_family;
-use tfy_runtime::{load_events, AdapterKind, GatewayEvent, Origin, OriginHost, OriginInvocation};
+use tfy_runtime::{
+    load_events, AdapterKind, GatewayEvent, Origin, OriginHost, OriginInvocation, RouteEvidence,
+};
 
 fn estimate_tokens(chars: usize) -> usize {
     chars.div_ceil(4)
@@ -162,6 +164,7 @@ pub(crate) fn execute_adapter(cmd: AdapterCmd) -> Result<()> {
             parent_event_id,
             AdapterKind::Shell,
             Origin::agent_runtime(OriginHost::Generic, OriginInvocation::Wrapper),
+            RouteEvidence::generic_shell_adapter(),
         ),
         AdapterCmd::Report {
             ledger,
