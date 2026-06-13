@@ -140,6 +140,9 @@ pub(crate) struct StartCmd {
     /// Apply only safe, implemented host configuration writers. Unsupported hosts stay guidance-only.
     #[arg(long)]
     pub apply: bool,
+    /// Record lifecycle intent only; do not write supported host config.
+    #[arg(long)]
+    pub no_apply: bool,
     /// Request verification guidance/smoke. Does not promote lifecycle active without route evidence.
     #[arg(long)]
     pub verify: bool,
@@ -408,6 +411,16 @@ struct LifecycleHostRoute {
     #[serde(default)]
     configured: bool,
     #[serde(default)]
+    route_configured: bool,
+    #[serde(default)]
+    host_reload_required: bool,
+    #[serde(default)]
+    host_route_available_after_reload: bool,
+    #[serde(default)]
+    host_approval_required: bool,
+    #[serde(default)]
+    mcp_invocation_observed: bool,
+    #[serde(default)]
     route_verified: bool,
     #[serde(default)]
     savings_verified: bool,
@@ -416,6 +429,23 @@ struct LifecycleHostRoute {
     config_path: Option<String>,
     claim_tier: String,
     message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HostConfigProvenance {
+    host: String,
+    config_path: String,
+    managed_key_path: String,
+    command: String,
+    args: Vec<String>,
+    command_args_hash: String,
+    session: String,
+    ledger_path: String,
+    raw_dir: String,
+    created_at: String,
+    updated_at: String,
+    tfy_version: String,
+    uninstall_safety_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1402,11 +1432,28 @@ fn lifecycle_host_route(
     claim_tier: &str,
     message: impl Into<String>,
 ) -> LifecycleHostRoute {
+    lifecycle_host_route_with_approval(route_state, config_path, claim_tier, false, message)
+}
+
+fn lifecycle_host_route_with_approval(
+    route_state: &str,
+    config_path: Option<String>,
+    claim_tier: &str,
+    host_approval_required: bool,
+    message: impl Into<String>,
+) -> LifecycleHostRoute {
     let configured = matches!(
         route_state,
-        "config_snippet_available"
-            | "applied_unverified"
+        "applied_unverified"
+            | "configured_unverified"
             | "verified_local_mcp"
+            | "verified_host_invocation"
+            | "launch_supported"
+    );
+    let route_configured = matches!(
+        route_state,
+        "applied_unverified"
+            | "configured_unverified"
             | "verified_host_invocation"
             | "launch_supported"
     );
@@ -1416,6 +1463,11 @@ fn lifecycle_host_route(
         route_state: route_state.into(),
         active: false,
         configured,
+        route_configured,
+        host_reload_required: route_configured && !route_verified,
+        host_route_available_after_reload: route_verified,
+        host_approval_required: host_approval_required && route_configured && !route_verified,
+        mcp_invocation_observed: route_verified,
         route_verified,
         savings_verified,
         normal_workflow_supported: route_state == "launch_supported",
@@ -1457,11 +1509,13 @@ pub(crate) fn execute_use(cmd: UseCmd) -> Result<()> {
 
 fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
     let targets = targets_from_args(&cmd.target, cmd.target_alias.as_deref(), "start")?;
-    if (cmd.host.is_some() || cmd.apply || cmd.verify) && scope == LifecycleScope::Global {
-        bail!("tfy global start P1 records global lifecycle defaults only; host --apply/--verify is project-scoped");
+    if (cmd.host.is_some() || cmd.apply || cmd.verify || cmd.no_apply)
+        && scope == LifecycleScope::Global
+    {
+        bail!("tfy global start P1 records global lifecycle defaults only; host --apply/--verify/--no-apply is project-scoped");
     }
-    if (cmd.apply || cmd.verify) && cmd.host.is_none() {
-        bail!("tfy start --apply/--verify requires --host <host|all> so TFY never mutates hidden host state implicitly");
+    if cmd.apply && cmd.no_apply {
+        bail!("tfy start cannot combine --apply and --no-apply");
     }
     if cmd.host.is_some() && !targets.contains(&LifecycleTarget::Agent) {
         bail!("tfy start --host configures AI-agent routing; include agent/ai or both");
@@ -1470,7 +1524,21 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         .host
         .as_deref()
         .is_some_and(|host| host.trim().eq_ignore_ascii_case("all"));
-    let selected_hosts = host_selection(cmd.host.as_deref())?;
+    let mut selected_hosts = host_selection(cmd.host.as_deref())?;
+    let auto_apply_supported_agent_routes = scope == LifecycleScope::Project
+        && targets.contains(&LifecycleTarget::Agent)
+        && !cmd.no_apply
+        && (cmd.host.is_none()
+            || cmd.host.as_deref().is_some_and(|host| {
+                matches!(
+                    host.trim().to_ascii_lowercase().as_str(),
+                    "codex" | "claude-code" | "claude" | "cursor" | "all"
+                )
+            }));
+    if selected_hosts.is_empty() && auto_apply_supported_agent_routes {
+        selected_hosts = vec![host_integration("codex")?];
+    }
+    let should_apply_supported_routes = cmd.apply || auto_apply_supported_agent_routes;
     let mut state = read_lifecycle(scope)?;
     let now = now_stamp();
     for target in &targets {
@@ -1478,7 +1546,46 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
             LifecycleTarget::Agent => {
                 let mut agent = agent_started(&now);
                 for host in &selected_hosts {
-                    if host.id == "cursor" && cmd.apply {
+                    if host.id == "codex" && should_apply_supported_routes {
+                        let result = configure_codex_project_mcp(
+                            &cmd.session,
+                            HostConfigScope::Project,
+                            false,
+                            false,
+                        )?;
+                        agent.host_routes.insert(
+                            host.id.into(),
+                            lifecycle_host_route(
+                                "configured_unverified",
+                                result
+                                    .get("config_path")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                                "configured_unverified",
+                                "safe project .codex/config.toml writer ran; open/reload Codex in a trusted project, then verify real host invocation plus raw/ledger/no-negative/positive-savings evidence before active=true",
+                            ),
+                        );
+                    } else if host.id == "claude-code" && should_apply_supported_routes {
+                        let result = configure_claude_project_mcp(
+                            &cmd.session,
+                            HostConfigScope::Project,
+                            false,
+                            false,
+                        )?;
+                        agent.host_routes.insert(
+                            host.id.into(),
+                            lifecycle_host_route_with_approval(
+                                "configured_unverified",
+                                result
+                                    .get("config_path")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                                "configured_unverified",
+                                true,
+                                "safe project .mcp.json writer ran; open/reload Claude Code and approve the project MCP server if prompted, then verify real host invocation plus raw/ledger/no-negative/positive-savings evidence before active=true",
+                            ),
+                        );
+                    } else if host.id == "cursor" && should_apply_supported_routes {
                         let result = configure_cursor_project_mcp(
                             &cmd.session,
                             HostConfigScope::Project,
@@ -1488,22 +1595,22 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                         agent.host_routes.insert(
                             host.id.into(),
                             lifecycle_host_route(
-                                "applied_unverified",
+                                "configured_unverified",
                                 result
                                     .get("config_path")
                                     .and_then(Value::as_str)
                                     .map(str::to_string),
-                                "applied_unverified",
-                                "safe project .cursor/mcp.json writer ran; still not launch-supported until real host invocation plus raw/ledger/no-negative/positive-savings evidence exists",
+                                "configured_unverified",
+                                "safe project .cursor/mcp.json writer ran; restart/reload Cursor, then verify real host invocation plus raw/ledger/no-negative/positive-savings evidence before active=true",
                             ),
                         );
-                    } else if cmd.apply && !host_all {
+                    } else if should_apply_supported_routes && !host_all {
                         bail!(
                             "automatic --apply for host '{}' is not implemented safely yet; use `tfy setup --host {} --dry-run` and apply manually",
                             host.id,
                             host.id
                         );
-                    } else if cmd.apply {
+                    } else if should_apply_supported_routes {
                         agent.host_routes.insert(
                             host.id.into(),
                             lifecycle_host_route(
@@ -1527,6 +1634,12 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                 }
                 if cmd.verify {
                     agent.support_status = "verification_requested_route_evidence_required".into();
+                } else if agent
+                    .host_routes
+                    .values()
+                    .any(|route| route.route_configured)
+                {
+                    agent.support_status = "host_route_configured_verification_required".into();
                 }
                 state.agent = Some(agent)
             }
@@ -1548,11 +1661,31 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         println!("agent route_state=intent_recorded active=false support_status={support_status} private_hook_interception=false provider_prompt_gateway=false");
         println!("Configure supported host routing through tfy mcp serve, tfy agent run, or tfy adapter run; lifecycle start does not mark any host launch-supported.");
         for host in &selected_hosts {
-            if host.id == "cursor" && cmd.apply {
-                println!("host=cursor route_state=applied_unverified active=false config_path=.cursor/mcp.json");
-            } else if cmd.apply {
+            if host.id == "codex" && should_apply_supported_routes {
+                println!("Configured Codex project MCP route: .codex/config.toml");
+                println!("Open/reload Codex in a trusted project to make the route visible.");
+                println!("Status: configured, not active.");
+                println!("Next: open Codex and invoke a TFY MCP tool to verify real host routing.");
+                println!("host=codex route_state=configured_unverified active=false route_configured=true host_reload_required=true host_approval_required=false host_route_available_after_reload=false config_path=.codex/config.toml");
+            } else if host.id == "claude-code" && should_apply_supported_routes {
+                println!("Configured Claude Code project MCP route: .mcp.json");
+                println!("Open/reload Claude Code and approve the project MCP server if prompted.");
+                println!("Status: configured, not active.");
                 println!(
-                    "host={} route_state={} active=false apply=guidance_only",
+                    "Next: open Claude Code and invoke a TFY MCP tool to verify real host routing."
+                );
+                println!("host=claude-code route_state=configured_unverified active=false route_configured=true host_reload_required=true host_approval_required=true host_route_available_after_reload=false config_path=.mcp.json");
+            } else if host.id == "cursor" && should_apply_supported_routes {
+                println!("Configured Cursor project MCP route: .cursor/mcp.json");
+                println!("Restart/reload Cursor to make the route visible.");
+                println!("Status: configured, not active.");
+                println!(
+                    "Next: open Cursor and invoke a TFY MCP tool to verify real host routing."
+                );
+                println!("host=cursor route_state=configured_unverified active=false route_configured=true host_reload_required=true host_route_available_after_reload=false config_path=.cursor/mcp.json");
+            } else if should_apply_supported_routes {
+                println!(
+                    "host={} route_state={} active=false configured=false apply=guidance_only",
                     host.id, host.status
                 );
             } else {
@@ -1656,6 +1789,9 @@ fn execute_lifecycle_fuckyou(scope: LifecycleScope, cmd: FuckyouCmd) -> Result<(
     };
     let mut state = read_lifecycle(scope)?;
     for target in &targets {
+        if scope == LifecycleScope::Project && *target == LifecycleTarget::Agent {
+            cleanup_project_agent_host_configs()?;
+        }
         remove_target_dir(scope, *target)?;
         match target {
             LifecycleTarget::Agent => state.agent = None,
@@ -2231,12 +2367,12 @@ fn host_registry() -> Vec<HostIntegration> {
             required_for_v1: false,
             config: "codex mcp add tfy -- tfy mcp serve ... or ~/.codex/config.toml [mcp_servers.tfy]",
             transport: "MCP stdio",
-            official_source: "https://developers.openai.com/learn/docs-mcp",
-            config_strategy: "Codex MCP command/TOML setup",
-            apply_strategy: "project AGENTS.md apply via tfy init; Codex TOML remains dry-run/manual",
+            official_source: "https://developers.openai.com/codex/mcp",
+            config_strategy: "Codex project .codex/config.toml [mcp_servers.tfy] or codex mcp add",
+            apply_strategy: "safe TOML writer for project .codex/config.toml with TFY marker block, backup, provenance, idempotency, and uninstall",
             smoke_strategy: "local MCP smoke plus host invocation artifact",
             host_evidence_strategy: "host-bound MCP ledger/raw evidence with Codex invocation artifact",
-            setup: "project AGENTS.md guidance plus Codex MCP command/TOML snippet",
+            setup: "project .codex/config.toml MCP route plus optional AGENTS.md guidance through tfy init",
             normal_workflow: "Codex may call TFY MCP tools after host MCP routing is configured; setup alone is not token-savings proof",
             launch_claim: "not launch-supported until real Codex invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
             evidence_gate: &[
@@ -2254,9 +2390,9 @@ fn host_registry() -> Vec<HostIntegration> {
             required_for_v1: false,
             config: "claude mcp add ... or project .mcp.json mcpServers.tfy",
             transport: "MCP stdio/http per Claude support",
-            official_source: "https://code.claude.com/docs/en/agent-sdk/mcp",
+            official_source: "https://docs.anthropic.com/en/docs/claude-code/mcp",
             config_strategy: "project .mcp.json mcpServers.tfy or claude mcp add",
-            apply_strategy: "dry-run/manual until project .mcp.json writer is implemented",
+            apply_strategy: "safe JSON writer for project .mcp.json with backup/provenance/idempotency/uninstall; project approval may be required in Claude Code",
             smoke_strategy: "Claude MCP list/invocation artifact when available; checklist otherwise",
             host_evidence_strategy: "host-bound MCP ledger/raw evidence with Claude invocation artifact",
             setup: "Claude MCP command and .mcp.json snippet; hooks are follow-up only when official/tested",
@@ -2427,16 +2563,24 @@ fn print_host_setup(
         println!("{}", host.launch_claim);
         return Ok(());
     }
-    if (apply || uninstall) && host.id == "cursor" {
-        let result = configure_cursor_project_mcp(session, scope, dry_run, uninstall)?;
+    if (apply || uninstall) && matches!(host.id, "codex" | "claude-code" | "cursor") {
+        let result = match host.id {
+            "codex" => configure_codex_project_mcp(session, scope, dry_run, uninstall)?,
+            "claude-code" => configure_claude_project_mcp(session, scope, dry_run, uninstall)?,
+            "cursor" => configure_cursor_project_mcp(session, scope, dry_run, uninstall)?,
+            _ => unreachable!(),
+        };
         let (status, claim_tier) = if dry_run {
             ("dry_run", "configurable")
         } else if uninstall {
             ("removed_unverified", "applied_unverified")
         } else {
-            ("applied_unverified", "applied_unverified")
+            ("configured_unverified", "configured_unverified")
         };
-        println!("TFY setup host=cursor status={status} claim_tier={claim_tier}");
+        println!(
+            "TFY setup host={} status={status} claim_tier={claim_tier}",
+            host.id
+        );
         println!("display={}", host.display);
         println!("transport={}", host.transport);
         println!("official_source={}", host.official_source);
@@ -2471,6 +2615,551 @@ fn print_host_setup(
     println!("--- boundary ---");
     println!("MCP host routing only; no private hidden hooks, provider prompt mutation, editor auto-integration, or universal human-shell interception.");
     println!("{}", host.launch_claim);
+    Ok(())
+}
+
+fn host_config_args(session: &str) -> Vec<String> {
+    vec![
+        "mcp".into(),
+        "serve".into(),
+        "--session".into(),
+        session.into(),
+        "--ledger".into(),
+        ".tfy/mcp/ledger.jsonl".into(),
+        "--raw-dir".into(),
+        ".tfy/raw".into(),
+    ]
+}
+
+fn hash_text(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+fn host_config_provenance(
+    host: &str,
+    path: &Path,
+    managed_key_path: &str,
+    session: &str,
+    entry_text: &str,
+) -> HostConfigProvenance {
+    let args = host_config_args(session);
+    let args_json = serde_json::to_string(&args).unwrap_or_default();
+    let now = now_stamp();
+    HostConfigProvenance {
+        host: host.into(),
+        config_path: path.display().to_string(),
+        managed_key_path: managed_key_path.into(),
+        command: "tfy".into(),
+        args,
+        command_args_hash: hash_text(&format!("tfy {args_json}")),
+        session: session.into(),
+        ledger_path: ".tfy/mcp/ledger.jsonl".into(),
+        raw_dir: ".tfy/raw".into(),
+        created_at: now.clone(),
+        updated_at: now,
+        tfy_version: env!("CARGO_PKG_VERSION").into(),
+        uninstall_safety_hash: hash_text(entry_text),
+    }
+}
+
+fn provenance_path(host: &str) -> PathBuf {
+    PathBuf::from(".tfy")
+        .join("host-config")
+        .join(format!("{host}.json"))
+}
+
+fn write_host_provenance(
+    host: &str,
+    path: &Path,
+    managed_key_path: &str,
+    session: &str,
+    entry_text: &str,
+    dry_run: bool,
+) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
+    let provenance = host_config_provenance(host, path, managed_key_path, session, entry_text);
+    let path = provenance_path(host);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&provenance)?),
+    )
+    .with_context(|| format!("write {}", path.display()))
+}
+
+fn remove_host_provenance(host: &str) -> Result<()> {
+    let path = provenance_path(host);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("remove {}", path.display())),
+    }
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config");
+    path.with_file_name(format!("{file_name}.tfy-backup"))
+}
+
+fn codex_tfy_block(session: &str) -> String {
+    let args = host_config_args(session)
+        .into_iter()
+        .map(|arg| format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "# TFY:HOST-CONFIG:START codex\n[mcp_servers.tfy]\ncommand = \"tfy\"\nargs = [{args}]\n# TFY:HOST-CONFIG:END codex\n"
+    )
+}
+
+fn validate_codex_toml_config(path: &Path, text: &str) -> Result<()> {
+    let mut current_table: Vec<String> = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            if !trimmed.ends_with(']') {
+                bail!(
+                    "malformed TOML heading in {} at line {}; refusing to write",
+                    path.display(),
+                    index + 1
+                );
+            }
+            current_table = normalize_toml_heading(trimmed).with_context(|| {
+                format!(
+                    "malformed TOML heading in {} at line {}; refusing to write",
+                    path.display(),
+                    index + 1
+                )
+            })?;
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            bail!(
+                "unsupported or malformed TOML line in {} at line {}; refusing to write",
+                path.display(),
+                index + 1
+            );
+        };
+        if key.trim().is_empty() || value.trim().is_empty() {
+            bail!(
+                "malformed TOML key/value in {} at line {}; refusing to write",
+                path.display(),
+                index + 1
+            );
+        }
+        let key_path = normalize_toml_dotted_key(key.trim()).with_context(|| {
+            format!(
+                "malformed TOML key in {} at line {}; refusing to write",
+                path.display(),
+                index + 1
+            )
+        })?;
+        if (current_table.is_empty() && toml_path_starts_with(&key_path, &["mcp_servers", "tfy"]))
+            || (current_table == ["mcp_servers"] && toml_path_starts_with(&key_path, &["tfy"]))
+            || (current_table == ["mcp_servers"]
+                && normalize_toml_key(key.trim()).as_deref() == Some("tfy"))
+        {
+            bail!(
+                "Codex mcp_servers.tfy already exists and is not TFY-owned; refusing to overwrite user-managed config in {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn normalize_toml_heading(line: &str) -> Result<Vec<String>> {
+    let mut inner = line.trim();
+    if inner.starts_with("[[") && inner.ends_with("]]") {
+        inner = &inner[2..inner.len() - 2];
+    } else if inner.starts_with('[') && inner.ends_with(']') {
+        inner = &inner[1..inner.len() - 1];
+    } else {
+        bail!("invalid TOML heading");
+    }
+    inner
+        .split('.')
+        .map(|part| normalize_toml_key(part.trim()).ok_or_else(|| anyhow!("invalid TOML key")))
+        .collect()
+}
+
+fn normalize_toml_key(key: &str) -> Option<String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    if (key.starts_with('"') && key.ends_with('"'))
+        || (key.starts_with('\'') && key.ends_with('\''))
+    {
+        if key.len() < 2 {
+            return None;
+        }
+        return Some(
+            key[1..key.len() - 1]
+                .replace("\\\"", "\"")
+                .replace("\\'", "'"),
+        );
+    }
+    if key
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        Some(key.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn normalize_toml_dotted_key(key: &str) -> Result<Vec<String>> {
+    key.split('.')
+        .map(|part| normalize_toml_key(part.trim()).ok_or_else(|| anyhow!("invalid TOML key")))
+        .collect()
+}
+
+fn toml_path_starts_with(path: &[String], prefix: &[&str]) -> bool {
+    path.len() >= prefix.len()
+        && path
+            .iter()
+            .zip(prefix.iter())
+            .all(|(path_part, prefix_part)| path_part == prefix_part)
+}
+
+fn strip_marked_host_block(text: &str, host: &str) -> Result<(String, bool)> {
+    let start = format!("# TFY:HOST-CONFIG:START {host}");
+    let end = format!("# TFY:HOST-CONFIG:END {host}");
+    let mut output = Vec::new();
+    let mut in_block = false;
+    let mut removed = false;
+    for (index, line) in text.lines().enumerate() {
+        if line.trim() == start {
+            if in_block {
+                bail!(
+                    "malformed TFY host config marker for {host} at line {}; refusing to write",
+                    index + 1
+                );
+            }
+            in_block = true;
+            removed = true;
+            continue;
+        }
+        if line.trim() == end {
+            if !in_block {
+                bail!(
+                    "malformed TFY host config marker for {host} at line {}; refusing to write",
+                    index + 1
+                );
+            }
+            in_block = false;
+            continue;
+        }
+        if !in_block {
+            output.push(line);
+        }
+    }
+    if in_block {
+        bail!("malformed TFY host config marker for {host}: missing end marker; refusing to write");
+    }
+    let mut rendered = output.join("\n");
+    if !rendered.is_empty() {
+        rendered.push('\n');
+    }
+    Ok((rendered, removed))
+}
+
+fn has_unmarked_codex_tfy_table(text: &str) -> bool {
+    text.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with('[')
+            && trimmed.ends_with(']')
+            && normalize_toml_heading(trimmed)
+                .is_ok_and(|heading| heading == ["mcp_servers", "tfy"])
+    })
+}
+
+fn configure_codex_project_mcp(
+    session: &str,
+    scope: HostConfigScope,
+    dry_run: bool,
+    uninstall: bool,
+) -> Result<Value> {
+    if scope == HostConfigScope::Global {
+        bail!("codex --global apply is not implemented here; use project .codex/config.toml for automatic lifecycle routing");
+    }
+    let path = PathBuf::from(".codex").join("config.toml");
+    let backup = backup_path(&path);
+    let existing = match fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == ErrorKind::NotFound => None,
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    let existing_text = existing.as_deref().unwrap_or("");
+    validate_codex_toml_config(&path, existing_text)?;
+    let (mut base, removed) = strip_marked_host_block(existing_text, "codex")?;
+    if has_unmarked_codex_tfy_table(&base) {
+        bail!(
+            "Codex mcp_servers.tfy already exists and is not TFY-owned; refusing to overwrite user-managed config in {}",
+            path.display()
+        );
+    }
+    let block = codex_tfy_block(session);
+    if !uninstall {
+        if !base.ends_with('\n') && !base.is_empty() {
+            base.push('\n');
+        }
+        base.push_str(&block);
+    }
+    if !dry_run {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
+        if existing.is_some() && !backup.exists() && !uninstall {
+            fs::copy(&path, &backup)
+                .with_context(|| format!("backup {} to {}", path.display(), backup.display()))?;
+        }
+        if uninstall && base.trim().is_empty() {
+            if path.exists() && removed {
+                fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+            }
+        } else if !uninstall || removed {
+            fs::write(&path, base).with_context(|| format!("write {}", path.display()))?;
+        }
+        if uninstall {
+            remove_host_provenance("codex")?;
+        } else {
+            write_host_provenance("codex", &path, "mcp_servers.tfy", session, &block, dry_run)?;
+        }
+    }
+    Ok(json!({
+        "scope": scope.label(),
+        "config_path": path.display().to_string(),
+        "backup_path": backup.display().to_string(),
+        "provenance_path": provenance_path("codex").display().to_string(),
+        "dry_run": dry_run,
+        "applied": !dry_run,
+        "action": if uninstall { "uninstall" } else { "install" },
+        "removed_existing_tfy_route": removed,
+    }))
+}
+
+fn cleanup_codex_project_mcp_if_tfy_owned() -> Result<()> {
+    let path = PathBuf::from(".codex").join("config.toml");
+    let existing = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    let (base, removed) = strip_marked_host_block(&existing, "codex")?;
+    if !removed {
+        return Ok(());
+    }
+    validate_codex_toml_config(&path, &base)?;
+    if base.trim().is_empty() {
+        fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+    } else {
+        fs::write(&path, base).with_context(|| format!("write {}", path.display()))?;
+    }
+    remove_host_provenance("codex")
+}
+
+fn configure_claude_project_mcp(
+    session: &str,
+    scope: HostConfigScope,
+    dry_run: bool,
+    uninstall: bool,
+) -> Result<Value> {
+    if scope == HostConfigScope::Global {
+        bail!("claude-code --global apply is not implemented here; use project .mcp.json for automatic lifecycle routing");
+    }
+    let path = PathBuf::from(".mcp.json");
+    let backup = backup_path(&path);
+    let existing = match fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == ErrorKind::NotFound => None,
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    let mut root: Value = match existing.as_deref() {
+        Some(text) if !text.trim().is_empty() => serde_json::from_str(text)
+            .with_context(|| format!("parse existing Claude Code MCP config {}", path.display()))?,
+        _ => json!({}),
+    };
+    let root_obj = root.as_object_mut().ok_or_else(|| {
+        anyhow!(
+            "Claude Code MCP config must be a JSON object: {}",
+            path.display()
+        )
+    })?;
+    let servers = root_obj.entry("mcpServers").or_insert_with(|| json!({}));
+    let servers_obj = servers.as_object_mut().ok_or_else(|| {
+        anyhow!(
+            "Claude Code mcpServers must be a JSON object: {}",
+            path.display()
+        )
+    })?;
+    let desired_tfy = claude_tfy_server_config(session);
+    if uninstall {
+        if let Some(existing_tfy) = servers_obj.get("tfy") {
+            if !json_tfy_entry_is_managed(existing_tfy) {
+                bail!(
+                    "Claude Code mcpServers.tfy is not TFY-owned; refusing to remove user-managed config in {}",
+                    path.display()
+                );
+            }
+        }
+        servers_obj.remove("tfy");
+        if servers_obj.is_empty() {
+            root_obj.remove("mcpServers");
+        }
+    } else {
+        if let Some(existing_tfy) = servers_obj.get("tfy") {
+            if !json_tfy_entry_is_managed(existing_tfy) {
+                bail!(
+                    "Claude Code mcpServers.tfy already exists and is not TFY-owned; refusing to overwrite user-managed config in {}",
+                    path.display()
+                );
+            }
+        }
+        servers_obj.insert("tfy".into(), desired_tfy);
+    }
+    if !dry_run {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
+        if existing.is_some() && !backup.exists() && !uninstall {
+            fs::copy(&path, &backup)
+                .with_context(|| format!("backup {} to {}", path.display(), backup.display()))?;
+        }
+        if uninstall && root.as_object().is_some_and(|object| object.is_empty()) {
+            if path.exists() {
+                fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+            }
+        } else {
+            fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&root)?))
+                .with_context(|| format!("write {}", path.display()))?;
+        }
+        if uninstall {
+            remove_host_provenance("claude-code")?;
+        } else {
+            write_host_provenance(
+                "claude-code",
+                &path,
+                "mcpServers.tfy",
+                session,
+                &serde_json::to_string(&claude_tfy_server_config(session))?,
+                dry_run,
+            )?;
+        }
+    }
+    Ok(json!({
+        "scope": scope.label(),
+        "config_path": path.display().to_string(),
+        "backup_path": backup.display().to_string(),
+        "provenance_path": provenance_path("claude-code").display().to_string(),
+        "dry_run": dry_run,
+        "applied": !dry_run,
+        "action": if uninstall { "uninstall" } else { "install" },
+    }))
+}
+
+fn cleanup_claude_project_mcp_if_tfy_owned() -> Result<()> {
+    let path = PathBuf::from(".mcp.json");
+    let existing = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    if existing.trim().is_empty() {
+        return Ok(());
+    }
+    let mut root: Value = serde_json::from_str(&existing)
+        .with_context(|| format!("parse existing Claude Code MCP config {}", path.display()))?;
+    let Some(root_obj) = root.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(servers) = root_obj.get_mut("mcpServers") else {
+        return Ok(());
+    };
+    let Some(servers_obj) = servers.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(existing_tfy) = servers_obj.get("tfy") else {
+        return Ok(());
+    };
+    if !json_tfy_entry_is_managed(existing_tfy) {
+        return Ok(());
+    }
+    servers_obj.remove("tfy");
+    if servers_obj.is_empty() {
+        root_obj.remove("mcpServers");
+    }
+    if root.as_object().is_some_and(|object| object.is_empty()) {
+        fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+    } else {
+        fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&root)?))
+            .with_context(|| format!("write {}", path.display()))?;
+    }
+    remove_host_provenance("claude-code")
+}
+
+fn cleanup_project_agent_host_configs() -> Result<()> {
+    cleanup_codex_project_mcp_if_tfy_owned()?;
+    cleanup_claude_project_mcp_if_tfy_owned()?;
+    cleanup_cursor_project_mcp_if_tfy_owned()?;
+    Ok(())
+}
+
+fn cleanup_cursor_project_mcp_if_tfy_owned() -> Result<()> {
+    let path = PathBuf::from(".cursor").join("mcp.json");
+    let existing = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    if existing.trim().is_empty() {
+        return Ok(());
+    }
+    let mut root: Value = serde_json::from_str(&existing)
+        .with_context(|| format!("parse existing Cursor MCP config {}", path.display()))?;
+    let Some(root_obj) = root.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(servers) = root_obj.get_mut("mcpServers") else {
+        return Ok(());
+    };
+    let Some(servers_obj) = servers.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(existing_tfy) = servers_obj.get("tfy") else {
+        return Ok(());
+    };
+    if !cursor_tfy_entry_is_managed(existing_tfy) {
+        return Ok(());
+    }
+    servers_obj.remove("tfy");
+    if servers_obj.is_empty() {
+        root_obj.remove("mcpServers");
+    }
+    if root.as_object().is_some_and(|object| object.is_empty()) {
+        fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+    } else {
+        fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&root)?))
+            .with_context(|| format!("write {}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -2546,6 +3235,7 @@ fn configure_cursor_project_mcp(
             if path.exists() {
                 fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
             }
+            remove_host_provenance("cursor")?;
             return Ok(cursor_config_result(
                 scope, &path, &backup, dry_run, uninstall,
             ));
@@ -2556,6 +3246,18 @@ fn configure_cursor_project_mcp(
         }
         let rendered = format!("{}\n", serde_json::to_string_pretty(&root)?);
         fs::write(&path, rendered).with_context(|| format!("write {}", path.display()))?;
+        if uninstall {
+            remove_host_provenance("cursor")?;
+        } else {
+            write_host_provenance(
+                "cursor",
+                &path,
+                "mcpServers.tfy",
+                session,
+                &serde_json::to_string(&cursor_tfy_server_config(session))?,
+                dry_run,
+            )?;
+        }
     }
     Ok(cursor_config_result(
         scope, &path, &backup, dry_run, uninstall,
@@ -2575,11 +3277,28 @@ fn cursor_tfy_server_config(session: &str) -> Value {
     })
 }
 
-fn cursor_tfy_entry_is_managed(entry: &Value) -> bool {
+fn claude_tfy_server_config(session: &str) -> Value {
+    json!({
+        "command": "tfy",
+        "args": [
+            "mcp", "serve",
+            "--session", session,
+            "--ledger", ".tfy/mcp/ledger.jsonl",
+            "--raw-dir", ".tfy/raw"
+        ],
+        "tfy_managed": true
+    })
+}
+
+fn json_tfy_entry_is_managed(entry: &Value) -> bool {
     entry
         .get("tfy_managed")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+fn cursor_tfy_entry_is_managed(entry: &Value) -> bool {
+    json_tfy_entry_is_managed(entry)
 }
 
 fn cursor_config_result(
@@ -2593,6 +3312,7 @@ fn cursor_config_result(
         "scope": scope.label(),
         "config_path": path.display().to_string(),
         "backup_path": backup.display().to_string(),
+        "provenance_path": provenance_path("cursor").display().to_string(),
         "dry_run": dry_run,
         "applied": !dry_run,
         "action": if uninstall { "uninstall" } else { "install" },
@@ -3155,9 +3875,10 @@ fn effective_agent_status(
     let desired = selected.is_some_and(|(state, _)| state.desired);
     let configured = selected.is_some_and(|(state, _)| state.configured);
     let route_configured = selected.is_some_and(|(state, _)| {
-        state.configured
-            && (!state.host_routes.is_empty()
-                || !matches!(state.route_state.as_str(), "not_configured" | "stopped"))
+        state
+            .host_routes
+            .values()
+            .any(|route| route.route_configured)
     });
     let route_verified = selected
         .is_some_and(|(state, _)| state.host_routes.values().any(|route| route.route_verified));
@@ -3202,7 +3923,7 @@ fn effective_agent_status(
         } else if !desired {
             "Run `tfy start --agent` in this project, or configure global agent defaults with `tfy use always --agent`.".into()
         } else if host_routes_empty {
-            "Configure a supported route, e.g. `tfy start agent --host cursor --apply`, then collect host invocation raw/ledger/savings evidence.".into()
+            "Run `tfy start --agent` to auto-configure the Codex project MCP route, or use `tfy start --agent --no-apply` for lifecycle intent only.".into()
         } else {
             "Configured but not verified: run the configured host and collect route-bound raw/ledger/no-negative/positive-savings/overhead evidence before active=true.".into()
         },
@@ -3453,11 +4174,11 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
             supported_ingress: vec!["mcp_stdio".into()],
             equivalence_ingress: vec!["official_host_hook_test_shim_only".into()],
             unsupported_ingress: unsupported_ingress(),
-            config_strategy: "Codex MCP command/TOML setup plus project AGENTS.md guidance".into(),
-            apply_strategy: "project AGENTS.md apply via `tfy init`; Codex TOML remains dry-run/manual".into(),
+            config_strategy: "Codex project .codex/config.toml MCP route plus optional project AGENTS.md guidance".into(),
+            apply_strategy: "safe project .codex/config.toml writer with TFY marker block, backup, provenance, idempotency, and uninstall".into(),
             smoke_strategy: "local MCP smoke plus real Codex invocation artifact".into(),
             host_evidence_strategy: "Codex-bound MCP ledger/raw evidence with config path and smoke id".into(),
-            setup: "Codex MCP config plus TFY AGENTS.md guidance".into(),
+            setup: "Codex project .codex/config.toml MCP route plus optional TFY AGENTS.md guidance".into(),
             normal_workflow: "Codex remains normal only after official/configurable MCP or hook routing proves real host invocation; checklist-only guidance is not launch support".into(),
             evidence_gate: vec![
                 "Codex host actually invokes TFY MCP".into(),

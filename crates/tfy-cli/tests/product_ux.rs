@@ -2485,7 +2485,7 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
     );
     let start_text = String::from_utf8_lossy(&start.stdout);
     assert!(
-        start_text.contains("host_route_configuration_required"),
+        start_text.contains("host_route_configured_verification_required"),
         "{start_text}"
     );
     assert!(
@@ -2509,7 +2509,7 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
     assert_eq!(json["project_lifecycle"]["agent"]["desired"], true);
     assert_eq!(
         json["project_lifecycle"]["agent"]["support_status"],
-        "host_route_configuration_required"
+        "host_route_configured_verification_required"
     );
     assert!(json["project_lifecycle"]["agent"]["active_routes"].is_null());
     assert_eq!(
@@ -3005,7 +3005,7 @@ fn lifecycle_status_reports_effective_state_and_next_actions() {
     assert!(json["effective_lifecycle"]["agent"]["next_action"]
         .as_str()
         .unwrap()
-        .contains("tfy start agent --host cursor --apply"));
+        .contains("tfy start --agent"));
 
     let project_start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3167,7 +3167,7 @@ fn lifecycle_target_aliases_match_flag_targets() {
 }
 
 #[test]
-fn lifecycle_start_cursor_apply_caps_at_applied_unverified() {
+fn lifecycle_start_cursor_apply_caps_at_configured_unverified() {
     let dir = tempfile::tempdir().unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3180,7 +3180,21 @@ fn lifecycle_start_cursor_apply_caps_at_applied_unverified() {
         String::from_utf8_lossy(&start.stderr)
     );
     let text = String::from_utf8_lossy(&start.stdout);
-    assert!(text.contains("route_state=applied_unverified"), "{text}");
+    assert!(text.contains("route_state=configured_unverified"), "{text}");
+    assert!(
+        text.contains("Configured Cursor project MCP route: .cursor/mcp.json"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Restart/reload Cursor to make the route visible."),
+        "{text}"
+    );
+    assert!(text.contains("Status: configured, not active."), "{text}");
+    assert!(
+        text.contains("Next: open Cursor and invoke a TFY MCP tool to verify real host routing."),
+        "{text}"
+    );
+    assert!(!text.contains("Cursor is now saving tokens"), "{text}");
     assert!(text.contains("active=false"), "{text}");
     assert!(dir.path().join(".cursor/mcp.json").exists());
 
@@ -3191,8 +3205,11 @@ fn lifecycle_start_cursor_apply_caps_at_applied_unverified() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     let cursor = &json["project_lifecycle"]["agent"]["host_routes"]["cursor"];
-    assert_eq!(cursor["route_state"], "applied_unverified");
+    assert_eq!(cursor["route_state"], "configured_unverified");
     assert_eq!(cursor["active"], false);
+    assert_eq!(cursor["route_configured"], true);
+    assert_eq!(cursor["host_reload_required"], true);
+    assert_eq!(cursor["host_route_available_after_reload"], false);
     assert_eq!(json["project_lifecycle"]["agent"]["active"], false);
     assert!(json["minimum_v1_host_matrix"]
         .as_array()
@@ -3216,12 +3233,21 @@ fn lifecycle_start_host_all_apply_only_uses_safe_writers() {
     );
     let text = String::from_utf8_lossy(&start.stdout);
     assert!(
-        text.contains("host=cursor route_state=applied_unverified"),
+        text.contains("host=codex route_state=configured_unverified"),
         "{text}"
     );
-    assert!(text.contains("apply=guidance_only"), "{text}");
+    assert!(
+        text.contains("host=claude-code route_state=configured_unverified"),
+        "{text}"
+    );
+    assert!(
+        text.contains("host=cursor route_state=configured_unverified"),
+        "{text}"
+    );
+    assert!(text.contains("host=opencode"), "{text}");
     assert!(dir.path().join(".cursor/mcp.json").exists());
-    assert!(!dir.path().join(".mcp.json").exists());
+    assert!(dir.path().join(".codex/config.toml").exists());
+    assert!(dir.path().join(".mcp.json").exists());
 
     let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3230,13 +3256,514 @@ fn lifecycle_start_host_all_apply_only_uses_safe_writers() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(
-        json["project_lifecycle"]["agent"]["host_routes"]["cursor"]["route_state"],
-        "applied_unverified"
+        json["project_lifecycle"]["agent"]["host_routes"]["codex"]["route_state"],
+        "configured_unverified"
+    );
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["host_routes"]["claude-code"]["route_state"],
+        "configured_unverified"
+    );
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["host_routes"]["cursor"]["route_configured"],
+        true
+    );
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["host_routes"]["cursor"]["host_reload_required"],
+        true
     );
     assert_eq!(
         json["project_lifecycle"]["agent"]["host_routes"]["claude-code"]["active"],
         false
     );
+}
+
+#[test]
+fn lifecycle_start_agent_auto_configures_codex_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let text = String::from_utf8_lossy(&start.stdout);
+    assert!(
+        text.contains("Configured Codex project MCP route: .codex/config.toml"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Open/reload Codex in a trusted project"),
+        "{text}"
+    );
+    assert!(text.contains("Status: configured, not active."), "{text}");
+    assert!(!text.contains("TFY is active"), "{text}");
+    assert!(!text.contains("saving tokens"), "{text}");
+    assert!(dir.path().join(".codex/config.toml").exists());
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(dir.path().join(".tfy/host-config/codex.json").exists());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let codex = &json["project_lifecycle"]["agent"]["host_routes"]["codex"];
+    assert_eq!(codex["route_state"], "configured_unverified", "{json}");
+    assert_eq!(codex["configured"], true, "{json}");
+    assert_eq!(codex["route_configured"], true, "{json}");
+    assert_eq!(codex["host_reload_required"], true, "{json}");
+    assert_eq!(codex["host_approval_required"], false, "{json}");
+    assert_eq!(codex["host_route_available_after_reload"], false, "{json}");
+    assert_eq!(codex["mcp_invocation_observed"], false, "{json}");
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["support_status"],
+        "host_route_configured_verification_required",
+        "{json}"
+    );
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["active"], false,
+        "{json}"
+    );
+}
+
+#[test]
+fn lifecycle_start_agent_no_apply_records_intent_without_cursor_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--no-apply"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".codex/config.toml").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["desired"], true,
+        "{json}"
+    );
+    assert!(
+        json["project_lifecycle"]["agent"]["host_routes"]
+            .as_object()
+            .unwrap()
+            .is_empty(),
+        "{json}"
+    );
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["route_configured"], false,
+        "{json}"
+    );
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["active"], false,
+        "{json}"
+    );
+}
+
+#[test]
+fn lifecycle_start_agent_host_cursor_applies_without_apply_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--host", "cursor"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    assert!(dir.path().join(".cursor/mcp.json").exists());
+    let text = String::from_utf8_lossy(&start.stdout);
+    assert!(text.contains("route_state=configured_unverified"), "{text}");
+}
+
+#[test]
+fn lifecycle_start_agent_host_claude_code_applies_project_mcp_with_approval_required() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--host", "claude-code"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    assert!(dir.path().join(".mcp.json").exists());
+    assert!(dir
+        .path()
+        .join(".tfy/host-config/claude-code.json")
+        .exists());
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let claude = &json["project_lifecycle"]["agent"]["host_routes"]["claude-code"];
+    assert_eq!(claude["route_state"], "configured_unverified", "{json}");
+    assert_eq!(claude["configured"], true, "{json}");
+    assert_eq!(claude["route_configured"], true, "{json}");
+    assert_eq!(claude["host_approval_required"], true, "{json}");
+    assert_eq!(claude["active"], false, "{json}");
+}
+
+#[test]
+fn lifecycle_start_agent_unsupported_host_is_guidance_only_without_configured_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--host", "opencode"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let opencode = &json["project_lifecycle"]["agent"]["host_routes"]["opencode"];
+    assert_eq!(
+        opencode["route_state"], "config_snippet_available",
+        "{json}"
+    );
+    assert_eq!(opencode["configured"], false, "{json}");
+    assert_eq!(opencode["route_configured"], false, "{json}");
+    assert_eq!(opencode["active"], false, "{json}");
+}
+
+#[test]
+fn lifecycle_start_agent_fails_closed_on_unowned_codex_tfy_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        "[mcp_servers.tfy]\ncommand = \"custom\"\n",
+    )
+    .unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(stderr.contains("not TFY-owned"), "{stderr}");
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+}
+
+#[test]
+fn lifecycle_start_agent_fails_closed_on_malformed_codex_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(codex_dir.join("config.toml"), "[mcp_servers.tfy\n").unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+}
+
+#[test]
+fn lifecycle_start_agent_fails_closed_on_invalid_codex_toml_key_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let original = "[other]
+key =";
+    std::fs::write(codex_dir.join("config.toml"), original).unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(stderr.contains("malformed TOML key/value"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(codex_dir.join("config.toml")).unwrap(),
+        original
+    );
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+}
+
+#[test]
+fn lifecycle_start_agent_fails_closed_on_quoted_codex_tfy_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let original = r#"[mcp_servers."tfy"]
+command = "custom"
+"#;
+    std::fs::write(codex_dir.join("config.toml"), original).unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(stderr.contains("not TFY-owned"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(codex_dir.join("config.toml")).unwrap(),
+        original
+    );
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+}
+
+#[test]
+fn lifecycle_start_agent_fails_closed_on_dotted_codex_tfy_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let original = "mcp_servers.tfy.command = \"custom\"\n";
+    std::fs::write(codex_dir.join("config.toml"), original).unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(stderr.contains("not TFY-owned"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(codex_dir.join("config.toml")).unwrap(),
+        original
+    );
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+}
+
+#[test]
+fn lifecycle_start_agent_fails_closed_on_nested_dotted_codex_tfy_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let original = "[mcp_servers]\ntfy.command = \"custom\"\n";
+    std::fs::write(codex_dir.join("config.toml"), original).unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(stderr.contains("not TFY-owned"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(codex_dir.join("config.toml")).unwrap(),
+        original
+    );
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+}
+
+#[test]
+fn lifecycle_start_agent_fails_closed_on_incomplete_codex_tfy_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        "# keep\n[other]\nvalue = \"ok\"\n# TFY:HOST-CONFIG:START codex\n[mcp_servers.tfy]\ncommand = \"tfy\"\n[after]\nvalue = \"must stay\"\n",
+    )
+    .unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(
+        stderr.contains("malformed TFY host config marker"),
+        "{stderr}"
+    );
+    let codex = std::fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+    assert!(codex.contains("[after]"), "{codex}");
+    assert!(codex.contains("must stay"), "{codex}");
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+}
+
+#[test]
+fn lifecycle_start_agent_fails_closed_on_orphan_codex_tfy_end_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let original = "# keep\n[other]\nvalue = \"ok\"\n# TFY:HOST-CONFIG:END codex\n[after]\nvalue = \"must stay\"\n";
+    std::fs::write(codex_dir.join("config.toml"), original).unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(
+        stderr.contains("malformed TFY host config marker"),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(codex_dir.join("config.toml")).unwrap(),
+        original
+    );
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+}
+
+#[test]
+fn lifecycle_fuckyou_agent_fails_closed_on_incomplete_codex_tfy_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        "# keep\n[other]\nvalue = \"ok\"\n# TFY:HOST-CONFIG:START codex\n[mcp_servers.tfy]\ncommand = \"tfy\"\n[after]\nvalue = \"must stay\"\n",
+    )
+    .unwrap();
+    let cleanup = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["fuckyou", "--agent", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!cleanup.status.success());
+    let stderr = String::from_utf8_lossy(&cleanup.stderr);
+    assert!(
+        stderr.contains("malformed TFY host config marker"),
+        "{stderr}"
+    );
+    let codex = std::fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+    assert!(codex.contains("[after]"), "{codex}");
+    assert!(codex.contains("must stay"), "{codex}");
+}
+
+#[test]
+fn lifecycle_fuckyou_agent_fails_closed_on_orphan_codex_tfy_end_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let original = "# keep\n[other]\nvalue = \"ok\"\n# TFY:HOST-CONFIG:START codex\n[mcp_servers.tfy]\ncommand = \"tfy\"\nargs = [\"mcp\", \"serve\"]\n# TFY:HOST-CONFIG:END codex\n# TFY:HOST-CONFIG:END codex\n[after]\nvalue = \"must stay\"\n";
+    std::fs::write(codex_dir.join("config.toml"), original).unwrap();
+    let cleanup = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["fuckyou", "--agent", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!cleanup.status.success());
+    let stderr = String::from_utf8_lossy(&cleanup.stderr);
+    assert!(
+        stderr.contains("malformed TFY host config marker"),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(codex_dir.join("config.toml")).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn lifecycle_fuckyou_agent_fails_closed_on_unowned_dotted_codex_tfy_route_after_owned_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let original = "# TFY:HOST-CONFIG:START codex\n[mcp_servers.tfy]\ncommand = \"tfy\"\nargs = [\"mcp\", \"serve\"]\n# TFY:HOST-CONFIG:END codex\nmcp_servers.tfy.command = \"custom\"\n";
+    std::fs::write(codex_dir.join("config.toml"), original).unwrap();
+    let cleanup = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["fuckyou", "--agent", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!cleanup.status.success());
+    let stderr = String::from_utf8_lossy(&cleanup.stderr);
+    assert!(stderr.contains("not TFY-owned"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(codex_dir.join("config.toml")).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn lifecycle_fuckyou_agent_removes_only_tfy_owned_host_entries_and_preserves_raw() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        "# keep\n[other]\nvalue = \"ok\"\n# TFY:HOST-CONFIG:START codex\n[mcp_servers.tfy]\ncommand = \"tfy\"\nargs = [\"mcp\", \"serve\"]\n# TFY:HOST-CONFIG:END codex\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".mcp.json"),
+        r#"{"mcpServers":{"other":{"command":"other"},"tfy":{"command":"tfy","args":["mcp","serve"],"tfy_managed":true}},"keep":true}"#,
+    )
+    .unwrap();
+    let cursor_dir = dir.path().join(".cursor");
+    std::fs::create_dir_all(&cursor_dir).unwrap();
+    let config = cursor_dir.join("mcp.json");
+    std::fs::write(
+        &config,
+        r#"{"mcpServers":{"other":{"command":"other"},"tfy":{"command":"tfy","args":["mcp","serve"],"tfy_managed":true}},"keep":true}"#,
+    )
+    .unwrap();
+    let raw_dir = dir.path().join(".tfy/raw");
+    std::fs::create_dir_all(&raw_dir).unwrap();
+    std::fs::write(raw_dir.join("raw-proof.json"), "{}").unwrap();
+
+    let cleanup = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["fuckyou", "--agent", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        cleanup.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&cleanup.stderr)
+    );
+    let codex = std::fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+    assert!(codex.contains("[other]"), "{codex}");
+    assert!(!codex.contains("[mcp_servers.tfy]"), "{codex}");
+    let claude: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(claude["keep"], true, "{claude}");
+    assert_eq!(
+        claude["mcpServers"]["other"]["command"], "other",
+        "{claude}"
+    );
+    assert!(claude["mcpServers"]["tfy"].is_null(), "{claude}");
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(json["keep"], true, "{json}");
+    assert_eq!(json["mcpServers"]["other"]["command"], "other", "{json}");
+    assert!(json["mcpServers"]["tfy"].is_null(), "{json}");
+    assert!(raw_dir.join("raw-proof.json").exists());
 }
 
 #[test]
