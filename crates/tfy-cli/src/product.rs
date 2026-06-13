@@ -2757,8 +2757,17 @@ fn validate_codex_toml_config(path: &Path, text: &str) -> Result<()> {
                 index + 1
             );
         }
-        if current_table == ["mcp_servers"]
-            && normalize_toml_key(key.trim()).as_deref() == Some("tfy")
+        let key_path = normalize_toml_dotted_key(key.trim()).with_context(|| {
+            format!(
+                "malformed TOML key in {} at line {}; refusing to write",
+                path.display(),
+                index + 1
+            )
+        })?;
+        if (current_table.is_empty() && toml_path_starts_with(&key_path, &["mcp_servers", "tfy"]))
+            || (current_table == ["mcp_servers"] && toml_path_starts_with(&key_path, &["tfy"]))
+            || (current_table == ["mcp_servers"]
+                && normalize_toml_key(key.trim()).as_deref() == Some("tfy"))
         {
             bail!(
                 "Codex mcp_servers.tfy already exists and is not TFY-owned; refusing to overwrite user-managed config in {}",
@@ -2809,6 +2818,20 @@ fn normalize_toml_key(key: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn normalize_toml_dotted_key(key: &str) -> Result<Vec<String>> {
+    key.split('.')
+        .map(|part| normalize_toml_key(part.trim()).ok_or_else(|| anyhow!("invalid TOML key")))
+        .collect()
+}
+
+fn toml_path_starts_with(path: &[String], prefix: &[&str]) -> bool {
+    path.len() >= prefix.len()
+        && path
+            .iter()
+            .zip(prefix.iter())
+            .all(|(path_part, prefix_part)| path_part == prefix_part)
 }
 
 fn strip_marked_host_block(text: &str, host: &str) -> Result<(String, bool)> {
@@ -2942,6 +2965,7 @@ fn cleanup_codex_project_mcp_if_tfy_owned() -> Result<()> {
     if !removed {
         return Ok(());
     }
+    validate_codex_toml_config(&path, &base)?;
     if base.trim().is_empty() {
         fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
     } else {

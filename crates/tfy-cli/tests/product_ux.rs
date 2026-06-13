@@ -3541,6 +3541,52 @@ command = "custom"
 }
 
 #[test]
+fn lifecycle_start_agent_fails_closed_on_dotted_codex_tfy_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let original = "mcp_servers.tfy.command = \"custom\"\n";
+    std::fs::write(codex_dir.join("config.toml"), original).unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(stderr.contains("not TFY-owned"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(codex_dir.join("config.toml")).unwrap(),
+        original
+    );
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+}
+
+#[test]
+fn lifecycle_start_agent_fails_closed_on_nested_dotted_codex_tfy_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let original = "[mcp_servers]\ntfy.command = \"custom\"\n";
+    std::fs::write(codex_dir.join("config.toml"), original).unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(stderr.contains("not TFY-owned"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(codex_dir.join("config.toml")).unwrap(),
+        original
+    );
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+}
+
+#[test]
 fn lifecycle_start_agent_fails_closed_on_incomplete_codex_tfy_marker() {
     let dir = tempfile::tempdir().unwrap();
     let codex_dir = dir.path().join(".codex");
@@ -3638,6 +3684,27 @@ fn lifecycle_fuckyou_agent_fails_closed_on_orphan_codex_tfy_end_marker() {
         stderr.contains("malformed TFY host config marker"),
         "{stderr}"
     );
+    assert_eq!(
+        std::fs::read_to_string(codex_dir.join("config.toml")).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn lifecycle_fuckyou_agent_fails_closed_on_unowned_dotted_codex_tfy_route_after_owned_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let original = "# TFY:HOST-CONFIG:START codex\n[mcp_servers.tfy]\ncommand = \"tfy\"\nargs = [\"mcp\", \"serve\"]\n# TFY:HOST-CONFIG:END codex\nmcp_servers.tfy.command = \"custom\"\n";
+    std::fs::write(codex_dir.join("config.toml"), original).unwrap();
+    let cleanup = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["fuckyou", "--agent", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!cleanup.status.success());
+    let stderr = String::from_utf8_lossy(&cleanup.stderr);
+    assert!(stderr.contains("not TFY-owned"), "{stderr}");
     assert_eq!(
         std::fs::read_to_string(codex_dir.join("config.toml")).unwrap(),
         original
