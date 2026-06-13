@@ -502,6 +502,7 @@ struct LifecycleStatusView {
 struct ProductStatusReport {
     status: String,
     target_filter: String,
+    lifecycle_summary: LifecycleSummary,
     project_lifecycle: LifecycleStatusView,
     global_lifecycle: LifecycleStatusView,
     effective_lifecycle: EffectiveLifecycleStatus,
@@ -511,6 +512,19 @@ struct ProductStatusReport {
     launch_claim_gate: String,
     not_supported: Vec<String>,
     truthfulness_boundary: String,
+}
+
+#[derive(Serialize)]
+struct LifecycleSummary {
+    status: String,
+    desired: bool,
+    configured: bool,
+    active: bool,
+    desired_targets: Vec<String>,
+    configured_targets: Vec<String>,
+    active_targets: Vec<String>,
+    evidence_required: bool,
+    message: String,
 }
 
 #[derive(Serialize)]
@@ -1016,6 +1030,23 @@ fn write_lifecycle(scope: LifecycleScope, state: &LifecycleFile) -> Result<()> {
         .with_context(|| format!("write {}", path.display()))
 }
 
+fn ensure_lifecycle_storage_dirs(state: &LifecycleFile) -> Result<()> {
+    fs::create_dir_all(&state.raw_dir)
+        .with_context(|| format!("create raw evidence directory {}", state.raw_dir))?;
+    for ledger in [
+        &state.ledgers.state,
+        &state.ledgers.adapter,
+        &state.ledgers.agent,
+        &state.ledgers.mcp,
+    ] {
+        if let Some(parent) = Path::new(ledger).parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create ledger directory {}", parent.display()))?;
+        }
+    }
+    Ok(())
+}
+
 fn remove_lifecycle_if_empty(scope: LifecycleScope, state: &LifecycleFile) -> Result<()> {
     let path = lifecycle_path(scope);
     if state.agent.is_none() && state.human.is_none() {
@@ -1509,11 +1540,6 @@ pub(crate) fn execute_use(cmd: UseCmd) -> Result<()> {
 
 fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
     let targets = targets_from_args(&cmd.target, cmd.target_alias.as_deref(), "start")?;
-    if (cmd.host.is_some() || cmd.apply || cmd.verify || cmd.no_apply)
-        && scope == LifecycleScope::Global
-    {
-        bail!("tfy global start P1 records global lifecycle defaults only; host --apply/--verify/--no-apply is project-scoped");
-    }
     if cmd.apply && cmd.no_apply {
         bail!("tfy start cannot combine --apply and --no-apply");
     }
@@ -1538,7 +1564,8 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
     if selected_hosts.is_empty() && auto_apply_supported_agent_routes {
         selected_hosts = vec![host_integration("codex")?];
     }
-    let should_apply_supported_routes = cmd.apply || auto_apply_supported_agent_routes;
+    let should_apply_supported_routes =
+        scope == LifecycleScope::Project && (cmd.apply || auto_apply_supported_agent_routes);
     let mut state = read_lifecycle(scope)?;
     let now = now_stamp();
     for target in &targets {
@@ -1647,11 +1674,20 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         }
     }
     write_lifecycle(scope, &state)?;
+    ensure_lifecycle_storage_dirs(&state)?;
     println!(
         "TFY {} start: targets={} configured=true desired=true",
         scope.label(),
         target_names(&targets)
     );
+    if scope == LifecycleScope::Global
+        && targets.contains(&LifecycleTarget::Agent)
+        && (cmd.host.is_some() || cmd.apply || cmd.no_apply)
+    {
+        println!(
+            "global_host_apply=false reason=project_scoped_host_config_required next_action=run `tfy start --agent` inside each project to write Codex/Claude/Cursor config"
+        );
+    }
     if targets.contains(&LifecycleTarget::Agent) {
         let support_status = state
             .agent
@@ -2210,6 +2246,18 @@ pub(crate) fn execute_status(cmd: StatusCmd) -> Result<()> {
     } else {
         println!("TFY status: {}", report.status);
         println!("target_filter: {}", report.target_filter);
+        println!(
+            "lifecycle status: {} desired={} configured={} active={} evidence_required={} desired_targets={} configured_targets={} active_targets={}",
+            report.lifecycle_summary.status,
+            report.lifecycle_summary.desired,
+            report.lifecycle_summary.configured,
+            report.lifecycle_summary.active,
+            report.lifecycle_summary.evidence_required,
+            report.lifecycle_summary.desired_targets.join(","),
+            report.lifecycle_summary.configured_targets.join(","),
+            report.lifecycle_summary.active_targets.join(",")
+        );
+        println!("lifecycle message: {}", report.lifecycle_summary.message);
         if !cmd.human {
             if let Some(agent) = &report.effective_lifecycle.agent {
                 println!(
@@ -3807,6 +3855,7 @@ fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
     ProductStatusReport {
         status: "active".into(),
         target_filter: target_filter.into(),
+        lifecycle_summary: lifecycle_summary(&effective_lifecycle),
         project_lifecycle,
         global_lifecycle,
         effective_lifecycle,
@@ -3827,6 +3876,84 @@ fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
         launch_claim_gate: "A host is launch-supported only after config snippet, config write/apply proof, host launch, verified host MCP or official hook invocation, route evidence, raw recovery, no-negative-savings, and positive-savings checks pass.".into(),
         not_supported: not_supported_surfaces(),
         truthfulness_boundary: "automatic configuration is limited to supported AI-host routes; no provider proxy, editor hook, private Codex hook, or universal shell interception".into(),
+    }
+}
+
+fn lifecycle_summary(effective: &EffectiveLifecycleStatus) -> LifecycleSummary {
+    let mut desired_targets = Vec::new();
+    let mut configured_targets = Vec::new();
+    let mut active_targets = Vec::new();
+    let mut any_desired = false;
+    let mut any_configured = false;
+    let mut any_route_configured = false;
+    let mut any_active = false;
+    let mut any_parse_error = false;
+
+    for (name, route) in [
+        ("agent", effective.agent.as_ref()),
+        ("human", effective.human.as_ref()),
+    ] {
+        let Some(route) = route else {
+            continue;
+        };
+        if route.support_status == "lifecycle_parse_error"
+            || route.route_state == "lifecycle_parse_error"
+        {
+            any_parse_error = true;
+        }
+        if route.desired {
+            any_desired = true;
+            desired_targets.push(name.to_string());
+        }
+        if route.configured || route.route_configured {
+            any_configured = true;
+            configured_targets.push(name.to_string());
+        }
+        if route.route_configured {
+            any_route_configured = true;
+        }
+        if route.active {
+            any_active = true;
+            active_targets.push(name.to_string());
+        }
+    }
+
+    let status = if any_parse_error {
+        "parse_error"
+    } else if any_active {
+        "active"
+    } else if any_desired && any_route_configured {
+        "configured_unverified"
+    } else if any_desired || any_configured {
+        "intent_recorded"
+    } else {
+        "not_configured"
+    };
+    let evidence_required = any_desired && !any_active;
+    let message = match status {
+        "active" => {
+            "TFY is active only for targets with verified route, raw/ledger, and savings evidence."
+        }
+        "configured_unverified" => {
+            "TFY is configured for at least one target, but active=false until route-bound invocation and savings evidence exists."
+        }
+        "intent_recorded" => {
+            "TFY lifecycle intent is recorded, but no supported route is verified active yet."
+        }
+        "parse_error" => "Lifecycle state could not be parsed; fix or remove the lifecycle file.",
+        _ => "TFY lifecycle is not configured for the selected target filter.",
+    };
+
+    LifecycleSummary {
+        status: status.into(),
+        desired: any_desired,
+        configured: any_configured,
+        active: any_active,
+        desired_targets,
+        configured_targets,
+        active_targets,
+        evidence_required,
+        message: message.into(),
     }
 }
 
@@ -3894,7 +4021,12 @@ fn effective_agent_status(
             .values()
             .any(|route| route.normal_workflow_supported)
     });
-    let active = route_verified && savings_verified && normal_workflow_supported;
+    let route_bound_active = selected.is_some_and(|(state, _)| {
+        state.host_routes.values().any(|route| {
+            route.route_verified && route.savings_verified && route.normal_workflow_supported
+        })
+    });
+    let active = desired && route_bound_active;
     let host_routes_empty = selected.is_none_or(|(state, _)| state.host_routes.is_empty());
     EffectiveRouteStatus {
         desired,
@@ -3907,9 +4039,9 @@ fn effective_agent_status(
         normal_workflow_supported,
         active,
         active_derivation: if active {
-            "active=true derived from route_verified && savings_verified && normal_workflow_supported"
+            "active=true derived from desired && route_verified && savings_verified && normal_workflow_supported"
         } else {
-            "active=false until a host+route evidence scope verifies invocation, raw recovery, no-negative and positive savings"
+            "active=false until a host+route evidence scope verifies invocation, raw recovery, no-negative and positive savings and lifecycle desire is on"
         }
         .into(),
         route_state: selected
@@ -3961,7 +4093,7 @@ fn effective_human_status(
     let route_verified = selected.is_some_and(|(state, _)| state.active);
     let savings_verified = route_verified;
     let normal_workflow_supported = false;
-    let active = route_verified && savings_verified;
+    let active = desired && route_verified && savings_verified;
     EffectiveRouteStatus {
         desired,
         desired_source: selected.map(|(_, source)| source).unwrap_or("none").into(),
@@ -3973,9 +4105,9 @@ fn effective_human_status(
         normal_workflow_supported,
         active,
         active_derivation: if active {
-            "active=true derived from explicit wrapper/session evidence"
+            "active=true derived from desired && explicit wrapper/session evidence"
         } else {
-            "active=false until explicit wrapper/session evidence exists; ordinary terminals are never globally intercepted"
+            "active=false until explicit wrapper/session evidence exists and lifecycle desire is on; ordinary terminals are never globally intercepted"
         }
         .into(),
         route_state: selected

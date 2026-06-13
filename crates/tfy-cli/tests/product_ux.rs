@@ -2643,6 +2643,11 @@ fn lifecycle_global_uses_tfy_home_and_stays_separate_from_project() {
         .unwrap();
     assert!(start.status.success());
     assert!(home.path().join("lifecycle.json").exists());
+    assert!(home.path().join("raw").is_dir());
+    assert!(home.path().join("state").is_dir());
+    assert!(home.path().join("adapter").is_dir());
+    assert!(home.path().join("agent").is_dir());
+    assert!(home.path().join("mcp").is_dir());
     assert!(!dir.path().join(".tfy/lifecycle.json").exists());
 
     Command::new(env!("CARGO_BIN_EXE_tfy"))
@@ -2794,6 +2799,89 @@ fn lifecycle_status_and_stop_accept_legacy_active_routes_state() {
 }
 
 #[test]
+fn lifecycle_stop_prevents_active_claim_even_with_retained_launch_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let lifecycle = dir.path().join(".tfy/lifecycle.json");
+    std::fs::create_dir_all(lifecycle.parent().unwrap()).unwrap();
+    std::fs::write(
+        &lifecycle,
+        r#"{
+  "schema_version": 1,
+  "scope": "project",
+  "agent": {
+    "configured": true,
+    "desired": false,
+    "route_state": "intent_recorded",
+    "active": false,
+    "intended_routes": ["mcp_stdio", "tfy_agent_adapter", "generic_shell"],
+    "host_routes": {
+      "codex": {
+        "route_state": "launch_supported",
+        "active": false,
+        "configured": true,
+        "route_configured": true,
+        "host_reload_required": false,
+        "host_route_available_after_reload": true,
+        "host_approval_required": false,
+        "mcp_invocation_observed": true,
+        "route_verified": true,
+        "savings_verified": true,
+        "normal_workflow_supported": true,
+        "config_path": ".codex/config.toml",
+        "claim_tier": "launch_supported",
+        "message": "retained historical evidence after stop"
+      }
+    },
+    "private_hook_interception": false,
+    "provider_prompt_gateway": false,
+    "support_status": "host_route_configured_verification_required",
+    "started_at": "unix:1",
+    "stopped_at": "unix:2"
+  },
+  "human": null,
+  "raw_dir": ".tfy/raw",
+  "ledgers": {
+    "state": ".tfy/state/ledger.jsonl",
+    "adapter": ".tfy/adapter/ledger.jsonl",
+    "agent": ".tfy/agent/ledger.jsonl",
+    "mcp": ".tfy/mcp/ledger.jsonl"
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["effective_lifecycle"]["agent"]["desired"], false);
+    assert_eq!(json["effective_lifecycle"]["agent"]["route_verified"], true);
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["savings_verified"],
+        true
+    );
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["normal_workflow_supported"],
+        true
+    );
+    assert_eq!(json["effective_lifecycle"]["agent"]["active"], false);
+    assert_eq!(json["lifecycle_summary"]["active"], false);
+    assert_ne!(json["lifecycle_summary"]["status"], "active");
+    assert!(json["effective_lifecycle"]["agent"]["active_derivation"]
+        .as_str()
+        .unwrap()
+        .contains("lifecycle desire is on"));
+}
+
+#[test]
 fn lifecycle_status_exposes_malformed_state_parse_error() {
     let dir = tempfile::tempdir().unwrap();
     let lifecycle = dir.path().join(".tfy/lifecycle.json");
@@ -2884,6 +2972,56 @@ fn lifecycle_stop_without_prior_start_does_not_fabricate_started_at() {
         .as_str()
         .unwrap()
         .starts_with("unix:"));
+}
+
+#[test]
+fn lifecycle_global_start_accepts_host_options_as_default_guidance_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["global", "start", "--agent", "--host", "all", "--apply"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let text = String::from_utf8_lossy(&start.stdout);
+    assert!(text.contains("global_host_apply=false"), "{text}");
+    assert!(
+        text.contains("project_scoped_host_config_required"),
+        "{text}"
+    );
+    assert!(!dir.path().join(".codex/config.toml").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("TFY_HOME", home.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(json["global_lifecycle"]["agent"]["desired"], true);
+    assert_eq!(
+        json["global_lifecycle"]["agent"]["host_routes"]["codex"]["route_state"],
+        "config_snippet_available"
+    );
+    assert_eq!(
+        json["global_lifecycle"]["agent"]["host_routes"]["claude-code"]["route_state"],
+        "config_snippet_available"
+    );
+    assert_eq!(
+        json["global_lifecycle"]["agent"]["host_routes"]["cursor"]["route_state"],
+        "config_snippet_available"
+    );
+    assert_eq!(json["effective_lifecycle"]["agent"]["active"], false);
+    assert_eq!(json["lifecycle_summary"]["status"], "intent_recorded");
 }
 
 #[test]
@@ -2979,6 +3117,9 @@ fn lifecycle_status_reports_effective_state_and_next_actions() {
         false
     );
     assert_eq!(fresh_json["effective_lifecycle"]["agent"]["active"], false);
+    assert_eq!(fresh_json["lifecycle_summary"]["status"], "not_configured");
+    assert_eq!(fresh_json["lifecycle_summary"]["active"], false);
+    assert_eq!(fresh_json["lifecycle_summary"]["evidence_required"], false);
 
     let global_start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3002,6 +3143,10 @@ fn lifecycle_status_reports_effective_state_and_next_actions() {
         "global"
     );
     assert_eq!(json["effective_lifecycle"]["agent"]["active"], false);
+    assert_eq!(json["lifecycle_summary"]["status"], "intent_recorded");
+    assert_eq!(json["lifecycle_summary"]["desired"], true);
+    assert_eq!(json["lifecycle_summary"]["active"], false);
+    assert_eq!(json["lifecycle_summary"]["evidence_required"], true);
     assert!(json["effective_lifecycle"]["agent"]["next_action"]
         .as_str()
         .unwrap()
@@ -3024,6 +3169,10 @@ fn lifecycle_status_reports_effective_state_and_next_actions() {
     let text = String::from_utf8_lossy(&text_status.stdout);
     assert!(
         text.contains("effective agent: desired=true source=project"),
+        "{text}"
+    );
+    assert!(
+        text.contains("lifecycle status: configured_unverified"),
         "{text}"
     );
     assert!(text.contains("next agent action:"), "{text}");
@@ -3063,6 +3212,14 @@ fn lifecycle_use_always_alias_controls_global_defaults() {
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(json["global_lifecycle"]["agent"]["desired"], true);
     assert_eq!(json["global_lifecycle"]["human"]["desired"], true);
+    assert_eq!(json["lifecycle_summary"]["status"], "configured_unverified");
+    assert_eq!(
+        json["lifecycle_summary"]["desired_targets"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 
     let cancel = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3079,6 +3236,9 @@ fn lifecycle_use_always_alias_controls_global_defaults() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(json["global_lifecycle"]["agent"]["desired"], false);
+    assert_eq!(json["lifecycle_summary"]["status"], "intent_recorded");
+    assert_eq!(json["lifecycle_summary"]["desired"], false);
+    assert_eq!(json["lifecycle_summary"]["configured"], true);
 }
 
 #[test]
@@ -3305,6 +3465,11 @@ fn lifecycle_start_agent_auto_configures_codex_by_default() {
     assert!(dir.path().join(".codex/config.toml").exists());
     assert!(!dir.path().join(".cursor/mcp.json").exists());
     assert!(dir.path().join(".tfy/host-config/codex.json").exists());
+    assert!(dir.path().join(".tfy/raw").is_dir());
+    assert!(dir.path().join(".tfy/state").is_dir());
+    assert!(dir.path().join(".tfy/adapter").is_dir());
+    assert!(dir.path().join(".tfy/agent").is_dir());
+    assert!(dir.path().join(".tfy/mcp").is_dir());
 
     let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
