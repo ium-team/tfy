@@ -108,6 +108,26 @@ Repository/development harness:
 - `.github/` — PR template, issue templates, and Rust CI workflow.
 - `scripts/verify.sh` — local full verification gate.
 
+
+## Developer Preview installation
+
+The source build remains the authority path, but the preview distribution is designed for dogfooding from a normal project directory instead of running `cargo run` inside the TFY checkout. The planned npm package name is scoped because the unscoped `tfy` npm name is already occupied; the installed command must still be `tfy`.
+
+```sh
+npm install -g @tfy/cli@preview
+tfy start --agent --host codex
+tfy start --human
+tfy status --json
+```
+
+The npm package is a thin installer/launcher. It downloads the matching GitHub Release archive plus checksum and exposes the `tfy` command. Preview releases must use the npm `preview` dist-tag, not `latest`, until GA evidence gates pass. Local validation of the install path is available with:
+
+```sh
+./scripts/npm-preview-smoke.sh
+```
+
+For AI-agent use, `tfy start --agent --host codex` writes project MCP configuration, but that only proves configuration. Launch support still requires real host invocation plus TFY raw/ledger/no-negative/positive-savings evidence. For human use, run explicit TFY wrappers such as `tfy shell -- <command>` or `tfy adapter run --session <name> -- <command>`; TFY does not claim universal terminal interception.
+
 ## Implementation status
 
 The current authority-path implementation is **Rust core + Rust CLI**. TFY is Rust-first where correctness, security, deterministic command behavior, raw evidence, redaction, proof validation, and workspace apply matter. Non-core integrations may use host-native or other best-fit technologies when that improves released-product quality, provided they do not become correctness dependencies for authority-path behavior without an explicit stack decision record. Python product/runtime surfaces have been retired: there is no root Python package, PyO3 binding crate, Python lockfile, or Python test suite in the release path. Python remains only a supported input language for code analysis through tree-sitter fixtures and may be used for non-runtime evaluation or research tooling only when it is not a product/runtime dependency.

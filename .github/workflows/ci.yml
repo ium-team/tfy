@@ -20,3 +20,21 @@ jobs:
         run: cargo test --workspace
       - name: Whitespace
         run: git diff --check
+
+
+  npm-preview-smoke:
+    name: npm preview smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: NPM preview install smoke
+        run: node scripts/npm-preview-smoke.js
