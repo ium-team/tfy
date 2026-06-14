@@ -111,10 +111,10 @@ Repository/development harness:
 
 ## Developer Preview installation
 
-The source build remains the authority path, but the preview distribution is designed for dogfooding from a normal project directory instead of running `cargo run` inside the TFY checkout. The planned npm package name is scoped because the unscoped `tfy` npm name is already occupied; the installed command must still be `tfy`.
+The source build remains the authority path, but the preview distribution is designed for dogfooding from a normal project directory instead of running `cargo run` inside the TFY checkout. The npm package name is `token-fuck-you` because the unscoped `tfy` npm name is already occupied; the installed command must still be `tfy`.
 
 ```sh
-npm install -g @tfy/cli@preview
+npm install -g token-fuck-you@preview
 tfy start --agent --host codex
 tfy start --human
 tfy status --json

@@ -48,7 +48,7 @@ cat > "$RELEASE_MANIFEST" <<EOF
 {
   "schema_version": 1,
   "version": "$VERSION",
-  "package_name": "@tfy/cli",
+  "package_name": "token-fuck-you",
   "npm_dist_tag": "preview",
   "bin": "tfy",
   "asset": {
@@ -81,7 +81,7 @@ cat > "$EVIDENCE" <<EOF
   "checksum_sha256": "$ARCHIVE_SHA256",
   "checksums_artifact": "$CHECKSUMS",
   "release_manifest": "$RELEASE_MANIFEST",
-  "npm_package_name": "@tfy/cli",
+  "npm_package_name": "token-fuck-you",
   "npm_dist_tag": "preview",
   "npm_bin": "tfy",
   "github_release_canonical": true,
@@ -105,7 +105,7 @@ cat > "$EVIDENCE" <<EOF
     "checksum=$CHECKSUM",
     "checksum_sha256=$ARCHIVE_SHA256",
     "release_manifest=$RELEASE_MANIFEST",
-    "npm_package_name=@tfy/cli",
+    "npm_package_name=token-fuck-you",
     "npm_dist_tag=preview",
     "bench_manifest=$BENCH_MANIFEST"
   ]
