@@ -1,0 +1,335 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version: N.N.N for stable, N.N.N-preview.N for public-test'
+        required: true
+        type: string
+      channel:
+        description: 'Release channel'
+        required: true
+        type: choice
+        options:
+          - preview
+          - stable
+      source_ref:
+        description: 'Source ref. Defaults to develop for preview and main for stable.'
+        required: false
+        type: string
+      dry_run:
+        description: 'Build and verify without creating the GitHub Release'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      source_ref: ${{ steps.defaults.outputs.source_ref }}
+      version: ${{ steps.metadata.outputs.version }}
+      base_version: ${{ steps.metadata.outputs.base_version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      npm_dist_tag: ${{ steps.metadata.outputs.npm_dist_tag }}
+      target_sha: ${{ steps.ref.outputs.target_sha }}
+    steps:
+      - name: Resolve and validate source ref default
+        id: defaults
+        shell: bash
+        env:
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_SOURCE_REF: ${{ inputs.source_ref }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          source_ref="$INPUT_SOURCE_REF"
+          if [ -z "$source_ref" ]; then
+            if [ "$INPUT_CHANNEL" = 'stable' ]; then
+              source_ref='main'
+            else
+              source_ref='develop'
+            fi
+          fi
+
+          if [[ ! "$source_ref" =~ ^(main|develop|release/[A-Za-z0-9._/-]+)$ ]] || [[ "$source_ref" == *..* ]] || [[ "$source_ref" == *//* ]] || [[ "$source_ref" == */ ]] || [[ "$source_ref" == *@{* ]]; then
+            echo "source_ref contains unsupported characters or ref syntax" >&2
+            exit 1
+          fi
+          git check-ref-format --branch "$source_ref" >/dev/null
+
+          case "$INPUT_CHANNEL" in
+            stable)
+              [ "$source_ref" = 'main' ] || { echo "stable releases must use source_ref=main" >&2; exit 1; }
+              [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "stable version must match N.N.N" >&2; exit 1; }
+              ;;
+            preview)
+              case "$source_ref" in develop|release/*) ;; *) echo "preview releases must use source_ref=develop or release/*" >&2; exit 1 ;; esac
+              [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]] || { echo "preview version must match N.N.N-preview.N" >&2; exit 1; }
+              ;;
+            *)
+              echo "channel must be stable or preview" >&2
+              exit 1
+              ;;
+          esac
+          printf 'source_ref=%s\n' "$source_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: release-tools
+
+      - name: Checkout release source ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.defaults.outputs.source_ref }}
+          path: source
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate version/channel/source metadata
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          SOURCE_REF: ${{ steps.defaults.outputs.source_ref }}
+        run: |
+          set -euo pipefail
+          node release-tools/scripts/check-release-version.js \
+            --root source \
+            --version "$INPUT_VERSION" \
+            --channel "$INPUT_CHANNEL" \
+            --source-ref "$SOURCE_REF" \
+            --json > release-preflight.json
+          cat release-preflight.json
+
+      - name: Export metadata outputs
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require('fs');
+          const metadata = JSON.parse(fs.readFileSync('release-preflight.json', 'utf8'));
+          for (const key of ['version', 'base_version', 'tag', 'prerelease', 'npm_dist_tag']) {
+            console.log(`${key}=${metadata[key]}`);
+          }
+          NODE
+
+      - name: Resolve immutable release target
+        id: ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          target_sha="$(git -C source rev-parse HEAD)"
+          if git -C source ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; refusing to overwrite." >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to overwrite." >&2
+            exit 1
+          fi
+          printf 'target_sha=%s\n' "$target_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-preflight
+          path: release-preflight.json
+          if-no-files-found: error
+
+  verify:
+    name: Verify source ref
+    runs-on: ubuntu-latest
+    needs: preflight
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.target_sha }}
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: release-tools
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Full local gate
+        run: ./scripts/verify.sh
+      - name: NPM helper tests
+        run: npm test --prefix npm/tfy-cli
+
+  build:
+    name: Build ${{ matrix.rust_target }}
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            rust_target: x86_64-apple-darwin
+          - os: macos-14
+            rust_target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.target_sha }}
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: release-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.rust_target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build TFY CLI
+        run: cargo build --release -p tfy-cli --locked --target ${{ matrix.rust_target }}
+      - name: Package release asset
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          set -euo pipefail
+          node release-tools/scripts/package-release.js \
+            --root "$GITHUB_WORKSPACE" \
+            --version "$RELEASE_VERSION" \
+            --rust-target "$RUST_TARGET" \
+            --dist dist \
+            --manifest "dist/manifest-$RUST_TARGET.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.rust_target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/manifest-*.json
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [preflight, verify, build]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.target_sha }}
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: release-tools
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*-*-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-preflight
+          path: dist
+      - name: Verify release asset set
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const { validateRelease } = require('./release-tools/scripts/check-release-version');
+          const metadata = JSON.parse(fs.readFileSync('dist/release-preflight.json', 'utf8'));
+          const expected = validateRelease({
+            channel: metadata.channel,
+            version: metadata.version,
+            sourceRef: metadata.source_ref,
+            cargoVersion: metadata.cargo_version,
+            npmVersion: metadata.npm_version,
+            root: process.cwd()
+          }).targets;
+          const expectedNames = new Set(expected.flatMap(target => [target.archive, target.checksum]));
+          const actualNames = fs.readdirSync('dist').filter(name => name.endsWith('.tar.gz') || name.endsWith('.sha256'));
+          const missing = [...expectedNames].filter(name => !fs.existsSync(path.join('dist', name)));
+          const extra = actualNames.filter(name => !expectedNames.has(name));
+          if (missing.length || extra.length) {
+            throw new Error(`release asset set mismatch; missing=${missing.join(', ') || '(none)'} extra=${extra.join(', ') || '(none)'}`);
+          }
+          console.log(`verified exact asset set: ${expected.length} archives and ${expected.length} checksums`);
+          NODE
+      - name: Write release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<EOF_NOTES
+          TFY ${{ needs.preflight.outputs.tag }}
+
+          Channel: ${{ inputs.channel }}
+          npm dist-tag: ${{ needs.preflight.outputs.npm_dist_tag }}
+          Source ref: ${{ needs.preflight.outputs.source_ref }}
+          Target commit: ${{ needs.preflight.outputs.target_sha }}
+
+          This release provides GitHub Release archives and SHA-256 checksums for the npm installer. It does not change TFY claim boundaries: host launch support and token-saving claims still require route-bound evidence.
+          EOF_NOTES
+      - name: Dry run summary
+        if: ${{ inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Dry run only; GitHub Release was not created."
+          ls -la dist
+      - name: Create release
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          TARGET_SHA: ${{ needs.preflight.outputs.target_sha }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          args=("$RELEASE_TAG")
+          while IFS= read -r file; do args+=("$file"); done < <(find dist -maxdepth 1 \( -name '*.tar.gz' -o -name '*.sha256' \) -print | sort)
+          args+=(--target "$TARGET_SHA")
+          args+=(--title "TFY $RELEASE_TAG")
+          args+=(--notes-file release-notes.md)
+          if [ "$PRERELEASE" = 'true' ]; then
+            args+=(--prerelease --latest=false)
+          fi
+          gh release create "${args[@]}"
