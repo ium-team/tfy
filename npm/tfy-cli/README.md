@@ -8,11 +8,12 @@ Install preview builds explicitly:
 npm install -g token-fuck-you@preview
 ```
 
-Install channels use standard npm package specifiers:
+TFY uses two public install channels only:
 
-- `token-fuck-you` resolves to the most stable release through the npm `latest` dist-tag.
-- `token-fuck-you@0.1.1` resolves to that exact version. npm version installs use `@<version>`, not `/v<version>`.
-- `token-fuck-you@preview` resolves to the newest developer preview.
+- Stable channel: `token-fuck-you` resolves to the most tested release through the npm `latest` dist-tag.
+- Public-test channel: `token-fuck-you@preview` resolves to the newest public testing build with current development work included.
+
+Exact versions remain installable with standard npm syntax, for example `token-fuck-you@0.1.1` or `token-fuck-you@0.1.1-preview.0`; npm version installs use `@<version>`, not `/v<version>`.
 
 The npm package name is `token-fuck-you` and may differ from the command name because the unscoped `tfy` npm package is already occupied. The installed executable remains `tfy`.
 
