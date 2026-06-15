@@ -7,7 +7,7 @@ const https = require('https');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { currentPlatform, archiveName } = require('./lib/platform');
+const { currentPlatform, archiveName, cleanVersion } = require('./lib/platform');
 const { parseChecksum } = require('./lib/checksum');
 
 const root = path.resolve(__dirname, '..');
@@ -48,6 +48,10 @@ function copyLocalBinary(source, destination = installedBin) {
 function canonicalReleaseBase(version) {
   const cleanVersion = String(version).replace(/^v/, '');
   return `https://github.com/ium-team/tfy/releases/download/v${cleanVersion}`;
+}
+
+function defaultReleaseVersion(version) {
+  return cleanVersion(version);
 }
 
 function releaseUrls(version, platformTarget) {
@@ -133,7 +137,7 @@ function installVerifiedArchive({ archivePath, checksumPath, asset, platformTarg
 
 async function installFromRelease(options = {}) {
   const platformTarget = options.platformTarget || target;
-  const version = options.version || process.env.TFY_RELEASE_VERSION || pkg.version.replace(/^v/, '').replace(/-preview\.\d+$/, '');
+  const version = defaultReleaseVersion(options.version || process.env.TFY_RELEASE_VERSION || pkg.version);
   const { asset, archiveUrl, checksumUrl } = releaseUrls(version, platformTarget);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tfy-npm-'));
   const archivePath = path.join(tmp, asset);
@@ -167,6 +171,7 @@ if (require.main === module) {
 module.exports = {
   canonicalReleaseBase,
   copyLocalBinary,
+  defaultReleaseVersion,
   download,
   installFromRelease,
   installVerifiedArchive,

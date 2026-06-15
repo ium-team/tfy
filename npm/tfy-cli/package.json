@@ -23,7 +23,7 @@
   },
   "scripts": {
     "postinstall": "node scripts/install.js",
-    "test": "node test/platform.test.js && node test/checksum.test.js && node test/install.test.js && node test/launcher.test.js"
+    "test": "node test/platform.test.js && node test/checksum.test.js && node test/install.test.js && node test/launcher.test.js && node test/release.test.js"
   },
   "files": [
     "bin/",

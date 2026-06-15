@@ -46,6 +46,37 @@ Required local checks for the npm path:
 ./scripts/release-dry-run.sh
 ```
 
+
+## Manual GitHub Release workflow
+
+A human-controlled GitHub Release workflow lives at `.github/workflows/release.yml`. It is intentionally manual-only (`workflow_dispatch`) and does not publish npm. The workflow must exist on the repository default branch before it appears in the GitHub Actions manual-run UI; choose the release source with the `source_ref` input.
+
+Inputs:
+
+- `version`: stable versions use `N.N.N`; public-test versions use `N.N.N-preview.N`.
+- `channel`: `stable` or `preview` only.
+- `source_ref`: optional. Stable defaults to `main` and refuses any other source. Preview defaults to `develop` and also allows `release/*`.
+- `dry_run`: when true, builds/verifies/packages all assets but does not create the GitHub Release.
+
+Metadata contract:
+
+| Channel | npm dist-tag | Git tag | Cargo version | npm version | Archive names |
+| --- | --- | --- | --- | --- | --- |
+| stable | `latest` | `vN.N.N` | `N.N.N` | `N.N.N` | `tfy-N.N.N-<platform>-<arch>.tar.gz` |
+| preview | `preview` | `vN.N.N-preview.N` | `N.N.N` | `N.N.N-preview.N` | `tfy-N.N.N-<platform>-<arch>.tar.gz` |
+
+Preview archive names intentionally omit the `-preview.N` suffix because the npm installer resolves the full tag while using base-version asset names. For example, `token-fuck-you@0.1.1-preview.0` downloads from tag `v0.1.1-preview.0` and expects `tfy-0.1.1-linux-x86_64.tar.gz` plus `.sha256`.
+
+The workflow fails closed when version metadata is inconsistent, when `source_ref` does not match the channel, when the tag or release already exists, or when any current npm-supported platform asset/checksum is missing. The supported matrix is shared with the npm installer in `npm/tfy-cli/scripts/lib/platform.js`.
+
+Local preflight examples:
+
+```sh
+node scripts/check-release-version.js --version 0.1.0-preview.0 --channel preview --source-ref develop --json
+node scripts/check-release-version.js --version 0.1.0 --channel stable --source-ref main --cargo-version 0.1.0 --npm-version 0.1.0 --json
+./scripts/release-dry-run.sh
+```
+
 ## Raw lifecycle
 
 Raw evidence is local and recoverable:

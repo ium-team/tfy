@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(p["version"] for p in data["packages"] if p["name"]=="tfy-cli"))')"
+VERSION="$(node -p "require('./npm/tfy-cli/package.json').version")"
+CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(p["version"] for p in data["packages"] if p["name"]=="tfy-cli"))')"
+RELEASE_DIR="$ROOT/.tfy/release"
+RELEASE_METADATA="$RELEASE_DIR/release-preflight.json"
+mkdir -p "$RELEASE_DIR"
+node scripts/check-release-version.js --version "$VERSION" --channel preview --source-ref develop --cargo-version "$CARGO_VERSION" --npm-version "$VERSION" --json > "$RELEASE_METADATA"
 PLATFORM_INFO="$(node - "$VERSION" <<'NODE'
 const { currentPlatform, archiveName } = require('./npm/tfy-cli/scripts/lib/platform');
 const version = process.argv[2];
@@ -20,7 +25,6 @@ NODE
 IFS=$'	' read -r ASSET_PLATFORM ASSET_ARCH BIN_NAME RUST_TARGET ARCHIVE_NAME <<< "$PLATFORM_INFO"
 DIST="$ROOT/dist"
 INSTALL_ROOT="$ROOT/.tfy/release/install"
-RELEASE_DIR="$ROOT/.tfy/release"
 BIN="$ROOT/target/release/$BIN_NAME"
 ARCHIVE="$DIST/$ARCHIVE_NAME"
 CHECKSUM="$ARCHIVE.sha256"
@@ -36,35 +40,14 @@ cargo install --path crates/tfy-cli --locked --root "$INSTALL_ROOT"
 cargo build --release -p tfy-cli
 "$BIN" bench --json --output "$BENCH_MANIFEST" >/dev/null
 
-tar -C "$ROOT/target/release" -czf "$ARCHIVE" "$BIN_NAME"
-(
-  cd "$DIST"
-  shasum -a 256 "$(basename "$ARCHIVE")" > "$(basename "$CHECKSUM")"
-  cp "$(basename "$CHECKSUM")" "$CHECKSUMS"
-)
+node scripts/package-release.js \
+  --version "$VERSION" \
+  --rust-target "$RUST_TARGET" \
+  --binary "$BIN" \
+  --dist "$DIST" \
+  --manifest "$RELEASE_MANIFEST"
+cp "$CHECKSUM" "$CHECKSUMS"
 ARCHIVE_SHA256="$(awk '{print $1}' "$CHECKSUM")"
-
-cat > "$RELEASE_MANIFEST" <<EOF
-{
-  "schema_version": 1,
-  "version": "$VERSION",
-  "package_name": "token-fuck-you",
-  "npm_dist_tag": "preview",
-  "bin": "tfy",
-  "asset": {
-    "platform": "$ASSET_PLATFORM",
-    "arch": "$ASSET_ARCH",
-    "archive": "$ARCHIVE",
-    "archive_name": "$(basename "$ARCHIVE")",
-    "checksum": "$CHECKSUM",
-    "checksum_name": "$(basename "$CHECKSUM")",
-    "sha256": "$ARCHIVE_SHA256",
-    "rust_target": "$RUST_TARGET",
-    "binary_name": "$BIN_NAME"
-  },
-  "canonical_source": "github_release"
-}
-EOF
 
 cat > "$EVIDENCE" <<EOF
 {
@@ -81,6 +64,7 @@ cat > "$EVIDENCE" <<EOF
   "checksum_sha256": "$ARCHIVE_SHA256",
   "checksums_artifact": "$CHECKSUMS",
   "release_manifest": "$RELEASE_MANIFEST",
+  "release_preflight": "$RELEASE_METADATA",
   "npm_package_name": "token-fuck-you",
   "npm_dist_tag": "preview",
   "npm_bin": "tfy",
@@ -105,6 +89,7 @@ cat > "$EVIDENCE" <<EOF
     "checksum=$CHECKSUM",
     "checksum_sha256=$ARCHIVE_SHA256",
     "release_manifest=$RELEASE_MANIFEST",
+    "release_preflight=$RELEASE_METADATA",
     "npm_package_name=token-fuck-you",
     "npm_dist_tag=preview",
     "bench_manifest=$BENCH_MANIFEST"
@@ -119,6 +104,7 @@ archive=$ARCHIVE
 checksum=$CHECKSUM
 release_manifest=$RELEASE_MANIFEST
 bench_manifest=$BENCH_MANIFEST
+release_preflight=$RELEASE_METADATA
 release_evidence=$EVIDENCE
 
 Use with launch report:

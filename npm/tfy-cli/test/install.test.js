@@ -11,6 +11,7 @@ const {
   installFromRelease,
   installVerifiedArchive,
   releaseUrls,
+  defaultReleaseVersion,
   sha256,
   validateArchiveEntries
 } = require('../scripts/install');
@@ -56,6 +57,7 @@ assert.throws(() => validateArchiveEntries(['tfy', 'extra'], target), /archive m
 assert.strictEqual(validateArchiveEntries(['./tfy'], target), 'tfy');
 
 assert.strictEqual(canonicalReleaseBase('v0.1.0'), 'https://github.com/ium-team/tfy/releases/download/v0.1.0');
+assert.strictEqual(defaultReleaseVersion('v0.1.0-preview.0'), '0.1.0-preview.0');
 assert.deepStrictEqual(releaseUrls('0.1.0-preview.0', target), {
   asset: 'tfy-0.1.0-linux-x86_64.tar.gz',
   archiveUrl: 'https://github.com/ium-team/tfy/releases/download/v0.1.0-preview.0/tfy-0.1.0-linux-x86_64.tar.gz',

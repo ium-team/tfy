@@ -131,6 +131,8 @@ Exact versions remain installable with standard npm syntax, for example `npm ins
 ./scripts/npm-preview-smoke.sh
 ```
 
+GitHub Releases are produced by the manual `.github/workflows/release.yml` workflow. It builds all npm-supported platform archives/checksums, refuses mismatched channel/version/source metadata, and creates the GitHub Release only when `dry_run` is false. The workflow does not publish npm; npm promotion remains a separate step using `latest` for stable and `preview` for public-test.
+
 For AI-agent use, `tfy start --agent --host codex` writes project MCP configuration, but that only proves configuration. Launch support still requires real host invocation plus TFY raw/ledger/no-negative/positive-savings evidence. For human use, run explicit TFY wrappers such as `tfy shell -- <command>` or `tfy adapter run --session <name> -- <command>`; TFY does not claim universal terminal interception.
 
 ## Implementation status

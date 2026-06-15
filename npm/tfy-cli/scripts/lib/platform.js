@@ -8,6 +8,10 @@ const SUPPORTED = new Map([
   ['win32:x64', { platform: 'win32', arch: 'x64', rustTarget: 'x86_64-pc-windows-msvc', archivePlatform: 'windows', archiveArch: 'x86_64', binName: 'tfy.exe' }]
 ]);
 
+function cloneTarget(key, target) {
+  return { ...target, key };
+}
+
 function currentPlatform() {
   return resolvePlatform(process.platform, process.arch);
 }
@@ -19,16 +23,46 @@ function resolvePlatform(platform, arch) {
     const supported = Array.from(SUPPORTED.keys()).join(', ');
     throw new Error(`Unsupported TFY npm platform ${key}. Supported: ${supported}`);
   }
-  return { ...resolved, key };
+  return cloneTarget(key, resolved);
+}
+
+function supportedTargets() {
+  return Array.from(SUPPORTED.entries()).map(([key, target]) => cloneTarget(key, target));
+}
+
+function resolveRustTarget(rustTarget) {
+  const resolved = supportedTargets().find(target => target.rustTarget === rustTarget);
+  if (!resolved) {
+    const supported = supportedTargets().map(target => target.rustTarget).join(', ');
+    throw new Error(`Unsupported TFY Rust target ${rustTarget}. Supported: ${supported}`);
+  }
+  return resolved;
+}
+
+function cleanVersion(version) {
+  return String(version).replace(/^v/, '');
+}
+
+function baseVersion(version) {
+  return cleanVersion(version).replace(/-preview\.\d+$/, '');
 }
 
 function assetBaseName(version, target) {
-  const cleanVersion = String(version).replace(/^v/, '').replace(/-preview\.\d+$/, '');
-  return `tfy-${cleanVersion}-${target.archivePlatform}-${target.archiveArch}`;
+  return `tfy-${baseVersion(version)}-${target.archivePlatform}-${target.archiveArch}`;
 }
 
 function archiveName(version, target) {
   return `${assetBaseName(version, target)}.tar.gz`;
 }
 
-module.exports = { SUPPORTED, currentPlatform, resolvePlatform, assetBaseName, archiveName };
+module.exports = {
+  SUPPORTED,
+  archiveName,
+  assetBaseName,
+  baseVersion,
+  cleanVersion,
+  currentPlatform,
+  resolvePlatform,
+  resolveRustTarget,
+  supportedTargets
+};
