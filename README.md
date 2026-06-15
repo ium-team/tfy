@@ -120,7 +120,16 @@ tfy start --human
 tfy status --json
 ```
 
-The npm package is a thin installer/launcher. It downloads the matching GitHub Release archive plus checksum and exposes the `tfy` command. TFY uses two public install channels only:
+The npm package is a thin installer/launcher. It downloads the matching GitHub Release archive plus checksum and exposes the `tfy` command. The public names are intentionally different:
+
+| Layer | Name | Why |
+| --- | --- | --- |
+| Product/repo | `TFY` / `tfy` | Human-facing product and command identity. |
+| Rust crate | `tfy-cli` | Cargo package name for the CLI implementation. |
+| npm package | `token-fuck-you` | Public npm installer package because unscoped `tfy` is occupied. |
+| Installed executable | `tfy` | The command users run after install. |
+
+TFY uses two public install channels only:
 
 - Stable channel: `npm install -g token-fuck-you` installs the most tested release through the npm `latest` dist-tag. Do not point `latest` at public-test builds.
 - Public-test channel: `npm install -g token-fuck-you@preview` installs the newest public testing build with current development work included.
@@ -131,7 +140,14 @@ Exact versions remain installable with standard npm syntax, for example `npm ins
 ./scripts/npm-preview-smoke.sh
 ```
 
-GitHub Releases are produced by the manual `.github/workflows/release.yml` workflow. It builds all npm-supported platform archives/checksums, refuses mismatched channel/version/source metadata, and creates the GitHub Release only when `dry_run` is false. The workflow does not publish npm; npm promotion remains a separate step using `latest` for stable and `preview` for public-test.
+GitHub Releases are produced by the manual `.github/workflows/release.yml` workflow. It builds all npm-supported platform archives/checksums, refuses mismatched channel/version/source metadata, and creates the GitHub Release only when `dry_run` is false. The workflow does **not** publish npm. After the matching GitHub Release exists, use the npm publish plan helper to print the exact publish command without publishing:
+
+```sh
+node scripts/npm-publish-plan.js --version 0.1.1-preview.0 --channel preview --source-ref develop
+node scripts/npm-publish-plan.js --version 0.1.1 --channel stable --source-ref main
+```
+
+The npm package defaults its `publishConfig.tag` to `preview` as a safety rail; stable publishes must explicitly use the generated `--tag latest` command.
 
 For AI-agent use, `tfy start --agent --host codex` writes project MCP configuration, but that only proves configuration. Launch support still requires real host invocation plus TFY raw/ledger/no-negative/positive-savings evidence. For human use, run explicit TFY wrappers such as `tfy shell -- <command>` or `tfy adapter run --session <name> -- <command>`; TFY does not claim universal terminal interception.
 
@@ -265,7 +281,7 @@ MCP Code I/O workflow:
 3. `tfy_output_validate` restores compact output in preview mode and never mutates the workspace.
 4. `tfy_output_apply` applies only through the same proof-gated single-file selected-scope semantics as `tfy output-gateway --apply`; parent event ids or ledger state alone are not authority.
 5. `tfy_restore_display` turns compact/restored code into human-readable display text only; it does not create apply authority.
-6. `tfy_workspace_validate` and `tfy_workspace_apply` validate/apply explicit WorkspaceApplyPlan operations with a plan hash plus per-operation proofs, including exact multi-file operations (one mutation per target file per plan) and conservative unique-anchor fuzzy edits with required base and preview proof hashes with required base and preview proof hashes.
+6. `tfy_workspace_validate` and `tfy_workspace_apply` validate/apply explicit WorkspaceApplyPlan operations with a plan hash plus per-operation proofs, including exact multi-file operations (one mutation per target file per plan) and conservative unique-anchor fuzzy edits with required base and preview proof hashes.
 
 This is MCP tool/resource integration. It does not claim private Codex hook interception, provider prompt mutation, or universal shell interception without host MCP routing.
 
@@ -273,7 +289,7 @@ Launch reporting uses exact byte counts recorded from raw/model-visible gateway 
 
 ### Release readiness dry-run
 
-Developer Preview/RC evidence is generated from local gates, not broad claims:
+Developer Preview evidence and RC evidence are separate gates generated from local/release checks, not broad claims:
 
 ```sh
 ./scripts/verify.sh

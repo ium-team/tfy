@@ -1,6 +1,6 @@
 # TFY Release Readiness
 
-TFY release claims are evidence-gated. The product can be shipped as a Developer Preview/RC when local supported routes and release artifacts pass; GA and public superiority claims require stricter evidence.
+TFY release claims are evidence-gated. Developer Preview and RC are separate gates: Developer Preview proves local supported routes plus installable artifacts, while RC additionally proves review/CI/release closeout. GA and public superiority claims require stricter evidence.
 
 ## Release tiers
 
@@ -37,19 +37,21 @@ Preview distribution is intentionally two-channel:
 - GitHub Releases are the canonical binary source. Each supported platform archive must have a SHA-256 checksum and release evidence entry.
 - npm is the convenience installer/launcher. The package name may be scoped or otherwise disambiguated from occupied npm names, but the installed binary command must be `tfy`.
 
-TFY uses two public npm install channels only: stable and public-test. Stable publishes use the `latest` dist-tag so `npm install -g token-fuck-you` resolves to the most tested release. Public-test publishes must be public and use the `preview` dist-tag, not `latest`, so `npm install -g token-fuck-you@preview` resolves to the newest public testing build. Exact historical installs use standard npm version specifiers such as `token-fuck-you@0.1.1` or `token-fuck-you@0.1.1-preview.0`; TFY does not use a slash form such as `token-fuck-you/v0.1.1` for npm installs. The package must fail closed when the release archive or checksum is missing or mismatched. Release evidence should record at least `npm_package_name`, `npm_dist_tag`, `npm_bin`, `github_release_canonical`, asset platform/arch/name, and checksum file/hash.
+TFY uses two public npm install channels only: stable and public-test. Stable publishes use the `latest` dist-tag so `npm install -g token-fuck-you` resolves to the most tested release. Public-test publishes must be public and use the `preview` dist-tag, not `latest`, so `npm install -g token-fuck-you@preview` resolves to the newest public testing build. Exact historical installs use standard npm version specifiers such as `token-fuck-you@0.1.1` or `token-fuck-you@0.1.1-preview.0`; TFY does not use a slash form such as `token-fuck-you/v0.1.1` for npm installs. The package must fail closed when the release archive or checksum is missing or mismatched. Release evidence should record at least `npm_package_name`, `npm_dist_tag`, `npm_bin`, `github_release_canonical`, asset platform/arch/name, and checksum file/hash. The package defaults `publishConfig.tag` to `preview` as a safety rail; stable publishes must explicitly use `--tag latest`.
 
 Required local checks for the npm path:
 
 ```sh
 ./scripts/npm-preview-smoke.sh
 ./scripts/release-dry-run.sh
+node scripts/npm-publish-plan.js --version 0.1.1-preview.0 --channel preview --source-ref develop
+node scripts/npm-publish-plan.js --version 0.1.1 --channel stable --source-ref main
 ```
 
 
 ## Manual GitHub Release workflow
 
-A human-controlled GitHub Release workflow lives at `.github/workflows/release.yml`. It is intentionally manual-only (`workflow_dispatch`) and does not publish npm. The workflow must exist on the repository default branch before it appears in the GitHub Actions manual-run UI; choose the release source with the `source_ref` input.
+A human-controlled GitHub Release workflow lives at `.github/workflows/release.yml`. It is intentionally manual-only (`workflow_dispatch`) and does not publish npm. Its `npm_dist_tag` metadata is an instruction for the later npm publish step, not evidence that npm was published. The workflow must exist on the repository default branch before it appears in the GitHub Actions manual-run UI; choose the release source with the `source_ref` input.
 
 Inputs:
 
