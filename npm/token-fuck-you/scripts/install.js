@@ -12,9 +12,6 @@ const { parseChecksum } = require('./lib/checksum');
 
 const root = path.resolve(__dirname, '..');
 const pkg = require(path.join(root, 'package.json'));
-const target = currentPlatform();
-const vendorDir = path.join(root, 'vendor', target.rustTarget);
-const installedBin = path.join(vendorDir, target.binName);
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
 const DEFAULT_REDIRECT_LIMIT = 5;
 
@@ -37,12 +34,38 @@ function ensureExecutable(file) {
   if (process.platform !== 'win32') fs.chmodSync(file, 0o755);
 }
 
-function copyLocalBinary(source, destination = installedBin) {
+function defaultInstallPaths(platformTarget) {
+  const vendorDir = path.join(root, 'vendor', platformTarget.rustTarget);
+  return { vendorDir, installedBin: path.join(vendorDir, platformTarget.binName) };
+}
+
+function manualInstallDestination(source) {
+  const name = path.basename(source) || (process.platform === 'win32' ? 'tfy.exe' : 'tfy');
+  return path.join(root, 'vendor', 'manual', name);
+}
+
+function copyLocalBinary(source, destination = manualInstallDestination(source)) {
   if (!fs.existsSync(source)) throw new Error(`TFY_BINARY_PATH does not exist: ${source}`);
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.copyFileSync(source, destination);
   ensureExecutable(destination);
   log(`installed local TFY binary from ${source}`);
+  return destination;
+}
+
+function installLocalBinary(source, options = {}) {
+  const resolvedSource = path.resolve(source);
+  let destination = options.destinationBinary;
+  if (!destination) {
+    try {
+      const platformTarget = options.platformTarget || currentPlatform(options);
+      destination = defaultInstallPaths(platformTarget).installedBin;
+    } catch (error) {
+      destination = manualInstallDestination(resolvedSource);
+      log(`${error.message}; copied local binary to ${destination}. Set TFY_BINARY_PATH at runtime on unsupported platforms.`);
+    }
+  }
+  return copyLocalBinary(resolvedSource, destination);
 }
 
 function canonicalReleaseBase(version) {
@@ -136,15 +159,16 @@ function installVerifiedArchive({ archivePath, checksumPath, asset, platformTarg
 }
 
 async function installFromRelease(options = {}) {
-  const platformTarget = options.platformTarget || target;
+  const platformTarget = options.platformTarget || currentPlatform(options);
   const version = defaultReleaseVersion(options.version || process.env.TFY_RELEASE_VERSION || pkg.version);
   const { asset, archiveUrl, checksumUrl } = releaseUrls(version, platformTarget);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tfy-npm-'));
   const archivePath = path.join(tmp, asset);
   const checksumPath = `${archivePath}.sha256`;
   const downloadFile = options.downloadFile || download;
-  const vendorDirectory = options.vendorDirectory || vendorDir;
-  const destinationBinary = options.destinationBinary || installedBin;
+  const defaults = defaultInstallPaths(platformTarget);
+  const vendorDirectory = options.vendorDirectory || defaults.vendorDir;
+  const destinationBinary = options.destinationBinary || defaults.installedBin;
   log(`downloading ${archiveUrl}`);
   await downloadFile(archiveUrl, archivePath);
   await downloadFile(checksumUrl, checksumPath);
@@ -158,7 +182,7 @@ async function main() {
     return;
   }
   if (process.env.TFY_BINARY_PATH) {
-    copyLocalBinary(path.resolve(process.env.TFY_BINARY_PATH));
+    installLocalBinary(process.env.TFY_BINARY_PATH);
     return;
   }
   await installFromRelease();
@@ -171,9 +195,12 @@ if (require.main === module) {
 module.exports = {
   canonicalReleaseBase,
   copyLocalBinary,
+  defaultInstallPaths,
   defaultReleaseVersion,
   download,
   installFromRelease,
+  installLocalBinary,
+  manualInstallDestination,
   installVerifiedArchive,
   listArchiveEntries,
   normalizeArchiveEntry,

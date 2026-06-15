@@ -8,7 +8,9 @@ const { spawnSync } = require('child_process');
 const { resolvePlatform } = require('../scripts/lib/platform');
 const {
   canonicalReleaseBase,
+  copyLocalBinary,
   installFromRelease,
+  manualInstallDestination,
   installVerifiedArchive,
   releaseUrls,
   defaultReleaseVersion,
@@ -64,8 +66,17 @@ assert.deepStrictEqual(releaseUrls('0.1.0-preview.0', target), {
   checksumUrl: 'https://github.com/ium-team/tfy/releases/download/v0.1.0-preview.0/tfy-0.1.0-linux-x86_64.tar.gz.sha256'
 });
 
+const localBinary = path.join(tmp, 'local-tfy');
+const copiedBinary = path.join(tmp, 'copied-local-tfy');
+fs.writeFileSync(localBinary, '#!/usr/bin/env sh\necho local\n');
+copyLocalBinary(localBinary, copiedBinary);
+assert.strictEqual(fs.readFileSync(copiedBinary, 'utf8'), fs.readFileSync(localBinary, 'utf8'));
+assert.match(manualInstallDestination(localBinary), /vendor[\\/]manual[\\/]local-tfy$/);
+
 
 async function exerciseReleaseFlow() {
+  await assert.rejects(() => installFromRelease({ platform: 'darwin', arch: 'x64' }), /Intel Mac prebuilt npm installs are not currently provided/);
+
   const releaseTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tfy-release-flow-test-'));
   const releaseSrc = path.join(releaseTmp, 'src');
   const releaseArchive = path.join(releaseTmp, 'tfy-0.1.0-linux-x86_64.tar.gz');
