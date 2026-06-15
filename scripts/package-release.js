@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { archiveName, baseVersion, cleanVersion, resolveRustTarget } = require('../npm/tfy-cli/scripts/lib/platform');
+const { archiveName, baseVersion, cleanVersion, resolveRustTarget } = require('../npm/token-fuck-you/scripts/lib/platform');
 
 const RELEASE_VERSION_RE = /^\d+\.\d+\.\d+(?:-preview\.\d+)?$/;
 

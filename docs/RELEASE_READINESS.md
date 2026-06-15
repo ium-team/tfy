@@ -67,7 +67,7 @@ Metadata contract:
 
 Preview archive names intentionally omit the `-preview.N` suffix because the npm installer resolves the full tag while using base-version asset names. For example, `token-fuck-you@0.1.1-preview.0` downloads from tag `v0.1.1-preview.0` and expects `tfy-0.1.1-linux-x86_64.tar.gz` plus `.sha256`.
 
-The workflow fails closed when version metadata is inconsistent, when `source_ref` does not match the channel, when the tag or release already exists, or when any current npm-supported platform asset/checksum is missing. The supported matrix is shared with the npm installer in `npm/tfy-cli/scripts/lib/platform.js`.
+The workflow fails closed when version metadata is inconsistent, when `source_ref` does not match the channel, when the tag or release already exists, or when any current npm-supported platform asset/checksum is missing. The supported matrix is shared with the npm installer in `npm/token-fuck-you/scripts/lib/platform.js`.
 
 Local preflight examples:
 

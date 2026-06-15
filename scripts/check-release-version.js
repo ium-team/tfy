@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { archiveName, baseVersion, cleanVersion, supportedTargets } = require('../npm/tfy-cli/scripts/lib/platform');
+const { archiveName, baseVersion, cleanVersion, supportedTargets } = require('../npm/token-fuck-you/scripts/lib/platform');
 
 const STABLE_VERSION_RE = /^\d+\.\d+\.\d+$/;
 const PREVIEW_VERSION_RE = /^(\d+\.\d+\.\d+)-preview\.\d+$/;
@@ -36,8 +36,8 @@ function readWorkspaceCargoVersion(root = process.cwd()) {
 }
 
 function readNpmPackageVersion(root = process.cwd()) {
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'npm', 'tfy-cli', 'package.json'), 'utf8'));
-  if (!pkg.version) throw new Error('npm/tfy-cli/package.json is missing version');
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'npm', 'token-fuck-you', 'package.json'), 'utf8'));
+  if (!pkg.version) throw new Error('npm/token-fuck-you/package.json is missing version');
   return pkg.version;
 }
 

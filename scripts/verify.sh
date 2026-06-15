@@ -3,5 +3,5 @@ set -eu
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-npm test --prefix npm/tfy-cli
+npm test --prefix npm/token-fuck-you
 git diff --check
