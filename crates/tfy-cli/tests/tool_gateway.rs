@@ -1,13 +1,35 @@
 use std::process::Command;
 
+struct IsolatedToolPaths {
+    _tmp: tempfile::TempDir,
+    raw_dir: String,
+    ledger: String,
+}
+
+fn isolated_tool_paths() -> IsolatedToolPaths {
+    let tmp = tempfile::tempdir().unwrap();
+    IsolatedToolPaths {
+        raw_dir: tmp.path().join("raw").to_str().unwrap().to_string(),
+        ledger: tmp
+            .path()
+            .join("ledger.jsonl")
+            .to_str()
+            .unwrap()
+            .to_string(),
+        _tmp: tmp,
+    }
+}
+
 #[test]
 fn tool_gateway_passes_through_tiny_success_without_json_or_ref_overhead() {
-    let raw_dir = tempfile::tempdir().unwrap();
+    let paths = isolated_tool_paths();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args([
             "tool-gateway",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
             "--",
             "sh",
             "-c",
@@ -24,13 +46,15 @@ fn tool_gateway_passes_through_tiny_success_without_json_or_ref_overhead() {
 
 #[test]
 fn tool_gateway_redacts_public_credential_urls() {
-    let raw_dir = tempfile::tempdir().unwrap();
+    let paths = isolated_tool_paths();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .env("CARGO_TERM_COLOR", "never")
         .args([
             "tool-gateway",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
             "--",
             "sh",
             "-c",
@@ -52,12 +76,14 @@ fn tool_gateway_redacts_public_credential_urls() {
 
 #[test]
 fn tool_gateway_preserves_failure_exit_code() {
-    let raw_dir = tempfile::tempdir().unwrap();
+    let paths = isolated_tool_paths();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args([
             "tool-gateway",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
             "--",
             "sh",
             "-c",
@@ -75,12 +101,14 @@ fn tool_gateway_preserves_failure_exit_code() {
 
 #[test]
 fn tool_gateway_summarizes_long_output_only_when_shorter() {
-    let raw_dir = tempfile::tempdir().unwrap();
+    let paths = isolated_tool_paths();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args([
             "tool-gateway",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
             "--",
             "sh",
             "-c",
@@ -97,12 +125,14 @@ fn tool_gateway_summarizes_long_output_only_when_shorter() {
 
 #[test]
 fn tool_gateway_suppresses_binary_with_recoverable_ref() {
-    let raw_dir = tempfile::tempdir().unwrap();
+    let paths = isolated_tool_paths();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args([
             "tool-gateway",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
             "--",
             "python3",
             "-c",
@@ -118,12 +148,14 @@ fn tool_gateway_suppresses_binary_with_recoverable_ref() {
 
 #[test]
 fn tool_gateway_raw_ref_recovers_invalid_utf8_bytes_losslessly() {
-    let raw_dir = tempfile::tempdir().unwrap();
+    let paths = isolated_tool_paths();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args([
             "tool-gateway",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
             "--",
             "python3",
             "-c",
@@ -142,12 +174,7 @@ fn tool_gateway_raw_ref_recovers_invalid_utf8_bytes_losslessly() {
         .trim_end_matches(']')
         .to_string();
     let raw = Command::new(env!("CARGO_BIN_EXE_tfy"))
-        .args([
-            "raw",
-            "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
-            &raw_ref,
-        ])
+        .args(["raw", "--raw-dir", paths.raw_dir.as_str(), &raw_ref])
         .output()
         .unwrap();
     assert!(raw.status.success());
@@ -156,13 +183,15 @@ fn tool_gateway_raw_ref_recovers_invalid_utf8_bytes_losslessly() {
 
 #[test]
 fn raw_around_returns_only_requested_text_range() {
-    let raw_dir = tempfile::tempdir().unwrap();
+    let paths = isolated_tool_paths();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args([
             "tool-gateway",
             "--json",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
             "--",
             "sh",
             "-c",
@@ -177,7 +206,7 @@ fn raw_around_returns_only_requested_text_range() {
         .args([
             "raw",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
             "--around",
             "needle",
             "--context",
@@ -192,12 +221,14 @@ fn raw_around_returns_only_requested_text_range() {
 
 #[test]
 fn raw_around_invalid_utf8_fails_closed_without_lossy_output() {
-    let raw_dir = tempfile::tempdir().unwrap();
+    let paths = isolated_tool_paths();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args([
             "tool-gateway",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
             "--",
             "python3",
             "-c",
@@ -218,7 +249,7 @@ fn raw_around_invalid_utf8_fails_closed_without_lossy_output() {
         .args([
             "raw",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
             "--around",
             "abc",
             &raw_ref,
@@ -231,13 +262,15 @@ fn raw_around_invalid_utf8_fails_closed_without_lossy_output() {
 
 #[test]
 fn raw_around_missing_needle_fails_closed_without_full_output() {
-    let raw_dir = tempfile::tempdir().unwrap();
+    let paths = isolated_tool_paths();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args([
             "tool-gateway",
             "--json",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
             "--",
             "sh",
             "-c",
@@ -252,7 +285,7 @@ fn raw_around_missing_needle_fails_closed_without_full_output() {
         .args([
             "raw",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
             "--around",
             "absent",
             &raw_ref,
@@ -265,14 +298,16 @@ fn raw_around_missing_needle_fails_closed_without_full_output() {
 
 #[test]
 fn tool_gateway_json_includes_command_family_for_p0_wrapped_command() {
-    let raw_dir = tempfile::tempdir().unwrap();
+    let paths = isolated_tool_paths();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .env("CARGO_TERM_COLOR", "never")
         .args([
             "tool-gateway",
             "--json",
             "--raw-dir",
-            raw_dir.path().to_str().unwrap(),
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
             "--",
             "cargo",
             "test",

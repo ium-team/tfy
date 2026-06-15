@@ -31,6 +31,24 @@ function defaultBinaryPath(root, target) {
   return path.join(root, 'target', target.rustTarget, 'release', target.binName);
 }
 
+function toTarPath(value, pathLib = path) {
+  return String(value || '.').split(pathLib.sep).join('/');
+}
+
+function buildTarInvocation({ binary, dist, archivePath, target, pathLib = path }) {
+  const binaryDir = pathLib.dirname(binary);
+  const relativeSourceDir = pathLib.relative(dist, binaryDir) || '.';
+  if (pathLib.isAbsolute(relativeSourceDir) || /^[A-Za-z]:/.test(relativeSourceDir)) {
+    throw new Error(`tar source directory must be relative to dist; got ${relativeSourceDir}`);
+  }
+  const sourceDir = toTarPath(relativeSourceDir, pathLib);
+  return {
+    command: 'tar',
+    args: ['-C', sourceDir, '-czf', pathLib.basename(archivePath), target.binName],
+    options: { cwd: dist, encoding: 'utf8' }
+  };
+}
+
 function packageRelease(options) {
   const root = options.root || process.cwd();
   if (options.version == null || String(options.version).trim() === '') throw new Error('version is required');
@@ -51,7 +69,8 @@ function packageRelease(options) {
   fs.mkdirSync(dist, { recursive: true });
   fs.rmSync(archivePath, { force: true });
   fs.rmSync(checksumPath, { force: true });
-  const tar = spawnSync('tar', ['-C', path.dirname(binary), '-czf', archivePath, target.binName], { encoding: 'utf8' });
+  const tarInvocation = buildTarInvocation({ binary, dist, archivePath, target });
+  const tar = spawnSync(tarInvocation.command, tarInvocation.args, tarInvocation.options);
   if (tar.status !== 0) throw new Error(`tar failed for ${target.rustTarget}: ${(tar.stderr || tar.stdout || '').trim()}`);
 
   const hash = sha256(archivePath);
@@ -102,7 +121,9 @@ if (require.main === module) {
 
 module.exports = {
   RELEASE_VERSION_RE,
+  buildTarInvocation,
   defaultBinaryPath,
   packageRelease,
-  sha256
+  sha256,
+  toTarPath
 };
