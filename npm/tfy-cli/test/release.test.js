@@ -10,6 +10,34 @@ const { buildTarInvocation, packageRelease } = require('../../../scripts/package
 const { npmPublishPlan } = require('../../../scripts/npm-publish-plan');
 const { assertSupportedTargetSet, isSafeSourceRef, validateRelease } = require('../../../scripts/check-release-version');
 
+
+const identityRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tfy-identity-test-'));
+fs.mkdirSync(path.join(identityRoot, 'npm', 'tfy-cli'), { recursive: true });
+fs.writeFileSync(path.join(identityRoot, 'npm', 'tfy-cli', 'package.json'), JSON.stringify({
+  name: 'wrong-name',
+  version: '0.1.1-preview.0',
+  bin: { tfy: 'bin/tfy.js' }
+}));
+assert.throws(() => validateRelease({
+  root: identityRoot,
+  channel: 'preview',
+  version: '0.1.1-preview.0',
+  cargoVersion: '0.1.1',
+  npmVersion: '0.1.1-preview.0'
+}), /package.json name must equal @ium\/tfy-cli/);
+fs.writeFileSync(path.join(identityRoot, 'npm', 'tfy-cli', 'package.json'), JSON.stringify({
+  name: '@ium/tfy-cli',
+  version: '0.1.1-preview.0',
+  bin: { nope: 'bin/tfy.js' }
+}));
+assert.throws(() => validateRelease({
+  root: identityRoot,
+  channel: 'preview',
+  version: '0.1.1-preview.0',
+  cargoVersion: '0.1.1',
+  npmVersion: '0.1.1-preview.0'
+}), /package.json bin must expose tfy/);
+
 const preview = validateRelease({
   channel: 'preview',
   version: '0.1.1-preview.0',
@@ -43,11 +71,11 @@ const previewPublish = npmPublishPlan({
   cargoVersion: '0.1.1',
   npmVersion: '0.1.1-preview.0'
 });
-assert.strictEqual(previewPublish.package_name, 'token-fuck-you');
-assert.strictEqual(previewPublish.package_dir, 'npm/token-fuck-you');
+assert.strictEqual(previewPublish.package_name, '@ium/tfy-cli');
+assert.strictEqual(previewPublish.package_dir, 'npm/tfy-cli');
 assert.strictEqual(previewPublish.binary_name, 'tfy');
 assert.strictEqual(previewPublish.npm_dist_tag, 'preview');
-assert.deepStrictEqual(previewPublish.publish_command, ['npm', 'publish', 'npm/token-fuck-you', '--tag', 'preview', '--access', 'public']);
+assert.deepStrictEqual(previewPublish.publish_command, ['npm', 'publish', './npm/tfy-cli', '--tag', 'preview', '--access', 'public']);
 assert(previewPublish.github_release_required_first);
 
 const stablePublish = npmPublishPlan({
@@ -58,7 +86,7 @@ const stablePublish = npmPublishPlan({
   npmVersion: '1.2.3'
 });
 assert.strictEqual(stablePublish.npm_dist_tag, 'latest');
-assert.deepStrictEqual(stablePublish.publish_command, ['npm', 'publish', 'npm/token-fuck-you', '--tag', 'latest', '--access', 'public']);
+assert.deepStrictEqual(stablePublish.publish_command, ['npm', 'publish', './npm/tfy-cli', '--tag', 'latest', '--access', 'public']);
 assert.throws(() => npmPublishPlan({
   channel: 'stable',
   version: '1.2.3-preview.0',

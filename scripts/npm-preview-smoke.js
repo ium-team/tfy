@@ -5,9 +5,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { NPM_PACKAGE_DIR } = require('./release-config');
 
 const root = path.resolve(__dirname, '..');
-const pkgDir = path.join(root, 'npm', 'token-fuck-you');
+const pkgDir = path.join(root, NPM_PACKAGE_DIR);
 const smokeRoot = path.join(root, '.tfy', 'npm-smoke');
 const prefix = path.join(smokeRoot, 'prefix');
 const outside = path.join(smokeRoot, 'outside-project');

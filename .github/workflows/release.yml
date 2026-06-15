@@ -176,7 +176,7 @@ jobs:
       - name: Full local gate
         run: ./scripts/verify.sh
       - name: NPM helper tests
-        run: npm test --prefix npm/token-fuck-you
+        run: npm test --prefix npm/tfy-cli
 
   build:
     name: Build ${{ matrix.rust_target }}

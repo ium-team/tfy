@@ -1,5 +1,5 @@
 {
-  "name": "token-fuck-you",
+  "name": "@ium/tfy-cli",
   "version": "0.1.0-preview.0",
   "description": "TFY Developer Preview CLI installer. Installs the `tfy` command; not GA.",
   "license": "MIT",

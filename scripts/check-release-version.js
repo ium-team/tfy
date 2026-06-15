@@ -3,7 +3,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { archiveName, baseVersion, cleanVersion, supportedTargets } = require('../npm/token-fuck-you/scripts/lib/platform');
+const { assertNpmPackageIdentity, NPM_BINARY_NAME, NPM_PACKAGE_DIR, NPM_PACKAGE_NAME } = require('./release-config');
+const { archiveName, baseVersion, cleanVersion, supportedTargets } = require(`../${NPM_PACKAGE_DIR}/scripts/lib/platform`);
 
 const STABLE_VERSION_RE = /^\d+\.\d+\.\d+$/;
 const PREVIEW_VERSION_RE = /^(\d+\.\d+\.\d+)-preview\.\d+$/;
@@ -36,8 +37,8 @@ function readWorkspaceCargoVersion(root = process.cwd()) {
 }
 
 function readNpmPackageVersion(root = process.cwd()) {
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'npm', 'token-fuck-you', 'package.json'), 'utf8'));
-  if (!pkg.version) throw new Error('npm/token-fuck-you/package.json is missing version');
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, NPM_PACKAGE_DIR, 'package.json'), 'utf8'));
+  if (!pkg.version) throw new Error(`${NPM_PACKAGE_DIR}/package.json is missing version`);
   return pkg.version;
 }
 
@@ -95,6 +96,7 @@ function metadataForTarget(version, target) {
 }
 
 function validateRelease(options) {
+  assertNpmPackageIdentity(options.root);
   const channel = options.channel;
   if (!['stable', 'preview'].includes(channel)) throw new Error('channel must be stable or preview');
 
@@ -139,8 +141,8 @@ function validateRelease(options) {
 
   return {
     schema_version: 1,
-    package_name: 'token-fuck-you',
-    binary_name: 'tfy',
+    package_name: NPM_PACKAGE_NAME,
+    binary_name: NPM_BINARY_NAME,
     channel,
     npm_dist_tag: channel === 'stable' ? 'latest' : 'preview',
     version,

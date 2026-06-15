@@ -5,7 +5,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { archiveName, baseVersion, cleanVersion, resolveRustTarget } = require('../npm/token-fuck-you/scripts/lib/platform');
+const { NPM_PACKAGE_DIR } = require('./release-config');
+const { archiveName, baseVersion, cleanVersion, resolveRustTarget } = require(`../${NPM_PACKAGE_DIR}/scripts/lib/platform`);
 
 const RELEASE_VERSION_RE = /^\d+\.\d+\.\d+(?:-preview\.\d+)?$/;
 
