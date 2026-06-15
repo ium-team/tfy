@@ -39,6 +39,18 @@ Preview distribution is intentionally two-channel:
 
 TFY uses two public npm install channels only: stable and public-test. Stable publishes use the `latest` dist-tag so `npm install -g token-fuck-you` resolves to the most tested release. Public-test publishes must be public and use the `preview` dist-tag, not `latest`, so `npm install -g token-fuck-you@preview` resolves to the newest public testing build. Exact historical installs use standard npm version specifiers such as `token-fuck-you@0.1.1` or `token-fuck-you@0.1.1-preview.0`; TFY does not use a slash form such as `token-fuck-you/v0.1.1` for npm installs. The package must fail closed when the release archive or checksum is missing or mismatched. Release evidence should record at least `npm_package_name`, `npm_dist_tag`, `npm_bin`, `github_release_canonical`, asset platform/arch/name, and checksum file/hash. The package defaults `publishConfig.tag` to `preview` as a safety rail; stable publishes must explicitly use `--tag latest`.
 
+Supported prebuilt npm/GitHub Release platforms:
+
+| OS | Architecture | Rust target | npm prebuilt |
+| --- | --- | --- | --- |
+| macOS | Apple Silicon arm64 | `aarch64-apple-darwin` | yes |
+| Linux | x64 | `x86_64-unknown-linux-gnu` | yes |
+| Linux | arm64 | `aarch64-unknown-linux-gnu` | yes |
+| Windows | x64 | `x86_64-pc-windows-msvc` | yes |
+
+Intel Mac (`darwin:x64` / `x86_64-apple-darwin`) is not provided as a prebuilt npm/GitHub Release archive. Intel Mac users can still build from source with `git clone https://github.com/ium-team/tfy && cd tfy && cargo install --path crates/tfy-cli`, or run a locally built binary by setting `TFY_BINARY_PATH`.
+
+
 Required local checks for the npm path:
 
 ```sh

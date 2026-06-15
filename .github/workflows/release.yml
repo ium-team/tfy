@@ -185,8 +185,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
-            rust_target: x86_64-apple-darwin
           - os: macos-14
             rust_target: aarch64-apple-darwin
           - os: ubuntu-latest

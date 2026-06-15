@@ -136,6 +136,18 @@ TFY uses two public install channels only:
 
 Exact versions remain installable with standard npm syntax, for example `npm install -g token-fuck-you@0.1.1` or `npm install -g token-fuck-you@0.1.1-preview.0`; npm uses `@<version>`, not `/v<version>`. Public-test releases must use the npm `preview` dist-tag, not `latest`, until they graduate to the stable channel. Local validation of the install path is available with:
 
+Supported prebuilt npm/GitHub Release platforms:
+
+| OS | Architecture | Rust target | npm prebuilt |
+| --- | --- | --- | --- |
+| macOS | Apple Silicon arm64 | `aarch64-apple-darwin` | yes |
+| Linux | x64 | `x86_64-unknown-linux-gnu` | yes |
+| Linux | arm64 | `aarch64-unknown-linux-gnu` | yes |
+| Windows | x64 | `x86_64-pc-windows-msvc` | yes |
+
+Intel Mac (`darwin:x64` / `x86_64-apple-darwin`) is not provided as a prebuilt npm/GitHub Release archive. Intel Mac users can still build from source with `git clone https://github.com/ium-team/tfy && cd tfy && cargo install --path crates/tfy-cli`, or run a locally built binary by setting `TFY_BINARY_PATH`.
+
+
 ```sh
 ./scripts/npm-preview-smoke.sh
 ```

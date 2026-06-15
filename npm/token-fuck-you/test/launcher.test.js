@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { resolveLauncherBinary } = require('../bin/tfy');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tfy-launcher-test-'));
 const fake = path.join(tmp, process.platform === 'win32' ? 'tfy.cmd' : 'tfy');
@@ -20,6 +21,8 @@ const result = spawnSync(process.execPath, [path.join(__dirname, '..', 'bin', 't
 });
 assert.strictEqual(result.status, 0, result.stderr);
 assert.match(result.stdout, /fake-tfy hello/);
+assert.strictEqual(resolveLauncherBinary({ env: { TFY_BINARY_PATH: fake }, platform: 'darwin', arch: 'x64' }).binary, fake);
+assert.throws(() => resolveLauncherBinary({ env: {}, platform: 'darwin', arch: 'x64' }), /Intel Mac prebuilt npm installs are not currently provided/);
 
 const missing = spawnSync(process.execPath, [path.join(__dirname, '..', 'bin', 'tfy.js')], {
   env: { ...process.env, TFY_BINARY_PATH: path.join(tmp, 'missing-tfy') },
