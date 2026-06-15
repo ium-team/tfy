@@ -120,7 +120,13 @@ tfy start --human
 tfy status --json
 ```
 
-The npm package is a thin installer/launcher. It downloads the matching GitHub Release archive plus checksum and exposes the `tfy` command. Preview releases must use the npm `preview` dist-tag, not `latest`, until GA evidence gates pass. Local validation of the install path is available with:
+The npm package is a thin installer/launcher. It downloads the matching GitHub Release archive plus checksum and exposes the `tfy` command. Release channel policy is:
+
+- `npm install -g token-fuck-you` installs the most stable release through the npm `latest` dist-tag. Do not point `latest` at preview/RC builds.
+- `npm install -g token-fuck-you@0.1.1` installs that exact published npm version; npm uses `@<version>`, not `/v<version>`, for version-qualified installs.
+- `npm install -g token-fuck-you@preview` installs the newest developer preview when users intentionally want the newest unstable build.
+
+Preview releases must use the npm `preview` dist-tag, not `latest`, until GA evidence gates pass. Local validation of the install path is available with:
 
 ```sh
 ./scripts/npm-preview-smoke.sh
