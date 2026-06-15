@@ -7,6 +7,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { archiveName, resolveRustTarget, supportedTargets } = require('../scripts/lib/platform');
 const { packageRelease } = require('../../../scripts/package-release');
+const { npmPublishPlan } = require('../../../scripts/npm-publish-plan');
 const { assertSupportedTargetSet, isSafeSourceRef, validateRelease } = require('../../../scripts/check-release-version');
 
 const preview = validateRelease({
@@ -34,6 +35,37 @@ assert.strictEqual(stable.tag, 'v1.2.3');
 assert.strictEqual(stable.npm_dist_tag, 'latest');
 assert.strictEqual(stable.prerelease, false);
 assert.strictEqual(stable.github_latest, true);
+
+const previewPublish = npmPublishPlan({
+  channel: 'preview',
+  version: '0.1.1-preview.0',
+  sourceRef: 'develop',
+  cargoVersion: '0.1.1',
+  npmVersion: '0.1.1-preview.0'
+});
+assert.strictEqual(previewPublish.package_name, 'token-fuck-you');
+assert.strictEqual(previewPublish.package_dir, 'npm/token-fuck-you');
+assert.strictEqual(previewPublish.binary_name, 'tfy');
+assert.strictEqual(previewPublish.npm_dist_tag, 'preview');
+assert.deepStrictEqual(previewPublish.publish_command, ['npm', 'publish', 'npm/token-fuck-you', '--tag', 'preview', '--access', 'public']);
+assert(previewPublish.github_release_required_first);
+
+const stablePublish = npmPublishPlan({
+  channel: 'stable',
+  version: '1.2.3',
+  sourceRef: 'main',
+  cargoVersion: '1.2.3',
+  npmVersion: '1.2.3'
+});
+assert.strictEqual(stablePublish.npm_dist_tag, 'latest');
+assert.deepStrictEqual(stablePublish.publish_command, ['npm', 'publish', 'npm/token-fuck-you', '--tag', 'latest', '--access', 'public']);
+assert.throws(() => npmPublishPlan({
+  channel: 'stable',
+  version: '1.2.3-preview.0',
+  sourceRef: 'develop',
+  cargoVersion: '1.2.3',
+  npmVersion: '1.2.3-preview.0'
+}), /stable releases must use source_ref=main|stable version must match/);
 
 assert.throws(() => validateRelease({
   channel: 'stable',

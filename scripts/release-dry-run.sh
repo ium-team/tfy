@@ -3,14 +3,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-VERSION="$(node -p "require('./npm/tfy-cli/package.json').version")"
+VERSION="$(node -p "require('./npm/token-fuck-you/package.json').version")"
 CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(p["version"] for p in data["packages"] if p["name"]=="tfy-cli"))')"
 RELEASE_DIR="$ROOT/.tfy/release"
 RELEASE_METADATA="$RELEASE_DIR/release-preflight.json"
 mkdir -p "$RELEASE_DIR"
 node scripts/check-release-version.js --version "$VERSION" --channel preview --source-ref develop --cargo-version "$CARGO_VERSION" --npm-version "$VERSION" --json > "$RELEASE_METADATA"
 PLATFORM_INFO="$(node - "$VERSION" <<'NODE'
-const { currentPlatform, archiveName } = require('./npm/tfy-cli/scripts/lib/platform');
+const { currentPlatform, archiveName } = require('./npm/token-fuck-you/scripts/lib/platform');
 const version = process.argv[2];
 const target = currentPlatform();
 process.stdout.write([
