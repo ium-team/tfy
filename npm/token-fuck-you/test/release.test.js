@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { archiveName, resolveRustTarget, supportedTargets } = require('../scripts/lib/platform');
-const { packageRelease } = require('../../../scripts/package-release');
+const { buildTarInvocation, packageRelease } = require('../../../scripts/package-release');
 const { npmPublishPlan } = require('../../../scripts/npm-publish-plan');
 const { assertSupportedTargetSet, isSafeSourceRef, validateRelease } = require('../../../scripts/check-release-version');
 
@@ -115,6 +115,32 @@ assert.strictEqual(isSafeSourceRef('release/foo/.bar'), false);
 const workflow = fs.readFileSync(path.resolve(__dirname, '..', '..', '..', '.github', 'workflows', 'release.yml'), 'utf8');
 const workflowTargets = Array.from(workflow.matchAll(/rust_target: ([a-zA-Z0-9_-]+-[a-zA-Z0-9_-]+-[a-zA-Z0-9_-]+(?:-[a-zA-Z0-9_-]+)?)/g)).map(match => match[1]).sort();
 assert.deepStrictEqual(workflowTargets, supportedTargets().map(target => target.rustTarget).sort());
+
+const windowsTarget = resolveRustTarget('x86_64-pc-windows-msvc');
+const windowsTar = buildTarInvocation({
+  binary: 'D:\\a\\tfy\\tfy\\target\\x86_64-pc-windows-msvc\\release\\tfy.exe',
+  dist: 'D:\\a\\tfy\\tfy\\dist',
+  archivePath: 'D:\\a\\tfy\\tfy\\dist\\tfy-0.1.0-windows-x86_64.tar.gz',
+  target: windowsTarget,
+  pathLib: path.win32
+});
+assert.deepStrictEqual(windowsTar.args, [
+  '-C',
+  '../target/x86_64-pc-windows-msvc/release',
+  '-czf',
+  'tfy-0.1.0-windows-x86_64.tar.gz',
+  'tfy.exe'
+]);
+assert.strictEqual(windowsTar.options.cwd, 'D:\\a\\tfy\\tfy\\dist');
+assert(!windowsTar.args.some(arg => /^D:/.test(arg)), 'tar arguments must not include Windows drive absolute paths');
+
+assert.throws(() => buildTarInvocation({
+  binary: 'E:\\other\\target\\x86_64-pc-windows-msvc\\release\\tfy.exe',
+  dist: 'D:\\a\\tfy\\tfy\\dist',
+  archivePath: 'D:\\a\\tfy\\tfy\\dist\\tfy-0.1.0-windows-x86_64.tar.gz',
+  target: windowsTarget,
+  pathLib: path.win32
+}), /tar source directory must be relative to dist/);
 
 assert.throws(() => packageRelease({ root: process.cwd(), rustTarget: 'x86_64-unknown-linux-gnu' }), /version is required/);
 assert.throws(() => packageRelease({ root: process.cwd(), version: '../0.1.0', rustTarget: 'x86_64-unknown-linux-gnu' }), /version must match/);
