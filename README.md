@@ -152,6 +152,8 @@ Intel Mac (`darwin:x64` / `x86_64-apple-darwin`) is not provided as a prebuilt n
 ./scripts/npm-preview-smoke.sh
 ```
 
+For the plain-language version bump rules, see [`docs/releases/VERSIONING.md`](docs/releases/VERSIONING.md).
+
 GitHub Releases are produced by the manual `.github/workflows/release.yml` workflow. It builds all npm-supported platform archives/checksums, refuses mismatched channel/version/source metadata, and creates the GitHub Release only when `dry_run` is false. The workflow does **not** publish npm. After the matching GitHub Release exists, use the npm publish plan helper to print the exact publish command without publishing:
 
 ```sh

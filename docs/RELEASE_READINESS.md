@@ -61,6 +61,8 @@ node scripts/npm-publish-plan.js --version 0.1.1 --channel stable --source-ref m
 ```
 
 
+See [TFY Release Versioning Guide](releases/VERSIONING.md) for the plain-language rules for choosing `N.N.N` vs `N.N.N-preview.N`, when to bump patch/minor/major, and which files must agree before release.
+
 ## Manual GitHub Release workflow
 
 A human-controlled GitHub Release workflow lives at `.github/workflows/release.yml`. It is intentionally manual-only (`workflow_dispatch`) and does not publish npm. Its `npm_dist_tag` metadata is an instruction for the later npm publish step, not evidence that npm was published. The workflow must exist on the repository default branch before it appears in the GitHub Actions manual-run UI; choose the release source with the `source_ref` input.
