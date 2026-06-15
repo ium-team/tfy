@@ -50,6 +50,22 @@ function copyLocalBinary(source, destination = manualInstallDestination(source))
   fs.copyFileSync(source, destination);
   ensureExecutable(destination);
   log(`installed local TFY binary from ${source}`);
+  return destination;
+}
+
+function installLocalBinary(source, options = {}) {
+  const resolvedSource = path.resolve(source);
+  let destination = options.destinationBinary;
+  if (!destination) {
+    try {
+      const platformTarget = options.platformTarget || currentPlatform(options);
+      destination = defaultInstallPaths(platformTarget).installedBin;
+    } catch (error) {
+      destination = manualInstallDestination(resolvedSource);
+      log(`${error.message}; copied local binary to ${destination}. Set TFY_BINARY_PATH at runtime on unsupported platforms.`);
+    }
+  }
+  return copyLocalBinary(resolvedSource, destination);
 }
 
 function canonicalReleaseBase(version) {
@@ -166,7 +182,7 @@ async function main() {
     return;
   }
   if (process.env.TFY_BINARY_PATH) {
-    copyLocalBinary(path.resolve(process.env.TFY_BINARY_PATH));
+    installLocalBinary(process.env.TFY_BINARY_PATH);
     return;
   }
   await installFromRelease();
@@ -183,6 +199,7 @@ module.exports = {
   defaultReleaseVersion,
   download,
   installFromRelease,
+  installLocalBinary,
   manualInstallDestination,
   installVerifiedArchive,
   listArchiveEntries,

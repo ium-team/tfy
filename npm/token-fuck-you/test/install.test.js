@@ -67,9 +67,11 @@ assert.deepStrictEqual(releaseUrls('0.1.0-preview.0', target), {
 });
 
 const localBinary = path.join(tmp, 'local-tfy');
+const copiedBinary = path.join(tmp, 'copied-local-tfy');
 fs.writeFileSync(localBinary, '#!/usr/bin/env sh\necho local\n');
-copyLocalBinary(localBinary);
-assert.strictEqual(fs.readFileSync(manualInstallDestination(localBinary), 'utf8'), fs.readFileSync(localBinary, 'utf8'));
+copyLocalBinary(localBinary, copiedBinary);
+assert.strictEqual(fs.readFileSync(copiedBinary, 'utf8'), fs.readFileSync(localBinary, 'utf8'));
+assert.match(manualInstallDestination(localBinary), /vendor[\\/]manual[\\/]local-tfy$/);
 
 
 async function exerciseReleaseFlow() {
