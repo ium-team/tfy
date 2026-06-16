@@ -14,8 +14,9 @@ pub use eval::evaluate_code;
 pub use language::{supported_languages, LanguageKind};
 pub use protocol::*;
 pub use tool_feedback::{
-    classify_command_family, raw_output, raw_output_bytes, run_command, summarize_command_output,
-    summarize_command_output_with_policy, CommandSummary, RawStore, ToolPolicy,
+    classify_command_family, classify_command_strategy, command_strategy_metadata, raw_output,
+    raw_output_bytes, run_command, summarize_command_output, summarize_command_output_with_policy,
+    CommandStrategyMetadata, CommandStrategyRegistry, CommandSummary, RawStore, ToolPolicy,
 };
 
 #[cfg(test)]

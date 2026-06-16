@@ -577,6 +577,14 @@ pub enum GatewayResponse {
         risk: String,
         #[serde(default)]
         command_family: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        strategy_kind: String,
+        #[serde(default)]
+        human_auto_safe: bool,
+        #[serde(default = "default_agent_safe")]
+        agent_safe: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        interactive_risk: String,
         summary: String,
         model_text: String,
         rendering_kind: String,
@@ -616,6 +624,10 @@ pub enum GatewayResponse {
     },
 }
 
+fn default_agent_safe() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GatewayEvent {
@@ -625,6 +637,14 @@ pub enum GatewayEvent {
         risk: String,
         #[serde(default)]
         command_family: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        strategy_kind: String,
+        #[serde(default)]
+        human_auto_safe: bool,
+        #[serde(default = "default_agent_safe")]
+        agent_safe: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        interactive_risk: String,
         raw_ref: String,
         #[serde(default)]
         raw_bytes: usize,
@@ -752,6 +772,8 @@ pub fn project_state(events: &[RuntimeEnvelope<GatewayEvent>]) -> StateProjectio
                 model_chars,
                 savings_pct,
                 rendering_kind,
+                strategy_kind,
+                interactive_risk,
                 ..
             } => {
                 let raw_size = if *raw_bytes == 0 {
@@ -765,8 +787,8 @@ pub fn project_state(events: &[RuntimeEnvelope<GatewayEvent>]) -> StateProjectio
                     *model_bytes
                 };
                 projection.tool_evidence.push(format!(
-                    "{} exit={} risk={} raw_ref={} rendering={} raw_bytes={} model_bytes={} savings_pct={:.2}",
-                    command, exit_code, risk, raw_ref, rendering_kind, raw_size, model_size, savings_pct
+                    "{} exit={} risk={} strategy={} interactive_risk={} raw_ref={} rendering={} raw_bytes={} model_bytes={} savings_pct={:.2}",
+                    command, exit_code, risk, strategy_kind, interactive_risk, raw_ref, rendering_kind, raw_size, model_size, savings_pct
                 ));
                 if *exit_code == 0 {
                     projection.verification.push(format!("passed: {command}"));

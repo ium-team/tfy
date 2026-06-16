@@ -354,6 +354,8 @@ fn mcp_tool_run_uses_p0_command_family_summary_and_report() {
     let text = run["result"]["content"][0]["text"].as_str().unwrap();
     let payload: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(payload["payload"]["command_family"], "cargo_test");
+    assert_eq!(payload["payload"]["strategy_kind"], "rust");
+    assert_eq!(payload["payload"]["agent_safe"], true);
     assert_eq!(payload["payload"]["rendering_kind"], "summary");
     assert!(payload["payload"]["model_text"]
         .as_str()
@@ -364,6 +366,7 @@ fn mcp_tool_run_uses_p0_command_family_summary_and_report() {
     let report_text = report["result"]["contents"][0]["text"].as_str().unwrap();
     let report_json: serde_json::Value = serde_json::from_str(report_text).unwrap();
     assert_eq!(report_json["family_counts"]["cargo_test"], 1);
+    assert_eq!(report_json["strategy_counts"]["rust"], 1);
     assert_eq!(
         report_json["families_by_saved_tokens"][0]["family"],
         "cargo_test"

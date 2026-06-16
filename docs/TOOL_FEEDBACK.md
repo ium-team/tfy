@@ -53,6 +53,20 @@ superiority claim: fixture corpus, TFY version, RTK version/mode when executable
 method, correctness rubric, redaction/raw-recovery checks, missed-evidence classifications, and
 latency/overhead evidence.
 
+
+
+## Implemented built-in DSL filter wave
+
+TFY now also ships a built-in-only declarative filter path for predictable line-oriented command output. This is not a user/project filter loader. The first broad wave covers system/dev commands (`df`, `du`, `find`, `grep`/`rg`, `wc`, `env`, `jq`, `ps`, `make`, `just`, `shellcheck`, `pre-commit`), JS/TS commands (`npm install`/`ci`, `pnpm install`, `yarn install`, `vitest`, `next build`, `eslint`, `prettier`, `playwright`, `prisma`, `biome`, `turbo`, `nx`), Python/Ruby/Go/JVM/Dotnet commands (`ruff`, `mypy`, `pip install`, `uv sync`, `poetry install`, `rspec`, `rubocop`, `bundle install`, `golangci-lint`, `dotnet build`/`test`), and conservative cloud/infra commands (`terraform plan`, `tofu plan`, `helm`, `kubectl`, `docker`, `aws`, `gcloud`, `systemctl status`).
+
+Cloud/infra and possible-interactive families are not human auto-wrapped by default. Every built-in DSL family still produces only a candidate; the shared no-negative selector decides whether model-visible output is the DSL summary, redacted raw text, or a suppressed raw-ref notice.
+
+## RTK-overlap support matrix
+
+RTK-informed command coverage is tracked in `docs/command-support-matrix.json` with a readable overview in `docs/COMMAND_SUPPORT_MATRIX.md`. The matrix separates mapped targets, implemented TFY P0 families, fixture-verified families, human auto-wrapped families, and benchmark-manifest-backed comparison claims. `docs/decisions/rtk-filter-provenance.md` is the source-of-truth decision for how RTK can be used as a coverage reference without silently copying filter content.
+
+Run `node scripts/validate-command-support-matrix.js` before updating public command-support wording.
+
 ## Core policy
 
 ```text
@@ -106,6 +120,6 @@ Git and GitHub are specialized high-frequency tool-feedback domains. `GIT_GITHUB
 
 ## Adapter session reporting
 
-`tfy adapter run` records internal Tool Gateway events with raw/model-visible byte sizes, rendering kind, `command_family`, savings percentage, and negative-savings avoidance markers. `tfy adapter report --session <id>` aggregates those events so a developer can see whether command-boundary interception actually reduced model-visible tokens for the session.
+`tfy adapter run` records internal Tool Gateway events with raw/model-visible byte sizes, rendering kind, `command_family`, `strategy_kind`, safety metadata, savings percentage, and negative-savings avoidance markers. `tfy adapter report --session <id>` aggregates those events so a developer can see whether command-boundary interception actually reduced model-visible tokens for the session.
 
-Adapter reports use `raw_bytes` and `model_bytes` as the public size contract. They include deterministic `family_counts` and `families_by_saved_tokens` so savings can be audited by command family. Legacy runtime ledger fields such as `raw_chars` / `model_chars` are compatibility-only and are not emitted by `tfy adapter report`; legacy events without `command_family` are classified through the shared lightweight classifier when possible.
+Adapter reports use `raw_bytes` and `model_bytes` as the public size contract. They include deterministic `family_counts`, `strategy_counts`, and `families_by_saved_tokens` so savings can be audited by command family and strategy kind. Legacy runtime ledger fields such as `raw_chars` / `model_chars` are compatibility-only and are not emitted by `tfy adapter report`; legacy events without `command_family` are classified through the shared lightweight classifier when possible.

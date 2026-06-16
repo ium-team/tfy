@@ -25,7 +25,147 @@ pub struct CommandSummary {
     pub savings_pct: f64,
     pub evidence: Vec<String>,
     pub command_family: String,
+    pub strategy_kind: String,
+    pub human_auto_safe: bool,
+    pub agent_safe: bool,
+    pub interactive_risk: String,
     pub output_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandStrategyMetadata {
+    pub family: String,
+    pub strategy_kind: String,
+    pub human_auto_safe: bool,
+    pub agent_safe: bool,
+    pub streaming_safe: bool,
+    pub interactive_risk: String,
+    pub claim_status: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CommandStrategySpec {
+    family: &'static str,
+    strategy_kind: &'static str,
+    human_auto_safe: bool,
+    agent_safe: bool,
+    streaming_safe: bool,
+    interactive_risk: &'static str,
+    claim_status: &'static str,
+}
+
+const RUST_STRATEGY_FAMILIES: &[&str] = &[
+    "git_status",
+    "git_diff",
+    "git_log",
+    "gh_pr_checks",
+    "cargo_test",
+    "cargo_clippy",
+    "cargo_build",
+    "cargo_check",
+    "cargo_fmt_check",
+    "tsc_check",
+    "pytest",
+    "npm_test",
+    "pnpm_test",
+    "yarn_test",
+    "go_test",
+    "maven_test",
+    "gradle_test",
+];
+
+const GENERIC_STRATEGY_SPEC: CommandStrategySpec = CommandStrategySpec {
+    family: "generic",
+    strategy_kind: "generic",
+    human_auto_safe: false,
+    agent_safe: true,
+    streaming_safe: false,
+    interactive_risk: "unknown",
+    claim_status: "generic_fallback",
+};
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CommandStrategyRegistry;
+
+impl CommandStrategyRegistry {
+    pub fn classify(&self, command: &str) -> CommandStrategyMetadata {
+        self.metadata_for_family(&classify_command_family(command))
+    }
+
+    pub fn metadata_for_family(&self, family: &str) -> CommandStrategyMetadata {
+        if RUST_STRATEGY_FAMILIES.contains(&family) {
+            return CommandStrategyMetadata {
+                family: family.to_string(),
+                strategy_kind: "rust".to_string(),
+                human_auto_safe: false,
+                agent_safe: true,
+                streaming_safe: false,
+                interactive_risk: "none".to_string(),
+                claim_status: "implemented_p0_not_comparison_claimed".to_string(),
+            };
+        }
+        if let Some(filter) = built_in_filter_for_family(family) {
+            return CommandStrategyMetadata {
+                family: filter.family.to_string(),
+                strategy_kind: "dsl".to_string(),
+                human_auto_safe: filter.human_auto_safe,
+                agent_safe: true,
+                streaming_safe: false,
+                interactive_risk: filter.interactive_risk.to_string(),
+                claim_status: "built_in_filter_foundation".to_string(),
+            };
+        }
+        CommandStrategyMetadata {
+            family: GENERIC_STRATEGY_SPEC.family.to_string(),
+            strategy_kind: GENERIC_STRATEGY_SPEC.strategy_kind.to_string(),
+            human_auto_safe: GENERIC_STRATEGY_SPEC.human_auto_safe,
+            agent_safe: GENERIC_STRATEGY_SPEC.agent_safe,
+            streaming_safe: GENERIC_STRATEGY_SPEC.streaming_safe,
+            interactive_risk: GENERIC_STRATEGY_SPEC.interactive_risk.to_string(),
+            claim_status: GENERIC_STRATEGY_SPEC.claim_status.to_string(),
+        }
+    }
+
+    fn summary_candidate(&self, input: StrategySummaryInput<'_>) -> Option<String> {
+        rust_strategy_summary_candidate(
+            input.family,
+            input.cmd,
+            input.code,
+            input.raw,
+            input.evidence,
+            input.rr,
+            input.risk,
+        )
+        .or_else(|| {
+            built_in_filter_summary_candidate(
+                input.family,
+                input.cmd,
+                input.code,
+                input.raw,
+                input.evidence,
+                input.rr,
+                input.risk,
+            )
+        })
+    }
+}
+
+struct StrategySummaryInput<'a> {
+    family: &'a str,
+    cmd: &'a str,
+    code: i32,
+    raw: &'a str,
+    evidence: &'a [String],
+    rr: &'a str,
+    risk: &'a str,
+}
+
+pub fn command_strategy_metadata(family: &str) -> CommandStrategyMetadata {
+    CommandStrategyRegistry.metadata_for_family(family)
+}
+
+pub fn classify_command_strategy(command: &str) -> CommandStrategyMetadata {
+    CommandStrategyRegistry.classify(command)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,7 +436,9 @@ fn compress_with_raw_ref(
     let raw_ref = stored_raw.raw_ref;
     let output_sha256 = stored_raw.output_sha256;
     let policy = GitGithubToolPolicy::new();
-    let command_family = classify_command_family(command);
+    let registry = CommandStrategyRegistry;
+    let strategy_metadata = registry.classify(command);
+    let command_family = strategy_metadata.family.clone();
     let is_git_github = match requested_policy {
         ToolPolicy::Auto => policy.matches(command),
         ToolPolicy::Generic => false,
@@ -319,20 +461,21 @@ fn compress_with_raw_ref(
         &policy,
     );
     let display_command = redact_public(command);
-    let summary_candidate = family_summary_candidate(
-        &command_family,
-        &display_command,
-        exit_code,
-        raw,
-        &evidence,
-        &raw_ref,
-        &risk,
-    )
-    .unwrap_or_else(|| match risk.as_str() {
-        "critical" => critical(&display_command, exit_code, &evidence, &raw_ref),
-        "success" => success(&display_command, exit_code, raw, &raw_ref),
-        _ => unknown(&display_command, exit_code, raw, &evidence, &raw_ref),
-    });
+    let summary_candidate = registry
+        .summary_candidate(StrategySummaryInput {
+            family: &command_family,
+            cmd: &display_command,
+            code: exit_code,
+            raw,
+            evidence: &evidence,
+            rr: &raw_ref,
+            risk: &risk,
+        })
+        .unwrap_or_else(|| match risk.as_str() {
+            "critical" => critical(&display_command, exit_code, &evidence, &raw_ref),
+            "success" => success(&display_command, exit_code, raw, &raw_ref),
+            _ => unknown(&display_command, exit_code, raw, &evidence, &raw_ref),
+        });
     let summary_candidate =
         cap_summary_preserving_raw_ref(summary_candidate, &raw_ref, max_summary_bytes);
     let public_raw = public_raw_candidate(raw, &raw_ref);
@@ -351,6 +494,10 @@ fn compress_with_raw_ref(
         raw_ref,
         evidence,
         command_family,
+        strategy_kind: strategy_metadata.strategy_kind,
+        human_auto_safe: strategy_metadata.human_auto_safe,
+        agent_safe: strategy_metadata.agent_safe,
+        interactive_risk: strategy_metadata.interactive_risk,
         output_sha256,
     })
 }
@@ -705,7 +852,52 @@ fn classify_direct_command(cmd: &str) -> String {
         ["npm", "test", ..] => "npm_test".into(),
         ["pnpm", "test", ..] => "pnpm_test".into(),
         ["yarn", "test", ..] => "yarn_test".into(),
+        ["npm", "install", ..] | ["npm", "ci", ..] => "npm_install".into(),
+        ["pnpm", "install", ..] => "pnpm_install".into(),
+        ["yarn", "install", ..] => "yarn_install".into(),
+        ["npx", "vitest", ..] | ["vitest", ..] => "vitest".into(),
+        ["next", "build", ..] | ["npx", "next", "build", ..] => "next".into(),
+        ["eslint", ..] | ["npx", "eslint", ..] => "lint".into(),
+        ["prettier", ..] | ["npx", "prettier", ..] => "prettier".into(),
+        ["playwright", ..] | ["npx", "playwright", ..] => "playwright".into(),
+        ["prisma", ..] | ["npx", "prisma", ..] => "prisma".into(),
+        ["biome", ..] | ["npx", "biome", ..] => "biome".into(),
+        ["turbo", ..] | ["npx", "turbo", ..] => "turbo".into(),
+        ["nx", ..] | ["npx", "nx", ..] => "nx".into(),
         ["go", "test", ..] => "go_test".into(),
+        ["golangci-lint", ..] => "golangci-lint".into(),
+        ["df", ..] => "df".into(),
+        ["du", ..] => "du".into(),
+        ["find", ..] => "find".into(),
+        ["grep", ..] | ["rg", ..] => "grep".into(),
+        ["wc", ..] => "wc".into(),
+        ["env", ..] | ["printenv", ..] => "env".into(),
+        ["jq", ..] => "jq".into(),
+        ["ps", ..] => "ps".into(),
+        ["make", ..] => "make".into(),
+        ["just", ..] => "just".into(),
+        ["shellcheck", ..] => "shellcheck".into(),
+        ["pre-commit", ..] => "pre-commit".into(),
+        ["ruff", ..] => "ruff".into(),
+        ["mypy", ..] => "mypy".into(),
+        ["pip", "install", ..]
+        | ["python", "-m", "pip", "install", ..]
+        | ["python3", "-m", "pip", "install", ..] => "pip".into(),
+        ["uv", "sync", ..] => "uv-sync".into(),
+        ["poetry", "install", ..] => "poetry-install".into(),
+        ["rspec", ..] => "rspec".into(),
+        ["rubocop", ..] => "rubocop".into(),
+        ["bundle", "install", ..] => "bundle-install".into(),
+        ["dotnet", "build", ..] => "dotnet-build".into(),
+        ["dotnet", "test", ..] => "dotnet".into(),
+        ["terraform", "plan", ..] => "terraform-plan".into(),
+        ["tofu", "plan", ..] => "tofu-plan".into(),
+        ["helm", ..] => "helm".into(),
+        ["kubectl", ..] => "kubectl".into(),
+        ["docker", ..] => "docker".into(),
+        ["aws", ..] => "aws".into(),
+        ["gcloud", ..] => "gcloud".into(),
+        ["systemctl", "status", ..] => "systemctl-status".into(),
         ["mvn", rest @ ..] | ["mvnw", rest @ ..] | ["./mvnw", rest @ ..]
             if java_test_args(rest) =>
         {
@@ -818,6 +1010,17 @@ fn family_risk(
                 "unknown".into()
             }
         }
+        _ if built_in_filter_for_family(family)
+            .map(|filter| filter.is_critical(raw))
+            .unwrap_or(false) =>
+        {
+            "critical".into()
+        }
+        _ if built_in_filter_for_family(family).is_some()
+            && (is_success(raw) || !raw.trim().is_empty()) =>
+        {
+            "success".into()
+        }
         _ if is_git_github => policy.risk(command, raw, exit_code),
         _ if is_error(raw) => "critical".into(),
         _ if is_success(raw) || raw.trim().is_empty() => "success".into(),
@@ -871,7 +1074,535 @@ fn has_hard_failure_marker(raw: &str) -> bool {
         .is_match(raw)
 }
 
-fn family_summary_candidate(
+#[allow(dead_code)]
+struct BuiltInFilterFixture {
+    name: &'static str,
+    raw: &'static str,
+    exit_code: i32,
+    expect_contains: &'static [&'static str],
+}
+
+struct BuiltInFilter {
+    family: &'static str,
+    strip_ansi: bool,
+    replace: &'static [(&'static str, &'static str)],
+    match_output: &'static [(&'static str, &'static [&'static str])],
+    strip_lines_matching: &'static [&'static str],
+    keep_lines_matching: &'static [&'static str],
+    preserve_lines_matching: &'static [&'static str],
+    unsafe_if_matches: &'static [&'static str],
+    truncate_lines_at: usize,
+    head_lines: usize,
+    tail_lines: usize,
+    max_lines: usize,
+    on_empty: &'static str,
+    human_auto_safe: bool,
+    interactive_risk: &'static str,
+    #[allow(dead_code)]
+    fixtures: &'static [BuiltInFilterFixture],
+}
+
+const DEFAULT_DSL_FIXTURES: &[BuiltInFilterFixture] = &[BuiltInFilterFixture {
+    name: "default-diagnostic",
+    raw: "setup ok\nwarning: deprecated flag\nsrc/app.rs:42: error: example failure\ncompleted with diagnostics\n",
+    exit_code: 0,
+    expect_contains: &["warning", "src/app.rs:42", "raw_ref="],
+}];
+
+const DF_FIXTURES: &[BuiltInFilterFixture] = &[BuiltInFilterFixture {
+    name: "df-high-usage",
+    raw: "Filesystem      Size  Used Avail Use% Mounted on\n/dev/disk1s1    100G   95G    5G  95% /\n/dev/disk2s1    200G   20G  180G  10% /data\n",
+    exit_code: 0,
+    expect_contains: &["family=df", "/dev/disk1s1", "95%", "raw_ref="],
+}];
+
+macro_rules! tfy_filter {
+    ($family:literal, human_safe = $human_safe:expr, risk = $risk:literal, fixtures = $fixtures:expr) => {
+        BuiltInFilter {
+            family: $family,
+            strip_ansi: true,
+            replace: &[],
+            match_output: &[],
+            strip_lines_matching: &[r"(?i)^(?:\s*\[?debug\]?|\s*trace:)"],
+            keep_lines_matching: &[],
+            preserve_lines_matching: &[
+                r"(?i)(error|failed|failure|fatal|panic|warning|denied|unauthori[sz]ed|forbidden|deprecated)",
+                r"(?i)(\b[A-Za-z0-9_./-]+\.(?:rs|ts|tsx|js|jsx|py|rb|go|java|kt|cs|json|ya?ml|toml|tf):[0-9]+)",
+                r"(?i)(\b[8-9][0-9]%|100%)",
+            ],
+            unsafe_if_matches: &[
+                r"(?i)(error|failed|failure|fatal|panic|denied|unauthori[sz]ed|forbidden|100%)",
+            ],
+            truncate_lines_at: 180,
+            head_lines: 16,
+            tail_lines: 8,
+            max_lines: 32,
+            on_empty: concat!($family, ": no relevant output"),
+            human_auto_safe: $human_safe,
+            interactive_risk: $risk,
+            fixtures: $fixtures,
+        }
+    };
+}
+
+const BUILT_IN_FILTERS: &[BuiltInFilter] = &[
+    tfy_filter!(
+        "df",
+        human_safe = true,
+        risk = "none",
+        fixtures = DF_FIXTURES
+    ),
+    tfy_filter!(
+        "du",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "find",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "grep",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "wc",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "env",
+        human_safe = false,
+        risk = "possible",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "jq",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "ps",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "make",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "just",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "shellcheck",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "pre-commit",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "npm_install",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "pnpm_install",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "yarn_install",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "vitest",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "next",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "lint",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "prettier",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "playwright",
+        human_safe = true,
+        risk = "possible",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "prisma",
+        human_safe = true,
+        risk = "possible",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "biome",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "turbo",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "nx",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "ruff",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "mypy",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "pip",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "uv-sync",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "poetry-install",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "rspec",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "rubocop",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "bundle-install",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "golangci-lint",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "dotnet-build",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "dotnet",
+        human_safe = true,
+        risk = "none",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "terraform-plan",
+        human_safe = false,
+        risk = "possible",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "tofu-plan",
+        human_safe = false,
+        risk = "possible",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "helm",
+        human_safe = false,
+        risk = "possible",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "kubectl",
+        human_safe = false,
+        risk = "possible",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "docker",
+        human_safe = false,
+        risk = "possible",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "aws",
+        human_safe = false,
+        risk = "possible",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "gcloud",
+        human_safe = false,
+        risk = "possible",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+    tfy_filter!(
+        "systemctl-status",
+        human_safe = false,
+        risk = "possible",
+        fixtures = DEFAULT_DSL_FIXTURES
+    ),
+];
+
+fn built_in_filter_for_family(family: &str) -> Option<&'static BuiltInFilter> {
+    BUILT_IN_FILTERS
+        .iter()
+        .find(|filter| filter.family == family)
+}
+
+fn built_in_filter_summary_candidate(
+    family: &str,
+    cmd: &str,
+    code: i32,
+    raw: &str,
+    evidence: &[String],
+    rr: &str,
+    risk: &str,
+) -> Option<String> {
+    let filter = built_in_filter_for_family(family)?;
+    let filtered = apply_built_in_filter(filter, raw)?;
+    let mut lines = vec![format!(
+        "TFY command summary: {} family={} strategy=dsl exit={code} cmd={cmd}",
+        risk.to_uppercase(),
+        filter.family
+    )];
+    lines.push(format!(
+        "- selected_lines={} original_lines={}",
+        filtered.selected_lines,
+        raw.lines().count()
+    ));
+    for line in filtered.preserved.iter().take(8) {
+        lines.push(format!("- preserved: {line}"));
+    }
+    for line in filtered.lines.iter().take(filter.max_lines) {
+        lines.push(format!("- {line}"));
+    }
+    if risk != "success" {
+        lines.extend(evidence.iter().take(5).map(|e| format!("- evidence: {e}")));
+    }
+    lines.push(format!("raw_ref={rr}"));
+    lines.push(String::new());
+    Some(lines.join("\n"))
+}
+
+struct FilteredOutput {
+    lines: Vec<String>,
+    preserved: Vec<String>,
+    selected_lines: usize,
+}
+
+fn apply_built_in_filter(filter: &BuiltInFilter, raw: &str) -> Option<FilteredOutput> {
+    let mut text = if filter.strip_ansi {
+        strip_ansi_sequences(raw)
+    } else {
+        raw.to_string()
+    };
+    for (pattern, replacement) in filter.replace {
+        let re = Regex::new(pattern).expect("valid built-in filter replace regex");
+        text = re.replace_all(&text, *replacement).to_string();
+    }
+    for (pattern, unless_patterns) in filter.match_output {
+        let re = Regex::new(pattern).expect("valid built-in filter match_output regex");
+        let blocked = unless_patterns.iter().any(|unless| {
+            Regex::new(unless)
+                .expect("valid built-in filter unless regex")
+                .is_match(&text)
+        });
+        if !re.is_match(&text) || blocked {
+            return None;
+        }
+    }
+    let strip_res = compile_regexes(filter.strip_lines_matching);
+    let keep_res = compile_regexes(filter.keep_lines_matching);
+    let preserve_res = compile_regexes(filter.preserve_lines_matching);
+    let mut lines = Vec::new();
+    let mut preserved = Vec::new();
+    for line in text.lines() {
+        let redacted = redact_public(line);
+        let normalized = cap_to_chars(&norm(&redacted), filter.truncate_lines_at);
+        if normalized.is_empty() || strip_res.iter().any(|re| re.is_match(&normalized)) {
+            continue;
+        }
+        let is_preserved = preserve_res.iter().any(|re| re.is_match(&normalized));
+        if is_preserved {
+            push(&mut preserved, normalized.clone());
+        }
+        if !keep_res.is_empty()
+            && !keep_res.iter().any(|re| re.is_match(&normalized))
+            && !is_preserved
+        {
+            continue;
+        }
+        lines.push(normalized);
+    }
+    if lines.is_empty() && !filter.on_empty.is_empty() {
+        lines.push(filter.on_empty.to_string());
+    }
+    let selected_lines = lines.len();
+    lines = select_head_tail(
+        lines,
+        filter.head_lines,
+        filter.tail_lines,
+        filter.max_lines,
+    );
+    Some(FilteredOutput {
+        lines,
+        preserved,
+        selected_lines,
+    })
+}
+
+impl BuiltInFilter {
+    fn is_critical(&self, raw: &str) -> bool {
+        self.unsafe_if_matches.iter().any(|pattern| {
+            Regex::new(pattern)
+                .expect("valid built-in filter unsafe regex")
+                .is_match(raw)
+        })
+    }
+}
+
+fn compile_regexes(patterns: &[&str]) -> Vec<Regex> {
+    patterns
+        .iter()
+        .map(|pattern| Regex::new(pattern).expect("valid built-in filter regex"))
+        .collect()
+}
+
+fn strip_ansi_sequences(text: &str) -> String {
+    Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+        .expect("valid ansi regex")
+        .replace_all(text, "")
+        .to_string()
+}
+
+fn cap_to_chars(text: &str, limit: usize) -> String {
+    if limit == 0 || text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let mut out = text.chars().take(limit).collect::<String>();
+    out.push('…');
+    out.push_str("[tfy: line capped]");
+    out
+}
+
+fn select_head_tail(mut lines: Vec<String>, head: usize, tail: usize, max: usize) -> Vec<String> {
+    if max == 0 || lines.len() <= max {
+        return lines;
+    }
+    let head_count = head.min(max);
+    let tail_count = tail.min(max.saturating_sub(head_count + 1));
+    let mut selected = lines.drain(..head_count).collect::<Vec<_>>();
+    selected.push("...".into());
+    if tail_count > 0 {
+        let tail_start = lines.len().saturating_sub(tail_count);
+        selected.extend(lines.drain(tail_start..));
+    }
+    selected
+}
+
+#[cfg(test)]
+pub(crate) fn validate_built_in_filter_fixtures() -> Result<()> {
+    for filter in BUILT_IN_FILTERS {
+        if filter.fixtures.is_empty() {
+            bail!("built-in filter {} has no inline fixtures", filter.family);
+        }
+        for fixture in filter.fixtures {
+            let raw_ref = format!("fixture_{}", fixture.name.replace('-', "_"));
+            let risk = if fixture.exit_code != 0 || filter.is_critical(fixture.raw) {
+                "critical"
+            } else {
+                "success"
+            };
+            let summary = built_in_filter_summary_candidate(
+                filter.family,
+                filter.family,
+                fixture.exit_code,
+                fixture.raw,
+                &[],
+                &raw_ref,
+                risk,
+            )
+            .ok_or_else(|| anyhow::anyhow!("fixture {} produced no summary", fixture.name))?;
+            for expected in fixture.expect_contains {
+                if !summary.contains(expected) {
+                    bail!(
+                        "fixture {} for {} missing expected text {:?}: {}",
+                        fixture.name,
+                        filter.family,
+                        expected,
+                        summary
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rust_strategy_summary_candidate(
     family: &str,
     cmd: &str,
     code: i32,
@@ -1331,7 +2062,7 @@ fn redact_public(text: &str) -> String {
 
 fn redact_secret_like(text: &str) -> String {
     let assignment = Regex::new(
-        r"(?i)\b([A-Z0-9_.-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token|secret|password))\s*([:=])\s*[A-Za-z0-9._~+/=-]{6,}",
+        r"(?i)\b([A-Z0-9_.-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password))\s*([:=])\s*[A-Za-z0-9._~+/=-]{6,}",
     )
     .expect("valid secret assignment regex");
     let bearer =

@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "description": "Claim-gate manifest for command-output RTK-overlap benchmarks. Only status=pass measurements can make a row eligible for public RTK comparison claims; planned rows are placeholders and do not unlock claims.",
+  "measurement_requirements": [
+    "family",
+    "fixture_id",
+    "tfy_commit",
+    "tfy_mode",
+    "rtk_commit_or_mode_when_executable",
+    "raw_bytes",
+    "redacted_raw_bytes",
+    "model_visible_bytes",
+    "saved_bytes",
+    "no_negative_result",
+    "raw_recovery_result",
+    "redaction_result",
+    "missed_evidence_classification",
+    "measured_route",
+    "unsupported_subcases"
+  ],
+  "measurements": [
+    {
+      "id": "planned-df-dsl-fixture",
+      "status": "planned",
+      "family": "df",
+      "fixture_id": "tfy-core::df-high-usage",
+      "tfy_commit": "ea01a5ab7aacf1838144341f68bbfa2716f1b47d",
+      "tfy_mode": "tfy-core built-in DSL unit fixture",
+      "rtk_commit_or_mode_when_executable": "d8c550eefba41e112bd174d58844a803db6e432f / not executed in this row",
+      "raw_bytes": null,
+      "redacted_raw_bytes": null,
+      "model_visible_bytes": null,
+      "saved_bytes": null,
+      "no_negative_result": "pending",
+      "raw_recovery_result": "pending",
+      "redaction_result": "pending",
+      "missed_evidence_classification": "pending",
+      "measured_route": "unit_fixture_planned",
+      "unsupported_subcases": [
+        "No RTK executable comparison yet",
+        "No route measurement yet"
+      ]
+    },
+    {
+      "id": "planned-npm-install-dsl-fixture",
+      "status": "planned",
+      "family": "npm_install",
+      "fixture_id": "tfy-core::broad_dsl_summary_preserves_diagnostics_and_redacts_public_text",
+      "tfy_commit": "ea01a5ab7aacf1838144341f68bbfa2716f1b47d",
+      "tfy_mode": "tfy-core built-in DSL unit fixture",
+      "rtk_commit_or_mode_when_executable": "d8c550eefba41e112bd174d58844a803db6e432f / not executed in this row",
+      "raw_bytes": null,
+      "redacted_raw_bytes": null,
+      "model_visible_bytes": null,
+      "saved_bytes": null,
+      "no_negative_result": "pending",
+      "raw_recovery_result": "pending",
+      "redaction_result": "pending",
+      "missed_evidence_classification": "pending",
+      "measured_route": "unit_fixture_planned",
+      "unsupported_subcases": [
+        "No RTK executable comparison yet",
+        "No route measurement yet"
+      ]
+    },
+    {
+      "id": "planned-terraform-plan-dsl-fixture",
+      "status": "planned",
+      "family": "terraform-plan",
+      "fixture_id": "tfy-core::default-diagnostic",
+      "tfy_commit": "ea01a5ab7aacf1838144341f68bbfa2716f1b47d",
+      "tfy_mode": "tfy-core built-in DSL unit fixture",
+      "rtk_commit_or_mode_when_executable": "d8c550eefba41e112bd174d58844a803db6e432f / not executed in this row",
+      "raw_bytes": null,
+      "redacted_raw_bytes": null,
+      "model_visible_bytes": null,
+      "saved_bytes": null,
+      "no_negative_result": "pending",
+      "raw_recovery_result": "pending",
+      "redaction_result": "pending",
+      "missed_evidence_classification": "pending",
+      "measured_route": "unit_fixture_planned",
+      "unsupported_subcases": [
+        "No RTK executable comparison yet",
+        "No route measurement yet",
+        "Not human auto-safe by default"
+      ]
+    }
+  ]
+}
