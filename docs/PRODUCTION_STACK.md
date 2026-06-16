@@ -108,8 +108,8 @@ Implemented binaries/surfaces:
 
 - `tfy runtime-capabilities`
 - `tfy runtime-negotiate`
-- `tfy tool-gateway -- <command>` and `tfy shell -- <command>` as text-first model-visible wrappers
-- `tfy tool-gateway --json|--jsonl` and `tfy shell --json|--jsonl` as debug/adapter/internal wrappers
+- `tfy tool-gateway -- <command>` and `tfy shell -- <command>` as text-first model-visible wrappers; `tfy shell <command>` is raw passthrough only
+- `tfy tool-gateway --json|--jsonl` and `tfy shell --json|--jsonl -- <command>` as debug/adapter/internal wrappers
 - `tfy context-gateway`
 - `tfy output-gateway` preview/validate
 - `tfy state-append`
@@ -130,3 +130,7 @@ The production stack now includes `tfy mcp serve`, a stdio MCP server that expos
 - `tfy mcp install --target codex --dry-run` prints a concrete `codex mcp add` command and TOML snippet without writing config.
 
 This is the first supported agent-native integration boundary after the generic-shell adapter. It does not replace future Codex private hook/provider/editor adapters.
+
+## Human managed-session auto-intercept (Linux bash v1)
+
+`tfy start --human` enters a TFY-managed project-scoped bash session on supported Linux hosts when invoked as the only project target from an interactive terminal. The session uses a generated TFY-owned rcfile with conservative allowlisted shell-function wrappers. Wrapped commands store raw output before summary selection; shell-local functions, aliases, builtins, direct paths, explicit `tfy-human-bypass`, TFY gateway, and outside-scope commands remain raw and are not claimed as summarized; automatic interactive/TUI/stateful subcommand classification is not claimed in v1. This is not global terminal interception and does not mutate an already-running parent shell.

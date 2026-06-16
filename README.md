@@ -165,7 +165,7 @@ node scripts/npm-publish-plan.js --version 0.1.1 --channel stable --source-ref m
 
 The npm package defaults its `publishConfig.tag` to `preview` as a safety rail; stable publishes must explicitly use the generated `--tag latest` command. The publish helper also prints the required `scripts/npm-dist-tag-check.js` guard; the canonical dist-tag cleanup checklist lives in `docs/RELEASE_READINESS.md`.
 
-For AI-agent use, `tfy start --agent --host codex` writes project MCP configuration, but that only proves configuration. Launch support still requires real host invocation plus TFY raw/ledger/no-negative/positive-savings evidence. For human use, run explicit TFY wrappers such as `tfy shell -- <command>` or `tfy adapter run --session <name> -- <command>`; TFY does not claim universal terminal interception.
+For AI-agent use, `tfy start --agent --host codex` writes project MCP configuration, but that only proves configuration. Launch support still requires real host invocation plus TFY raw/ledger/no-negative/positive-savings evidence. For human use on supported Linux bash, `tfy start --human` records lifecycle intent and, when run as the only project target from an interactive terminal, enters a TFY-managed project-scoped shell session where allowlisted command names are wrapped by TFY and summarized only after raw evidence is stored and only when beneficial. Outside that managed session, `tfy shell <command>` is raw passthrough convenience and `tfy shell -- <command>` is the TFY summarizing wrapper. TFY does not claim universal or global terminal interception.
 
 ## Implementation status
 
@@ -183,7 +183,8 @@ cargo run -p tfy-cli -- languages
 cargo run -p tfy-cli -- index corpus/rust/fixture_01.rs
 cargo run -p tfy-cli -- tool-gateway -- sh -c 'printf ok'
 cargo run -p tfy-cli -- tool-gateway -- sh -c 'for i in $(seq 1 200); do echo "line $i"; done'
-cargo run -p tfy-cli -- shell -- sh -c 'printf ok'
+cargo run -p tfy-cli -- shell printf ok          # raw passthrough, no TFY summary/artifacts
+cargo run -p tfy-cli -- shell -- sh -c 'printf ok'       # TFY Shell Gateway wrapper
 cargo run -p tfy-cli -- tool-gateway --json -- sh -c 'printf ok' # debug/adapter/internal only
 cargo run -p tfy-cli -- runtime-capabilities
 cargo run -p tfy-cli -- adapter capabilities
@@ -244,9 +245,9 @@ Product-facing lifecycle path:
 ```bash
 tfy start                 # interactive TUI wizard for agent/human/both when attached to a TTY
 tfy start --agent         # project AI-agent lifecycle + safe default Codex MCP route configuration
-tfy start --human         # project human explicit-wrapper/session intent
+tfy start --human         # enter supported Linux bash project-scoped human auto-intercept session
 tfy start ai              # positional alias for --agent; also safe-configures Codex by default
-tfy start both            # positional alias for --agent --human
+tfy start both            # records agent+human intent; run `tfy start --human` alone to enter the human session
 tfy start --agent --no-apply # lifecycle intent only; no host config writes
 tfy start --agent --host codex  # writes project .codex/config.toml, active=false until evidence
 tfy start --agent --host claude-code # writes project .mcp.json, active=false until evidence/approval
@@ -259,7 +260,7 @@ tfy use always --agent    # convenience alias for user-global default-on intent
 tfy use cancel --agent    # convenience alias for user-global default-off intent
 ```
 
-Lifecycle commands write project state to `.tfy/lifecycle.json` and global state under `$TFY_HOME`, `$XDG_CONFIG_HOME/tfy`, or `~/.tfy`; global host options record default guidance only and do not mutate per-project host config; `start` prepares raw and ledger directories (`.tfy/raw`, `.tfy/state`, `.tfy/adapter`, `.tfy/agent`, `.tfy/mcp`) before later command/context evidence is recorded. Bare interactive `start`, `stop`, and `fuckyou` open an arrow-key TUI; piped stdin choices remain supported for scripts, and missing non-TTY choices fail closed. They do not prove host invocation or token savings by themselves: agent mode auto-configures only supported safe project routes, defaulting to Codex first, and still requires the host to reload/use the TFY route, while human mode does not globally intercept ordinary terminal commands. `tfy start --agent` records lifecycle desire and, unless `--no-apply` is passed, writes the Codex project MCP route as `configured_unverified`; it still keeps `active=false` until lifecycle desire is on and route-bound raw/ledger/no-negative/positive-savings evidence exists. `tfy status` reports a user-facing lifecycle summary plus effective project-over-global desired/configured/active state and next action guidance. Use explicit TFY wrappers such as `tfy shell -- <command>` for human command cleanup until a first-class human shell/session command exists. Raw evidence remains managed through `tfy raw`; `fuckyou` preserves `.tfy/raw` and shared ledgers by default.
+Lifecycle commands write project state to `.tfy/lifecycle.json` and global state under `$TFY_HOME`, `$XDG_CONFIG_HOME/tfy`, or `~/.tfy`; global host options record default guidance only and do not mutate per-project host config; `start` prepares raw and ledger directories (`.tfy/raw`, `.tfy/state`, `.tfy/adapter`, `.tfy/agent`, `.tfy/mcp`) before later command/context evidence is recorded. Bare interactive `start`, `stop`, and `fuckyou` open an arrow-key TUI; piped stdin choices remain supported for scripts, and missing non-TTY choices fail closed. They do not prove host invocation or token savings by themselves: agent mode auto-configures only supported safe project routes, defaulting to Codex first, and still requires the host to reload/use the TFY route, while human mode does not globally intercept ordinary terminal commands. On supported Linux bash, `tfy start --human` records lifecycle intent and, from an interactive project-only terminal run, enters a TFY-managed project-scoped shell session; allowlisted commands route through raw-first command-output capture before summary selection; the current ledger stores a combined raw output ref. Shell-local functions, aliases, builtins, direct paths, explicit `tfy-human-bypass`, TFY gateway, and outside-scope commands run raw without a summary claim; automatic interactive/TUI/stateful subcommand classification is not claimed in v1. `tfy human shell --no-auto-intercept` keeps only the managed shell environment without allowlisted wrappers, and `tfy human install --dry-run|--output <path>` generates the sourceable script. `tfy start --agent` records lifecycle desire and, unless `--no-apply` is passed, writes the Codex project MCP route as `configured_unverified`; it still keeps `active=false` until lifecycle desire is on and route-bound raw/ledger/no-negative/positive-savings evidence exists. `tfy status` reports a user-facing lifecycle summary plus effective project-over-global desired/configured/active state and next action guidance. Outside a TFY-managed human session, `tfy shell <command>` runs raw without TFY savings/artifacts; use `tfy shell -- <command>` for the explicit TFY wrapper. Raw evidence remains managed through `tfy raw`; `fuckyou` preserves `.tfy/raw` and shared ledgers by default.
 
 Product-facing happy path:
 

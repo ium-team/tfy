@@ -82,8 +82,10 @@ The default Tool Gateway contract is text-first:
 
 ```sh
 tfy tool-gateway -- <ordinary command>
-tfy shell -- <ordinary command>
+tfy shell -- <ordinary command>   # TFY Shell Gateway wrapper
 ```
+
+`tfy shell <ordinary command>` without the separator is deliberately outside this Tool Gateway contract: it is raw passthrough convenience for humans, with native stdout/stderr/exit code and no TFY summary, raw store, or ledger artifact.
 
 Execution flow:
 
@@ -135,7 +137,8 @@ Current runtime-facing CLI surfaces:
 tfy runtime-capabilities
 tfy runtime-negotiate --gateway tool --output-mode text
 tfy tool-gateway -- <command...>        # model-visible text default
-tfy shell -- <command...>               # model-visible text default
+tfy shell <command...>                  # raw passthrough convenience, no TFY savings/artifacts
+tfy shell -- <command...>               # model-visible text default through TFY gateway
 tfy tool-gateway --json -- <command...> # debug/adapter/internal only
 tfy tool-gateway --jsonl -- <command...># debug/adapter/internal only
 tfy shell --json -- <command...>        # debug/adapter/internal only
@@ -175,13 +178,13 @@ tfy state-append --payload event.json
 tfy state-project
 ```
 
-`tfy shell` is the local shell-adapter wrapper. `tfy agent run` is the AI-runtime wrapper with explicit origin/provenance and `user_shell_mutated=false`. Neither command magically modifies a third-party runtime by itself; a runtime must configure its command execution path to call the wrapper. `tfy mcp serve` is the supported MCP stdio integration point for MCP-aware hosts; it still requires host MCP routing and is not a private Codex hook or provider prompt gateway.
+`tfy shell <command>` is raw passthrough convenience; `tfy shell -- <command>` is the local shell-adapter wrapper. `tfy agent run` is the AI-runtime wrapper with explicit origin/provenance and `user_shell_mutated=false`. Neither command magically modifies a third-party runtime by itself; a runtime must configure its command execution path to call the wrapper. `tfy mcp serve` is the supported MCP stdio integration point for MCP-aware hosts; it still requires host MCP routing and is not a private Codex hook or provider prompt gateway.
 
 ## Product lifecycle protocol
 
 `tfy init`, `tfy doctor`, `tfy smoke`, and `tfy gain` are product-facing wrappers around the lower-level protocol surfaces:
 
-- Bare interactive `tfy start` / `tfy stop` / `tfy fuckyou` use an arrow-key TUI; non-interactive stdin choices remain available for automation. `tfy start` / `tfy stop` / `tfy fuckyou` manage lifecycle and supported-route configuration, not proof of interception. Agent lifecycle records supported route intent (`mcp_stdio`, `agent_wrapper`, `generic_shell_adapter`), auto-configures the implemented Codex project route by default, and keeps `active=false`, `private_hook_interception=false`, and `provider_prompt_gateway=false`; named-host launch support still requires launch-report evidence. Human lifecycle records explicit-wrapper/session intent, `route_state=intent_recorded`, `active=false`, `session_wrapper_available=true`, and `ordinary_terminal_interception=false`; ordinary terminal commands are not globally intercepted.
+- Bare interactive `tfy start` / `tfy stop` / `tfy fuckyou` use an arrow-key TUI; non-interactive stdin choices remain available for automation. `tfy start` / `tfy stop` / `tfy fuckyou` manage lifecycle and supported-route configuration, not proof of global interception. Agent lifecycle records supported route intent (`mcp_stdio`, `agent_wrapper`, `generic_shell_adapter`), auto-configures the implemented Codex project route by default, and keeps `active=false`, `private_hook_interception=false`, and `provider_prompt_gateway=false`; named-host launch support still requires launch-report evidence. Human lifecycle records managed-session intent, `route_state=intent_recorded`, `active=false`, and `ordinary_terminal_interception=false`; Linux bash v1 interactive project-only runs of `tfy start --human` enter a TFY-managed project-scoped bash session where allowlisted commands are wrapped and may store combined raw command output before summary selection, while shell-local/direct-path/explicit-bypass/TFY-gateway/outside-scope commands run raw without summary/no-negative-savings claims; automatic interactive/TUI/stateful subcommand classification is not claimed in v1. Unsupported non-Linux platforms report `managed_session_available=false` with `support_status=managed_session_unsupported_platform`. Ordinary terminals outside that session are not globally intercepted; nested child-shell command boundaries and bash `$?` parity are not claimed unless separately proven.
 - `tfy start --agent` and `tfy start --agent --host codex` use the safe project Codex writer by default and record host route `configured_unverified` with `active=false`; `tfy start --agent --host claude-code` writes Claude Code project `.mcp.json` with approval/reload guidance; `tfy start --agent --host cursor` writes Cursor project `.cursor/mcp.json`; `tfy start --agent --no-apply` records lifecycle intent only. `tfy start agent --host all --apply` applies implemented safe writers in Codex → Claude Code → Cursor order and leaves unsupported/manual hosts as guidance-only. `--verify` runs available local TFY smoke where safe and prints plain-text next actions, but lifecycle state is not promoted without route-bound raw/ledger/no-negative/positive-savings/overhead evidence. Launch support is demoted/rejected when evidence is stale, reverify failed, raw artifacts disappear, or the route/config/version scope changes.
 - `tfy init --codex` defaults to project-scoped dry-run. `--apply` writes only a TFY-owned marker block in `AGENTS.md`; global mode targets `~/.codex/AGENTS.md`. P0 prints the Codex MCP command and does not directly mutate `~/.codex/config.toml`.
 - `tfy setup --ai --host <host> --dry-run` and `tfy mcp install --target <host> --dry-run` generate reversible setup guidance for Codex, Claude Code, Cursor, OpenCode, and Hermes. `tfy setup --ai --host codex --apply --project`, `tfy setup --ai --host claude-code --apply --project`, and `tfy setup --ai --host cursor --apply --project` write project host config safely with backup/idempotency/provenance/uninstall. Other host config apply remains dry-run/manual until a safe writer with backup/uninstall tests exists.

@@ -2493,9 +2493,10 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
         "{start_text}"
     );
     assert!(
-        start_text.contains("ordinary terminal commands are not globally intercepted"),
+        start_text.contains("managed_session_interception=false"),
         "{start_text}"
     );
+    assert!(start_text.contains("globally intercepted"), "{start_text}");
     assert!(dir.path().join(".tfy/lifecycle.json").exists());
 
     let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
@@ -2533,9 +2534,14 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
         json["project_lifecycle"]["human"]["ordinary_terminal_interception"],
         false
     );
+    let human_support_status = if cfg!(target_os = "linux") {
+        "managed_session_available"
+    } else {
+        "managed_session_unsupported_platform"
+    };
     assert_eq!(
         json["project_lifecycle"]["human"]["support_status"],
-        "manual_explicit_route_required"
+        human_support_status
     );
     assert!(json["minimum_v1_host_matrix"]
         .as_array()
@@ -3212,7 +3218,14 @@ fn lifecycle_use_always_alias_controls_global_defaults() {
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(json["global_lifecycle"]["agent"]["desired"], true);
     assert_eq!(json["global_lifecycle"]["human"]["desired"], true);
-    assert_eq!(json["lifecycle_summary"]["status"], "configured_unverified");
+    assert_eq!(
+        json["lifecycle_summary"]["status"],
+        if cfg!(target_os = "linux") {
+            "configured_unverified"
+        } else {
+            "intent_recorded"
+        }
+    );
     assert_eq!(
         json["lifecycle_summary"]["desired_targets"]
             .as_array()
@@ -3940,6 +3953,22 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
         .output()
         .unwrap();
     assert!(start.status.success());
+    let start_text = String::from_utf8_lossy(&start.stdout);
+    assert!(
+        start_text.contains("ordinary_terminal_interception=false"),
+        "{start_text}"
+    );
+    if cfg!(target_os = "linux") {
+        assert!(
+            start_text.contains("managed_session_launch=requires_interactive_tty"),
+            "{start_text}"
+        );
+    } else {
+        assert!(
+            start_text.contains("support_status=managed_session_unsupported_platform"),
+            "{start_text}"
+        );
+    }
 
     let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3950,10 +3979,35 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
     let human = &json["project_lifecycle"]["human"];
     assert_eq!(human["route_state"], "intent_recorded");
     assert_eq!(human["active"], false);
-    assert_eq!(human["session_wrapper_available"], true);
+    let managed_session_available = cfg!(target_os = "linux");
+    assert_eq!(
+        human["session_wrapper_available"],
+        managed_session_available
+    );
+    assert_eq!(
+        human["managed_session_available"],
+        managed_session_available
+    );
+    assert_eq!(human["managed_session_entrypoint"][0], "tfy");
+    assert_eq!(human["managed_session_entrypoint"][1], "start");
+    assert_eq!(human["managed_session_entrypoint"][2], "--human");
+    assert_eq!(
+        human["managed_session_scope"],
+        "project_scoped_tfy_managed_session"
+    );
+    assert_eq!(human["shells_supported"][0], "linux-bash");
     assert_eq!(human["ordinary_terminal_interception"], false);
+    assert_eq!(
+        human["support_status"],
+        if managed_session_available {
+            "managed_session_available"
+        } else {
+            "managed_session_unsupported_platform"
+        }
+    );
     assert_eq!(human["entrypoint"][0], "tfy");
-    assert_eq!(human["entrypoint"][1], "shell");
+    assert_eq!(human["entrypoint"][1], "start");
+    assert_eq!(human["entrypoint"][2], "--human");
 }
 
 #[test]

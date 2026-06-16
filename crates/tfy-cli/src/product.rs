@@ -1,3 +1,4 @@
+use crate::human::execute_human_shell;
 use crate::util::{print_json, stable_id};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
@@ -122,7 +123,7 @@ pub(crate) struct LifecycleTargetArgs {
     /// Configure only AI-agent lifecycle intent.
     #[arg(long)]
     pub agent: bool,
-    /// Configure only human explicit-wrapper/session lifecycle intent.
+    /// Configure only human explicit managed-session lifecycle intent.
     #[arg(long)]
     pub human: bool,
 }
@@ -201,7 +202,7 @@ pub(crate) struct StatusCmd {
     /// Show only AI-agent lifecycle/status information.
     #[arg(long)]
     pub agent: bool,
-    /// Show only human explicit-wrapper/session lifecycle/status information.
+    /// Show only human explicit managed-session lifecycle/status information.
     #[arg(long)]
     pub human: bool,
     #[arg(long)]
@@ -398,6 +399,16 @@ struct HumanLifecycleState {
     entrypoint: Vec<String>,
     #[serde(default)]
     session_wrapper_available: bool,
+    #[serde(default)]
+    managed_session_available: bool,
+    #[serde(default = "default_managed_session_entrypoint")]
+    managed_session_entrypoint: Vec<String>,
+    #[serde(default = "default_managed_session_scope")]
+    managed_session_scope: String,
+    #[serde(default)]
+    integration_path: Option<String>,
+    #[serde(default = "default_human_shells_supported")]
+    shells_supported: Vec<String>,
     ordinary_terminal_interception: bool,
     support_status: String,
     started_at: Option<String>,
@@ -479,12 +490,31 @@ fn default_lifecycle_route_state() -> String {
 }
 
 fn default_human_entrypoint() -> Vec<String> {
-    vec![
-        "tfy".into(),
-        "shell".into(),
-        "--".into(),
-        "<command>".into(),
-    ]
+    default_managed_session_entrypoint()
+}
+
+fn default_managed_session_entrypoint() -> Vec<String> {
+    vec!["tfy".into(), "start".into(), "--human".into()]
+}
+
+fn default_managed_session_scope() -> String {
+    "project_scoped_tfy_managed_session".into()
+}
+
+fn default_human_shells_supported() -> Vec<String> {
+    vec!["linux-bash".into()]
+}
+
+fn human_managed_session_available() -> bool {
+    cfg!(target_os = "linux")
+}
+
+fn human_support_status() -> String {
+    if human_managed_session_available() {
+        "managed_session_available".into()
+    } else {
+        "managed_session_unsupported_platform".into()
+    }
 }
 
 #[derive(Serialize)]
@@ -1091,11 +1121,16 @@ fn human_state(
         desired,
         route_state: "intent_recorded".into(),
         active: false,
-        active_route: "explicit_wrapper_required".into(),
+        active_route: "managed_session_entrypoint_available".into(),
         entrypoint: default_human_entrypoint(),
-        session_wrapper_available: true,
+        session_wrapper_available: human_managed_session_available(),
+        managed_session_available: human_managed_session_available(),
+        managed_session_entrypoint: default_managed_session_entrypoint(),
+        managed_session_scope: default_managed_session_scope(),
+        integration_path: None,
+        shells_supported: default_human_shells_supported(),
         ordinary_terminal_interception: false,
-        support_status: "manual_explicit_route_required".into(),
+        support_status: human_support_status(),
         started_at,
         stopped_at,
     }
@@ -1194,7 +1229,7 @@ fn prompt_targets(action: &str) -> Result<Vec<LifecycleTarget>> {
 fn prompt_targets_tui(action: &str) -> Result<Vec<LifecycleTarget>> {
     let choices = [
         ("agent", "AI agent only"),
-        ("human", "Human explicit wrapper/session only"),
+        ("human", "Human explicit managed-session only"),
         ("both", "Agent and human"),
         ("cancel", "Cancel without writing state"),
     ];
@@ -1748,8 +1783,32 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         }
     }
     if targets.contains(&LifecycleTarget::Human) {
-        println!("human route_state=intent_recorded active=false support_status=manual_explicit_route_required ordinary_terminal_interception=false session_wrapper_available=true");
-        println!("ordinary terminal commands are not globally intercepted; use an explicit TFY wrapper/session such as `tfy shell -- <command>`.");
+        if human_managed_session_available() {
+            let interactive_terminal =
+                std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+            if targets.len() == 1 && scope == LifecycleScope::Project && interactive_terminal {
+                println!("human route_state=managed_session_starting active=false support_status=managed_session_available ordinary_terminal_interception=false managed_session_interception=true managed_session_available=true managed_session_scope_root={} managed_session_entrypoint=\"tfy start --human\"", std::env::current_dir()?.display());
+                println!("ordinary terminals outside this TFY-managed session are not globally intercepted; supported Linux bash now enters a project-scoped managed human session from `tfy start --human`. Use `tfy human shell --no-auto-intercept` for a managed shell without allowlisted wrappers, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` for explicit gateway wrapping.");
+                return execute_human_shell(
+                    &cmd.session,
+                    Path::new(".tfy/raw"),
+                    Path::new(".tfy/human/ledger.jsonl"),
+                    "bash",
+                    true,
+                );
+            } else {
+                let launch_reason = if targets.len() != 1 || scope != LifecycleScope::Project {
+                    "requires_project_human_only_target"
+                } else {
+                    "requires_interactive_tty"
+                };
+                println!("human route_state=intent_recorded active=false support_status=managed_session_available ordinary_terminal_interception=false managed_session_interception=false managed_session_available=true managed_session_launch={launch_reason} managed_session_entrypoint=\"tfy start --human\"");
+                println!("human lifecycle intent recorded; run `tfy start --human` as the only project target from an interactive terminal to enter the managed session. Ordinary terminals outside that TFY-managed session are not globally intercepted.");
+            }
+        } else {
+            println!("human route_state=intent_recorded active=false support_status=managed_session_unsupported_platform ordinary_terminal_interception=false managed_session_interception=false managed_session_available=false managed_session_entrypoint=\"tfy start --human\"");
+            println!("ordinary terminal commands are not globally intercepted; TFY-managed human sessions are Linux bash only in v1 on this platform. Use `tfy shell <command>` for raw passthrough or `tfy shell -- <command>` for the TFY gateway wrapper.");
+        }
     }
     Ok(())
 }
@@ -2296,10 +2355,10 @@ pub(crate) fn execute_status(cmd: StatusCmd) -> Result<()> {
         }
         if !cmd.agent {
             if let Some(human) = &report.project_lifecycle.human {
-                println!("project human: configured={} desired={} route_state={} active={} support_status={} ordinary_terminal_interception={} session_wrapper_available={}", human.configured, human.desired, human.route_state, human.active, human.support_status, human.ordinary_terminal_interception, human.session_wrapper_available);
+                println!("project human: configured={} desired={} route_state={} active={} support_status={} ordinary_terminal_interception={} managed_session_available={} session_wrapper_available={}", human.configured, human.desired, human.route_state, human.active, human.support_status, human.ordinary_terminal_interception, human.managed_session_available, human.session_wrapper_available);
             }
             if let Some(human) = &report.global_lifecycle.human {
-                println!("global human: configured={} desired={} route_state={} active={} support_status={} ordinary_terminal_interception={} session_wrapper_available={}", human.configured, human.desired, human.route_state, human.active, human.support_status, human.ordinary_terminal_interception, human.session_wrapper_available);
+                println!("global human: configured={} desired={} route_state={} active={} support_status={} ordinary_terminal_interception={} managed_session_available={} session_wrapper_available={}", human.configured, human.desired, human.route_state, human.active, human.support_status, human.ordinary_terminal_interception, human.managed_session_available, human.session_wrapper_available);
             }
         }
         if !cmd.human {
@@ -3861,13 +3920,22 @@ fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
         effective_lifecycle,
         minimum_v1_host_matrix: minimum_v1_host_matrix(),
         surfaces: vec![
-            SurfaceStatus { name: "command_output".into(), status: "active".into(), message: "AI-origin commands can route through tfy agent/adapter/MCP; normal human terminal commands are not intercepted.".into() },
+            SurfaceStatus { name: "command_output".into(), status: "active".into(), message: "AI-origin commands can route through tfy agent/adapter/MCP; human commands can route through an explicit tfy human shell managed session.".into() },
             SurfaceStatus { name: "context_compacting".into(), status: "active".into(), message: "AI can list scopes and request exact compact function/file scopes instead of whole files.".into() },
             SurfaceStatus { name: "compact_code_restore".into(), status: "active".into(), message: "Compact one-line/short-symbol transport is restored to readable canonical code for files and user display.".into() },
             SurfaceStatus { name: "workspace_apply".into(), status: "active".into(), message: "Multi-file add/modify/delete/rename/move apply is proof-gated and rollback-journaled.".into() },
             SurfaceStatus { name: "fuzzy_refactor_apply".into(), status: "active".into(), message: "Fuzzy edits require unique anchors, confidence threshold, restored preview hashes, and conflict checks.".into() },
             SurfaceStatus { name: "codex_host_routing".into(), status: "config_snippet_available".into(), message: "TFY can configure supported Codex routing surfaces; launch support still requires host-bound smoke/ledger/raw evidence.".into() },
-            SurfaceStatus { name: "ordinary_human_terminal".into(), status: "not_supported".into(), message: "TFY intentionally does not intercept regular terminal use.".into() },
+            SurfaceStatus { name: "ordinary_human_terminal".into(), status: "not_supported".into(), message: "TFY does not globally intercept regular terminals; supported Linux bash uses `tfy start --human` to enter a project-scoped managed session, while `tfy shell <command>` remains raw passthrough and `tfy shell -- <command>` remains the explicit gateway wrapper.".into() },
+            SurfaceStatus {
+                name: "human_managed_session".into(),
+                status: if human_managed_session_available() { "available" } else { "unsupported_platform" }.into(),
+                message: if human_managed_session_available() {
+                    "Linux bash v1 can enter a TFY-managed project-scoped auto-intercept session via `tfy start --human`; this is opt-in managed-session scope only."
+                } else {
+                    "`tfy human shell` is Linux bash only in v1 on this platform; ordinary terminals remain outside TFY unless explicit commands such as `tfy shell <command>` raw passthrough or `tfy shell -- <command>` gateway wrapper are used."
+                }.into()
+            },
             SurfaceStatus { name: "provider_api_gateway".into(), status: "not_supported".into(), message: "OpenAI/provider request proxying is outside TFY scope.".into() },
             SurfaceStatus { name: "editor_integration".into(), status: "not_supported".into(), message: "Editor auto-connection is outside TFY scope.".into() },
             SurfaceStatus { name: "private_codex_hook".into(), status: "not_supported".into(), message: "No private or hidden Codex prompt interception is claimed.".into() },
@@ -3875,7 +3943,7 @@ fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
         claim_evidence_ladder: claim_evidence_ladder(),
         launch_claim_gate: "A host is launch-supported only after config snippet, config write/apply proof, host launch, verified host MCP or official hook invocation, route evidence, raw recovery, no-negative-savings, and positive-savings checks pass.".into(),
         not_supported: not_supported_surfaces(),
-        truthfulness_boundary: "automatic configuration is limited to supported AI-host routes; no provider proxy, editor hook, private Codex hook, or universal shell interception".into(),
+        truthfulness_boundary: "automatic configuration is limited to supported AI-host routes and explicit TFY-managed human sessions; no provider proxy, editor hook, private Codex hook, or universal shell interception".into(),
     }
 }
 
@@ -4089,7 +4157,7 @@ fn effective_human_status(
         .or_else(|| global.map(|state| (state, "global")));
     let desired = selected.is_some_and(|(state, _)| state.desired);
     let configured = selected.is_some_and(|(state, _)| state.configured);
-    let route_configured = selected.is_some_and(|(state, _)| state.session_wrapper_available);
+    let route_configured = selected.is_some_and(|(state, _)| state.managed_session_available);
     let route_verified = selected.is_some_and(|(state, _)| state.active);
     let savings_verified = route_verified;
     let normal_workflow_supported = false;
@@ -4105,9 +4173,9 @@ fn effective_human_status(
         normal_workflow_supported,
         active,
         active_derivation: if active {
-            "active=true derived from desired && explicit wrapper/session evidence"
+            "active=true derived from desired && explicit TFY-managed human session evidence"
         } else {
-            "active=false until explicit wrapper/session evidence exists and lifecycle desire is on; ordinary terminals are never globally intercepted"
+            "active=false until explicit TFY-managed human session evidence exists and lifecycle desire is on; ordinary terminals are not globally intercepted"
         }
         .into(),
         route_state: selected
@@ -4117,11 +4185,13 @@ fn effective_human_status(
             .map(|(state, _)| state.support_status.clone())
             .unwrap_or_else(|| "manual_explicit_route_required".into()),
         next_action: if active {
-            "Human route is active from explicit wrapper/session evidence.".into()
+            "Human route is active from explicit TFY-managed session evidence.".into()
         } else if !desired {
-            "Run `tfy start --human` to opt into explicit human wrapper/session cleanup.".into()
+            "Run `tfy start --human` to opt into explicit human managed-session cleanup.".into()
+        } else if !route_configured {
+            "TFY-managed human sessions are Linux bash only in v1 on this platform; ordinary terminals are not globally intercepted. Use `tfy shell <command>` for raw passthrough or `tfy shell -- <command>` for the TFY gateway wrapper.".into()
         } else {
-            "Use an explicit wrapper such as `tfy adapter run --session human -- <command>`; ordinary terminals are not globally intercepted.".into()
+            "Run `tfy start --human` to enter the supported Linux bash project-scoped managed session; ordinary terminals outside that session are not globally intercepted. Use `tfy human shell --no-auto-intercept` for a managed shell without allowlisted wrappers, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` for explicit gateway wrapping.".into()
         },
     }
 }

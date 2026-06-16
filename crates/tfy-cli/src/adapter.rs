@@ -71,7 +71,7 @@ pub(crate) fn execute_adapter(cmd: AdapterCmd) -> Result<()> {
             "adapter_version": env!("CARGO_PKG_VERSION"),
             "default_model_visible_output": "plain_text",
             "json_policy": "debug_adapter_internal_only",
-            "canonical_execution": ["tfy tool-gateway", "tfy shell"],
+            "canonical_execution": ["tfy tool-gateway", "tfy shell --"],
             "targets": [
                 {
                     "target": "generic-shell",
