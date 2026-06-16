@@ -16,12 +16,12 @@ Use this table first:
 
 | Situation | Version to make | Channel | npm install users run |
 | --- | --- | --- | --- |
-| First public testing build for a planned stable version | `N.N.N-preview.0` | `preview` | `npm install -g token-fuck-you@preview` |
-| Another public testing build for the same planned stable version | `N.N.N-preview.1`, then `.2`, `.3`, ... | `preview` | `npm install -g token-fuck-you@preview` |
-| The preview has been tested enough and should become the safer release | `N.N.N` | `stable` | `npm install -g token-fuck-you` |
-| Small fix after a stable release | Next patch, usually `N.N.(N+1)-preview.0` first | `preview` | `npm install -g token-fuck-you@preview` |
-| New user-visible feature set | Next minor, usually `N.(N+1).0-preview.0` first | `preview` | `npm install -g token-fuck-you@preview` |
-| Breaking CLI/config/API change | Next major, usually `(N+1).0.0-preview.0` first | `preview` | `npm install -g token-fuck-you@preview` |
+| First public testing build for a planned stable version | `N.N.N-preview.0` | `preview` | `npm install -g @ium/tfy-cli@preview` |
+| Another public testing build for the same planned stable version | `N.N.N-preview.1`, then `.2`, `.3`, ... | `preview` | `npm install -g @ium/tfy-cli@preview` |
+| The preview has been tested enough and should become the safer release | `N.N.N` | `stable` | `npm install -g @ium/tfy-cli` |
+| Small fix after a stable release | Next patch, usually `N.N.(N+1)-preview.0` first | `preview` | `npm install -g @ium/tfy-cli@preview` |
+| New user-visible feature set | Next minor, usually `N.(N+1).0-preview.0` first | `preview` | `npm install -g @ium/tfy-cli@preview` |
+| Breaking CLI/config/API change | Next major, usually `(N+1).0.0-preview.0` first | `preview` | `npm install -g @ium/tfy-cli@preview` |
 
 ## Version formats
 
@@ -53,7 +53,7 @@ Stable release metadata:
 | Cargo workspace version | `N.N.N` |
 | npm package version | `N.N.N` |
 
-Important: npm calls the stable dist-tag `latest`. In TFY, `latest` means “our stable channel”, not “publish every newest preview here”. Do not publish preview builds to the npm `latest` tag.
+Important: npm calls the stable dist-tag `latest`. In TFY, `latest` means “our stable channel”, not “publish every newest preview here”. Do not publish preview builds to the npm `latest` tag. If a preview ever appears on `latest`, follow the canonical dist-tag checklist in `docs/RELEASE_READINESS.md` and keep preview releases on `preview` only.
 
 ### Public-test / preview versions
 
@@ -270,7 +270,7 @@ For preview `0.1.0-preview.0`:
 | Location | Required value |
 | --- | --- |
 | `Cargo.toml` workspace package version | `0.1.0` |
-| `npm/token-fuck-you/package.json` version | `0.1.0-preview.0` |
+| `npm/tfy-cli/package.json` version | `0.1.0-preview.0` |
 | Manual Release workflow `version` input | `0.1.0-preview.0` |
 | Manual Release workflow `channel` input | `preview` |
 | Manual Release workflow `source_ref` input | `develop` or `release/*` |
@@ -280,7 +280,7 @@ For stable `0.1.0`:
 | Location | Required value |
 | --- | --- |
 | `Cargo.toml` workspace package version | `0.1.0` |
-| `npm/token-fuck-you/package.json` version | `0.1.0` |
+| `npm/tfy-cli/package.json` version | `0.1.0` |
 | Manual Release workflow `version` input | `0.1.0` |
 | Manual Release workflow `channel` input | `stable` |
 | Manual Release workflow `source_ref` input | `main` |
@@ -297,16 +297,16 @@ node scripts/check-release-version.js --version 0.1.0 --channel stable --source-
 Use npm's `@version` or `@tag` syntax:
 
 ```sh
-npm install -g token-fuck-you              # stable channel, npm dist-tag latest
-npm install -g token-fuck-you@preview      # public-test channel
-npm install -g token-fuck-you@0.1.0        # exact stable version
-npm install -g token-fuck-you@0.1.0-preview.0  # exact preview version
+npm install -g @ium/tfy-cli              # stable channel, npm dist-tag latest; only after first stable exists
+npm install -g @ium/tfy-cli@preview      # public-test channel; use this while preview-only
+npm install -g @ium/tfy-cli@0.1.0        # exact stable version
+npm install -g @ium/tfy-cli@0.1.0-preview.0  # exact preview version
 ```
 
 Do not use slash-style version installs:
 
 ```sh
-npm install -g token-fuck-you/v0.1.0       # wrong for npm package versions
+npm install -g @ium/tfy-cli/v0.1.0       # wrong for npm package versions
 ```
 
 ## Naming reminder
@@ -315,6 +315,6 @@ The npm package name and command name are different on purpose:
 
 | Layer | Name |
 | --- | --- |
-| npm package | `token-fuck-you` |
+| npm package | `@ium/tfy-cli` |
 | installed command | `tfy` |
 | GitHub Release tag | `vN.N.N` or `vN.N.N-preview.N` |

@@ -111,10 +111,10 @@ Repository/development harness:
 
 ## Developer Preview installation
 
-The source build remains the authority path, but the preview distribution is designed for dogfooding from a normal project directory instead of running `cargo run` inside the TFY checkout. The npm package name is `token-fuck-you` because the unscoped `tfy` npm name is already occupied; the installed command must still be `tfy`.
+The source build remains the authority path, but the preview distribution is designed for dogfooding from a normal project directory instead of running `cargo run` inside the TFY checkout. The npm package name is `@ium/tfy-cli` because the unscoped `tfy` npm name is already occupied and unscoped `tfy-cli` is blocked by npm similarity policy; the installed command must still be `tfy`.
 
 ```sh
-npm install -g token-fuck-you@preview
+npm install -g @ium/tfy-cli@preview
 tfy start --agent --host codex
 tfy start --human
 tfy status --json
@@ -126,15 +126,17 @@ The npm package is a thin installer/launcher. It downloads the matching GitHub R
 | --- | --- | --- |
 | Product/repo | `TFY` / `tfy` | Human-facing product and command identity. |
 | Rust crate | `tfy-cli` | Cargo package name for the CLI implementation. |
-| npm package | `token-fuck-you` | Public npm installer package because unscoped `tfy` is occupied. |
+| npm package | `@ium/tfy-cli` | Public npm installer package because unscoped `tfy` is occupied and unscoped `tfy-cli` is blocked by npm similarity policy. |
 | Installed executable | `tfy` | The command users run after install. |
 
 TFY uses two public install channels only:
 
-- Stable channel: `npm install -g token-fuck-you` installs the most tested release through the npm `latest` dist-tag. Do not point `latest` at public-test builds.
-- Public-test channel: `npm install -g token-fuck-you@preview` installs the newest public testing build with current development work included.
+- Stable channel: `npm install -g @ium/tfy-cli` installs the most tested release through the npm `latest` dist-tag, but only after the first stable release exists. Do not point `latest` at public-test builds.
+- Public-test channel: `npm install -g @ium/tfy-cli@preview` installs the newest public testing build with current development work included. This is the only recommended npm install form while TFY has preview releases but no stable release.
 
-Exact versions remain installable with standard npm syntax, for example `npm install -g token-fuck-you@0.1.1` or `npm install -g token-fuck-you@0.1.1-preview.0`; npm uses `@<version>`, not `/v<version>`. Public-test releases must use the npm `preview` dist-tag, not `latest`, until they graduate to the stable channel. Local validation of the install path is available with:
+See [`docs/RELEASE_READINESS.md`](docs/RELEASE_READINESS.md) for the canonical npm dist-tag cleanup and verification checklist.
+
+Exact versions remain installable with standard npm syntax, for example `npm install -g @ium/tfy-cli@0.1.1` or `npm install -g @ium/tfy-cli@0.1.1-preview.0`; npm uses `@<version>`, not `/v<version>`. Public-test releases must use the npm `preview` dist-tag, not `latest`, until they graduate to the stable channel. Local validation of the install path is available with:
 
 Supported prebuilt npm/GitHub Release platforms:
 
@@ -161,7 +163,7 @@ node scripts/npm-publish-plan.js --version 0.1.1-preview.0 --channel preview --s
 node scripts/npm-publish-plan.js --version 0.1.1 --channel stable --source-ref main
 ```
 
-The npm package defaults its `publishConfig.tag` to `preview` as a safety rail; stable publishes must explicitly use the generated `--tag latest` command.
+The npm package defaults its `publishConfig.tag` to `preview` as a safety rail; stable publishes must explicitly use the generated `--tag latest` command. The publish helper also prints the required `scripts/npm-dist-tag-check.js` guard; the canonical dist-tag cleanup checklist lives in `docs/RELEASE_READINESS.md`.
 
 For AI-agent use, `tfy start --agent --host codex` writes project MCP configuration, but that only proves configuration. Launch support still requires real host invocation plus TFY raw/ledger/no-negative/positive-savings evidence. For human use, run explicit TFY wrappers such as `tfy shell -- <command>` or `tfy adapter run --session <name> -- <command>`; TFY does not claim universal terminal interception.
 

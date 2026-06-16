@@ -2,6 +2,7 @@
 'use strict';
 
 const path = require('path');
+const { DEFAULT_REPO_ROOT, NPM_PACKAGE_DIR, NPM_PUBLISH_TARGET } = require('./release-config');
 const { validateRelease } = require('./check-release-version');
 
 function parseArgs(argv) {
@@ -27,7 +28,7 @@ function shellQuote(value) {
 }
 
 function npmPublishPlan(options) {
-  const root = options.root ? path.resolve(options.root) : process.cwd();
+  const root = options.root ? path.resolve(options.root) : DEFAULT_REPO_ROOT;
   const metadata = validateRelease({
     root,
     version: options.version,
@@ -36,11 +37,12 @@ function npmPublishPlan(options) {
     cargoVersion: options.cargoVersion,
     npmVersion: options.npmVersion
   });
-  const packageDir = 'npm/token-fuck-you';
+  const packageDir = NPM_PACKAGE_DIR;
+  const publishTarget = NPM_PUBLISH_TARGET;
   const publishCommand = [
     'npm',
     'publish',
-    packageDir,
+    publishTarget,
     '--tag',
     metadata.npm_dist_tag,
     '--access',
@@ -48,7 +50,8 @@ function npmPublishPlan(options) {
   ];
   const verifyCommands = [
     ['npm', 'view', `${metadata.package_name}@${metadata.version}`, 'version'],
-    ['npm', 'view', metadata.package_name, 'dist-tags', '--json']
+    ['npm', 'view', metadata.package_name, 'dist-tags', '--json'],
+    ['node', 'scripts/npm-dist-tag-check.js', '--version', metadata.version, '--channel', metadata.channel]
   ];
   return {
     schema_version: 1,
@@ -71,7 +74,10 @@ function npmPublishPlan(options) {
       metadata.channel === 'stable'
         ? 'Stable publishes must use the latest dist-tag and a plain N.N.N version.'
         : 'Public-test publishes must use the preview dist-tag and an N.N.N-preview.N version.',
-      'The installed executable remains tfy even though the npm package is token-fuck-you.'
+      metadata.channel === 'preview'
+        ? 'Run the npm dist-tag check after publish; if this preview appears on npm latest, remove that dist-tag so latest remains stable-only.'
+        : 'Only reviewed stable releases may move the npm latest dist-tag.',
+      'The installed executable remains tfy even though the npm package is @ium/tfy-cli.'
     ]
   };
 }

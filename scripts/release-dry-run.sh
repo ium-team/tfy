@@ -3,14 +3,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-VERSION="$(node -p "require('./npm/token-fuck-you/package.json').version")"
+NPM_PACKAGE_DIR="$(node -p "require('./scripts/release-config').NPM_PACKAGE_DIR")"
+NPM_PACKAGE_NAME="$(node -p "require('./scripts/release-config').NPM_PACKAGE_NAME")"
+VERSION="$(node -p "require('./' + require('./scripts/release-config').NPM_PACKAGE_DIR + '/package.json').version")"
 CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(p["version"] for p in data["packages"] if p["name"]=="tfy-cli"))')"
 RELEASE_DIR="$ROOT/.tfy/release"
 RELEASE_METADATA="$RELEASE_DIR/release-preflight.json"
 mkdir -p "$RELEASE_DIR"
 node scripts/check-release-version.js --version "$VERSION" --channel preview --source-ref develop --cargo-version "$CARGO_VERSION" --npm-version "$VERSION" --json > "$RELEASE_METADATA"
 PLATFORM_INFO="$(node - "$VERSION" <<'NODE'
-const { currentPlatform, archiveName } = require('./npm/token-fuck-you/scripts/lib/platform');
+const { NPM_PACKAGE_DIR } = require('./scripts/release-config');
+const { currentPlatform, archiveName } = require('./' + NPM_PACKAGE_DIR + '/scripts/lib/platform');
 const version = process.argv[2];
 const target = currentPlatform();
 process.stdout.write([
@@ -65,7 +68,7 @@ cat > "$EVIDENCE" <<EOF
   "checksums_artifact": "$CHECKSUMS",
   "release_manifest": "$RELEASE_MANIFEST",
   "release_preflight": "$RELEASE_METADATA",
-  "npm_package_name": "token-fuck-you",
+  "npm_package_name": "$NPM_PACKAGE_NAME",
   "npm_dist_tag": "preview",
   "npm_bin": "tfy",
   "github_release_canonical": true,
@@ -90,7 +93,7 @@ cat > "$EVIDENCE" <<EOF
     "checksum_sha256=$ARCHIVE_SHA256",
     "release_manifest=$RELEASE_MANIFEST",
     "release_preflight=$RELEASE_METADATA",
-    "npm_package_name=token-fuck-you",
+    "npm_package_name=$NPM_PACKAGE_NAME",
     "npm_dist_tag=preview",
     "bench_manifest=$BENCH_MANIFEST"
   ]
