@@ -2493,9 +2493,10 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
         "{start_text}"
     );
     assert!(
-        start_text.contains("ordinary terminal commands are not globally intercepted"),
+        start_text.contains("managed_session_interception=false"),
         "{start_text}"
     );
+    assert!(start_text.contains("globally intercepted"), "{start_text}");
     assert!(dir.path().join(".tfy/lifecycle.json").exists());
 
     let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
