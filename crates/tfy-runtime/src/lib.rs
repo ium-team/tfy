@@ -98,6 +98,16 @@ impl Origin {
             user_shell_mutated: false,
         }
     }
+
+    pub fn human_managed_session() -> Self {
+        Self {
+            kind: OriginKind::HumanCli,
+            host: OriginHost::Generic,
+            invocation: OriginInvocation::Wrapper,
+            intercepted: true,
+            user_shell_mutated: false,
+        }
+    }
 }
 
 impl Default for Origin {
@@ -112,6 +122,7 @@ pub enum RouteIngressKind {
     CliGateway,
     McpTool,
     GenericShellAdapter,
+    HumanManagedSession,
     AgentWrapper,
     HostHook,
     HostMcpConfig,
@@ -213,6 +224,18 @@ impl RouteEvidence {
     pub fn generic_shell_adapter() -> Self {
         Self {
             ingress: RouteIngressKind::GenericShellAdapter,
+            host: OriginHost::Generic,
+            claim_tier: RouteClaimTier::RouteEvidenceRecorded,
+            official_docs_backed: true,
+            kill_switch_available: true,
+            uninstall_available: true,
+            ..Self::cli_gateway()
+        }
+    }
+
+    pub fn human_managed_session() -> Self {
+        Self {
+            ingress: RouteIngressKind::HumanManagedSession,
             host: OriginHost::Generic,
             claim_tier: RouteClaimTier::RouteEvidenceRecorded,
             official_docs_backed: true,

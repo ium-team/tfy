@@ -3,6 +3,7 @@ mod agent;
 mod display;
 mod gateways;
 mod hook;
+mod human;
 mod mcp;
 mod product;
 mod util;
@@ -22,6 +23,7 @@ use gateways::{
     execute_structured_tool_gateway_with_origin,
 };
 use hook::{execute_hook, HookCmd};
+use human::{execute_human, HumanCmd};
 use mcp::{execute_mcp, McpCmd};
 use product::{
     execute_bench, execute_doctor, execute_explain, execute_fuckyou, execute_gain, execute_global,
@@ -64,6 +66,11 @@ enum Cmd {
     Hook {
         #[command(subcommand)]
         cmd: HookCmd,
+    },
+    /// Explicit TFY-managed human shell/session commands. Does not globally intercept ordinary terminals.
+    Human {
+        #[command(subcommand)]
+        cmd: HumanCmd,
     },
     /// Product-facing setup lifecycle for Codex/MCP guidance. Bare `tfy init` is a safe dry-run.
     Init(InitCmd),
@@ -272,6 +279,7 @@ fn main() -> Result<()> {
         Cmd::Adapter { cmd } => execute_adapter(cmd)?,
         Cmd::Mcp { cmd } => execute_mcp(cmd)?,
         Cmd::Hook { cmd } => execute_hook(cmd)?,
+        Cmd::Human { cmd } => execute_human(cmd)?,
         Cmd::Init(cmd) => execute_init(cmd)?,
         Cmd::Doctor(cmd) => execute_doctor(cmd)?,
         Cmd::Smoke(cmd) => execute_smoke(cmd)?,

@@ -2533,9 +2533,14 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
         json["project_lifecycle"]["human"]["ordinary_terminal_interception"],
         false
     );
+    let human_support_status = if cfg!(target_os = "linux") {
+        "managed_session_available"
+    } else {
+        "managed_session_unsupported_platform"
+    };
     assert_eq!(
         json["project_lifecycle"]["human"]["support_status"],
-        "manual_explicit_route_required"
+        human_support_status
     );
     assert!(json["minimum_v1_host_matrix"]
         .as_array()
@@ -3212,7 +3217,14 @@ fn lifecycle_use_always_alias_controls_global_defaults() {
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(json["global_lifecycle"]["agent"]["desired"], true);
     assert_eq!(json["global_lifecycle"]["human"]["desired"], true);
-    assert_eq!(json["lifecycle_summary"]["status"], "configured_unverified");
+    assert_eq!(
+        json["lifecycle_summary"]["status"],
+        if cfg!(target_os = "linux") {
+            "configured_unverified"
+        } else {
+            "intent_recorded"
+        }
+    );
     assert_eq!(
         json["lifecycle_summary"]["desired_targets"]
             .as_array()
@@ -3950,10 +3962,35 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
     let human = &json["project_lifecycle"]["human"];
     assert_eq!(human["route_state"], "intent_recorded");
     assert_eq!(human["active"], false);
-    assert_eq!(human["session_wrapper_available"], true);
+    let managed_session_available = cfg!(target_os = "linux");
+    assert_eq!(
+        human["session_wrapper_available"],
+        managed_session_available
+    );
+    assert_eq!(
+        human["managed_session_available"],
+        managed_session_available
+    );
+    assert_eq!(human["managed_session_entrypoint"][0], "tfy");
+    assert_eq!(human["managed_session_entrypoint"][1], "human");
+    assert_eq!(human["managed_session_entrypoint"][2], "shell");
+    assert_eq!(
+        human["managed_session_scope"],
+        "explicit_tfy_managed_session_only"
+    );
+    assert_eq!(human["shells_supported"][0], "linux-bash");
     assert_eq!(human["ordinary_terminal_interception"], false);
+    assert_eq!(
+        human["support_status"],
+        if managed_session_available {
+            "managed_session_available"
+        } else {
+            "managed_session_unsupported_platform"
+        }
+    );
     assert_eq!(human["entrypoint"][0], "tfy");
-    assert_eq!(human["entrypoint"][1], "shell");
+    assert_eq!(human["entrypoint"][1], "human");
+    assert_eq!(human["entrypoint"][2], "shell");
 }
 
 #[test]
