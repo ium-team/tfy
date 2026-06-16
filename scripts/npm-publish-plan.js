@@ -50,7 +50,8 @@ function npmPublishPlan(options) {
   ];
   const verifyCommands = [
     ['npm', 'view', `${metadata.package_name}@${metadata.version}`, 'version'],
-    ['npm', 'view', metadata.package_name, 'dist-tags', '--json']
+    ['npm', 'view', metadata.package_name, 'dist-tags', '--json'],
+    ['node', 'scripts/npm-dist-tag-check.js', '--version', metadata.version, '--channel', metadata.channel]
   ];
   return {
     schema_version: 1,
@@ -73,6 +74,9 @@ function npmPublishPlan(options) {
       metadata.channel === 'stable'
         ? 'Stable publishes must use the latest dist-tag and a plain N.N.N version.'
         : 'Public-test publishes must use the preview dist-tag and an N.N.N-preview.N version.',
+      metadata.channel === 'preview'
+        ? 'Run the npm dist-tag check after publish; if this preview appears on npm latest, remove that dist-tag so latest remains stable-only.'
+        : 'Only reviewed stable releases may move the npm latest dist-tag.',
       'The installed executable remains tfy even though the npm package is @ium/tfy-cli.'
     ]
   };

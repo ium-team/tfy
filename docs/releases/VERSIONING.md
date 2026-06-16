@@ -53,7 +53,7 @@ Stable release metadata:
 | Cargo workspace version | `N.N.N` |
 | npm package version | `N.N.N` |
 
-Important: npm calls the stable dist-tag `latest`. In TFY, `latest` means “our stable channel”, not “publish every newest preview here”. Do not publish preview builds to the npm `latest` tag.
+Important: npm calls the stable dist-tag `latest`. In TFY, `latest` means “our stable channel”, not “publish every newest preview here”. Do not publish preview builds to the npm `latest` tag. If a preview ever appears on `latest`, follow the canonical dist-tag checklist in `docs/RELEASE_READINESS.md` and keep preview releases on `preview` only.
 
 ### Public-test / preview versions
 
@@ -297,8 +297,8 @@ node scripts/check-release-version.js --version 0.1.0 --channel stable --source-
 Use npm's `@version` or `@tag` syntax:
 
 ```sh
-npm install -g @ium/tfy-cli              # stable channel, npm dist-tag latest
-npm install -g @ium/tfy-cli@preview      # public-test channel
+npm install -g @ium/tfy-cli              # stable channel, npm dist-tag latest; only after first stable exists
+npm install -g @ium/tfy-cli@preview      # public-test channel; use this while preview-only
 npm install -g @ium/tfy-cli@0.1.0        # exact stable version
 npm install -g @ium/tfy-cli@0.1.0-preview.0  # exact preview version
 ```

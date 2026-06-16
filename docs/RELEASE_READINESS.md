@@ -37,7 +37,7 @@ Preview distribution is intentionally two-channel:
 - GitHub Releases are the canonical binary source. Each supported platform archive must have a SHA-256 checksum and release evidence entry.
 - npm is the convenience installer/launcher. The package name may be scoped or otherwise disambiguated from occupied npm names, but the installed binary command must be `tfy`.
 
-TFY uses two public npm install channels only: stable and public-test. Stable publishes use the `latest` dist-tag so `npm install -g @ium/tfy-cli` resolves to the most tested release. Public-test publishes must be public and use the `preview` dist-tag, not `latest`, so `npm install -g @ium/tfy-cli@preview` resolves to the newest public testing build. Exact historical installs use standard npm version specifiers such as `@ium/tfy-cli@0.1.1` or `@ium/tfy-cli@0.1.1-preview.0`; TFY does not use a slash form such as `@ium/tfy-cli/v0.1.1` for npm installs. The package must fail closed when the release archive or checksum is missing or mismatched. Release evidence should record at least `npm_package_name`, `npm_dist_tag`, `npm_bin`, `github_release_canonical`, asset platform/arch/name, and checksum file/hash. The package defaults `publishConfig.tag` to `preview` as a safety rail; stable publishes must explicitly use `--tag latest`.
+TFY uses two public npm install channels only: stable and public-test. Stable publishes use the `latest` dist-tag so `npm install -g @ium/tfy-cli` resolves to the most tested release, but only after the first stable release exists. Public-test publishes must be public and use the `preview` dist-tag, not `latest`, so `npm install -g @ium/tfy-cli@preview` resolves to the newest public testing build. While no stable release exists, maintainers must document only the explicit `@preview` install form. If any preview appears on the npm `latest` dist-tag, remove it manually with `npm dist-tag rm @ium/tfy-cli latest`, then verify with `npm dist-tag ls @ium/tfy-cli` that preview releases are reachable through `preview` only. This registry cleanup is an authenticated maintainer action, not something the GitHub Release workflow performs. Exact historical installs use standard npm version specifiers such as `@ium/tfy-cli@0.1.1` or `@ium/tfy-cli@0.1.1-preview.0`; TFY does not use a slash form such as `@ium/tfy-cli/v0.1.1` for npm installs. The package must fail closed when the release archive or checksum is missing or mismatched. Release evidence should record at least `npm_package_name`, `npm_dist_tag`, `npm_bin`, `github_release_canonical`, asset platform/arch/name, and checksum file/hash. The package defaults `publishConfig.tag` to `preview` as a safety rail; stable publishes must explicitly use `--tag latest`, and preview packages must never be advertised through `latest`.
 
 Supported prebuilt npm/GitHub Release platforms:
 
@@ -58,6 +58,13 @@ Required local checks for the npm path:
 ./scripts/release-dry-run.sh
 node scripts/npm-publish-plan.js --version 0.1.1-preview.0 --channel preview --source-ref develop
 node scripts/npm-publish-plan.js --version 0.1.1 --channel stable --source-ref main
+```
+
+After an npm publish, run the dist-tag guard printed by the publish plan. For preview releases it verifies that `preview` points at the release version and that `latest` does not point at any preview version; for stable releases it verifies that `latest` points at the stable release version:
+
+```sh
+node scripts/npm-dist-tag-check.js --version 0.1.1-preview.0 --channel preview
+node scripts/npm-dist-tag-check.js --version 0.1.1 --channel stable
 ```
 
 

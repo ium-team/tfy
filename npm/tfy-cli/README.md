@@ -18,8 +18,10 @@ Name mapping:
 
 TFY uses two public install channels only:
 
-- Stable channel: `@ium/tfy-cli` resolves to the most tested release through the npm `latest` dist-tag.
-- Public-test channel: `@ium/tfy-cli@preview` resolves to the newest public testing build with current development work included.
+- Stable channel: `@ium/tfy-cli` resolves to the most tested release through the npm `latest` dist-tag, but only after the first stable release exists.
+- Public-test channel: `@ium/tfy-cli@preview` resolves to the newest public testing build with current development work included. Use this explicit `@preview` form while TFY has no stable release.
+
+See the repository `docs/RELEASE_READINESS.md` for the canonical npm dist-tag cleanup and verification checklist.
 
 Exact versions remain installable with standard npm syntax, for example `@ium/tfy-cli@0.1.1` or `@ium/tfy-cli@0.1.1-preview.0`; npm version installs use `@<version>`, not `/v<version>`.
 
@@ -51,4 +53,4 @@ node scripts/npm-publish-plan.js --version 0.1.1-preview.0 --channel preview --s
 node scripts/npm-publish-plan.js --version 0.1.1 --channel stable --source-ref main
 ```
 
-The helper validates the channel/version/source metadata and prints the exact `npm publish` command; it does not publish.
+The helper validates the channel/version/source metadata and prints the exact `npm publish` command; it does not publish. Preview publishes must keep using `--tag preview`; `latest` remains stable-only.

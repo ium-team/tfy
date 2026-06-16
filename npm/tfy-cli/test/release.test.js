@@ -8,6 +8,7 @@ const { spawnSync } = require('child_process');
 const { archiveName, resolveRustTarget, supportedTargets } = require('../scripts/lib/platform');
 const { buildTarInvocation, packageRelease } = require('../../../scripts/package-release');
 const { npmPublishPlan } = require('../../../scripts/npm-publish-plan');
+const { validateDistTags } = require('../../../scripts/npm-dist-tag-check');
 const { assertSupportedTargetSet, isSafeSourceRef, validateRelease } = require('../../../scripts/check-release-version');
 
 
@@ -77,6 +78,18 @@ assert.strictEqual(previewPublish.binary_name, 'tfy');
 assert.strictEqual(previewPublish.npm_dist_tag, 'preview');
 assert.deepStrictEqual(previewPublish.publish_command, ['npm', 'publish', './npm/tfy-cli', '--tag', 'preview', '--access', 'public']);
 assert(previewPublish.github_release_required_first);
+assert(previewPublish.warnings.some(warning => warning.includes('npm dist-tag check')));
+assert(previewPublish.verify_commands.some(command => command[0] === 'node' && command[1] === 'scripts/npm-dist-tag-check.js'));
+assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1-preview.0', distTags: { preview: '0.1.1-preview.0' } }).status, 'pass');
+assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1-preview.0', distTags: { preview: '0.1.1-preview.0', latest: '0.1.1-preview.0' } }).status, 'fail');
+assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1-preview.0', distTags: { preview: '0.1.1-preview.0', latest: '0.1.0' } }).status, 'pass');
+assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1', distTags: { preview: '0.1.1' } }).status, 'fail');
+const previewDistTagCli = spawnSync(process.execPath, [path.resolve(__dirname, '..', '..', '..', 'scripts', 'npm-dist-tag-check.js'), '--version', '0.1.1-preview.0', '--channel', 'preview', '--dist-tags-json', '{"preview":"0.1.1-preview.0"}', '--json'], { encoding: 'utf8' });
+assert.strictEqual(previewDistTagCli.status, 0, previewDistTagCli.stderr);
+assert.strictEqual(JSON.parse(previewDistTagCli.stdout).status, 'pass');
+const previewLatestCli = spawnSync(process.execPath, [path.resolve(__dirname, '..', '..', '..', 'scripts', 'npm-dist-tag-check.js'), '--version', '0.1.1-preview.0', '--channel', 'preview', '--dist-tags-json', '{"preview":"0.1.1-preview.0","latest":"0.1.1-preview.0"}', '--json'], { encoding: 'utf8' });
+assert.strictEqual(previewLatestCli.status, 1);
+assert.strictEqual(JSON.parse(previewLatestCli.stdout).status, 'fail');
 
 const stablePublish = npmPublishPlan({
   channel: 'stable',
@@ -87,6 +100,10 @@ const stablePublish = npmPublishPlan({
 });
 assert.strictEqual(stablePublish.npm_dist_tag, 'latest');
 assert.deepStrictEqual(stablePublish.publish_command, ['npm', 'publish', './npm/tfy-cli', '--tag', 'latest', '--access', 'public']);
+assert(stablePublish.warnings.some(warning => warning.includes('Only reviewed stable releases')));
+assert.strictEqual(validateDistTags({ channel: 'stable', version: '1.2.3', distTags: { latest: '1.2.3', preview: '1.2.4-preview.0' } }).status, 'pass');
+assert.strictEqual(validateDistTags({ channel: 'stable', version: '1.2.3', distTags: { latest: '1.2.2' } }).status, 'fail');
+assert.strictEqual(validateDistTags({ channel: 'stable', version: '1.2.3-preview.0', distTags: { latest: '1.2.3-preview.0' } }).status, 'fail');
 assert.throws(() => npmPublishPlan({
   channel: 'stable',
   version: '1.2.3-preview.0',
