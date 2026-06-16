@@ -204,6 +204,7 @@ fn execute_human_install(
     let output = output.expect("checked above");
     write_owned_script(&output, &script)?;
     println!("installed TFY human session script at {}", output.display());
+    println!("shell=bash status=supported scope=project_scoped_tfy_managed_session");
     println!(
         "source it with: source {}",
         shell_quote(&output.display().to_string())
