@@ -322,6 +322,9 @@ fn tool_gateway_json_includes_command_family_for_p0_wrapped_command() {
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["payload"]["command_family"], "cargo_test");
+    assert_eq!(json["payload"]["strategy_kind"], "rust");
+    assert_eq!(json["payload"]["agent_safe"], true);
+    assert_eq!(json["payload"]["interactive_risk"], "none");
     assert_eq!(json["payload"]["rendering_kind"], "summary");
     assert!(json["payload"]["model_text"]
         .as_str()

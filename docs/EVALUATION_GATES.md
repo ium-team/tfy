@@ -91,6 +91,13 @@ Passing the internal command-output gate means:
 Until that manifest exists and passes, docs may say TFY is **designed to benchmark against
 RTK-overlapping command-output workflows**, not that TFY publicly surpasses RTK.
 
+
+## Command support matrix claim gate
+
+Command-family support claims are driven by `docs/command-support-matrix.json` and validated by `scripts/validate-command-support-matrix.js`. A row may be described publicly as RTK-overlap coverage only until it has all of the following: TFY implementation, fixture evidence, failure-evidence retention, no-negative evidence, raw recovery, required redaction evidence, route evidence, and a matching benchmark-manifest measurement. Human auto-wrapping is a separate claim and requires `human_auto_wrapped=true` plus `interactive_risk=none`.
+
+The provenance decision for RTK-informed command coverage lives at `docs/decisions/rtk-filter-provenance.md`; do not copy, translate, or import RTK filter behavior without satisfying that decision and attribution/notice review.
+
 ## Documentation gate
 
 Docs are release-ready when they:

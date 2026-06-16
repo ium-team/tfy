@@ -1013,6 +1013,128 @@ fn p0_java_test_summary_preserves_maven_failure_evidence() {
 }
 
 #[test]
+fn broad_dsl_command_families_classify_with_safety_metadata() {
+    let cases = [
+        ("npm install", "npm_install", true, "none"),
+        ("ruff check .", "ruff", true, "none"),
+        ("bundle install", "bundle-install", true, "none"),
+        ("dotnet build", "dotnet-build", true, "none"),
+        ("terraform plan", "terraform-plan", false, "possible"),
+        ("aws s3 ls", "aws", false, "possible"),
+    ];
+    for (command, family, human_safe, interactive_risk) in cases {
+        let metadata = crate::classify_command_strategy(command);
+        assert_eq!(metadata.family, family, "{command}");
+        assert_eq!(metadata.strategy_kind, "dsl", "{command}");
+        assert_eq!(metadata.human_auto_safe, human_safe, "{command}");
+        assert_eq!(metadata.interactive_risk, interactive_risk, "{command}");
+    }
+}
+
+#[test]
+fn broad_dsl_summary_preserves_diagnostics_and_redacts_public_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut raw = String::new();
+    for i in 0..120 {
+        raw.push_str(&format!("downloaded package_{i}\n"));
+    }
+    raw.push_str("warning: deprecated package\n");
+    raw.push_str("src/app.ts:42 error TS2322: token failed\n");
+    raw.push_str("NPM_TOKEN=secretsecret123\n");
+    let summary = summarize_command_output("npm install", &raw, 0, dir.path()).unwrap();
+    assert_eq!(summary.command_family, "npm_install");
+    assert_eq!(summary.strategy_kind, "dsl");
+    assert_eq!(summary.risk, "critical");
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(
+        summary.model_text.contains("warning: deprecated package"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("src/app.ts:42"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        summary.model_text.contains("NPM_TOKEN=[REDACTED]"),
+        "{}",
+        summary.model_text
+    );
+    assert!(
+        !summary.model_text.contains("secretsecret123"),
+        "{}",
+        summary.model_text
+    );
+    assert!(summary.model_text.len() < raw.len());
+}
+
+#[test]
+fn built_in_filter_dsl_summarizes_df_without_bypassing_selector() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut raw = String::from("Filesystem      Size  Used Avail Use% Mounted on\n");
+    for i in 0..80 {
+        raw.push_str(&format!("/dev/disk{i} 100G 95G 5G 95% /vol{i}\n"));
+    }
+    let summary = summarize_command_output("df -h", &raw, 0, dir.path()).unwrap();
+    assert_eq!(summary.command_family, "df");
+    assert_eq!(summary.strategy_kind, "dsl");
+    assert!(summary.human_auto_safe);
+    assert_eq!(summary.interactive_risk, "none");
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(
+        summary.model_text.contains("family=df strategy=dsl"),
+        "{}",
+        summary.model_text
+    );
+    assert!(summary.model_text.contains("95%"), "{}", summary.model_text);
+    assert!(
+        summary.model_text.contains("raw_ref="),
+        "{}",
+        summary.model_text
+    );
+    assert!(summary.model_text.len() < raw.len());
+}
+
+#[test]
+fn built_in_filters_have_inline_fixtures() {
+    crate::tool_feedback::validate_built_in_filter_fixtures().unwrap();
+}
+
+#[test]
+fn command_strategy_registry_exposes_p0_metadata_without_changing_classification() {
+    let registry = crate::CommandStrategyRegistry;
+    let metadata = registry.classify("cargo test --workspace");
+    assert_eq!(metadata.family, "cargo_test");
+    assert_eq!(metadata.strategy_kind, "rust");
+    assert!(metadata.agent_safe);
+    assert!(!metadata.human_auto_safe);
+    assert_eq!(metadata.interactive_risk, "none");
+    assert_eq!(
+        metadata.claim_status,
+        "implemented_p0_not_comparison_claimed"
+    );
+
+    let generic = crate::classify_command_strategy("unknown-tool --verbose");
+    assert_eq!(generic.family, "generic");
+    assert_eq!(generic.strategy_kind, "generic");
+    assert_eq!(generic.interactive_risk, "unknown");
+}
+
+#[test]
+fn command_summary_carries_strategy_metadata_through_no_negative_selector() {
+    let dir = tempfile::tempdir().unwrap();
+    let summary = summarize_command_output("cargo test", "ok\n", 0, dir.path()).unwrap();
+    assert_eq!(summary.command_family, "cargo_test");
+    assert_eq!(summary.strategy_kind, "rust");
+    assert!(summary.agent_safe);
+    assert!(!summary.human_auto_safe);
+    assert_eq!(summary.interactive_risk, "none");
+    assert_eq!(summary.rendering_kind, "pass_through");
+    assert_eq!(summary.model_text, "ok\n");
+}
+
+#[test]
 fn p0_command_family_classifier_and_cargo_summary_save_tokens() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(

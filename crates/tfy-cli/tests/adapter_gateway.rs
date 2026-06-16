@@ -475,6 +475,7 @@ fn adapter_report_includes_deterministic_family_savings() {
     );
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
     assert_eq!(json["family_counts"]["cargo_test"], 1);
+    assert_eq!(json["strategy_counts"]["rust"], 1);
     let families = json["families_by_saved_tokens"].as_array().unwrap();
     assert_eq!(families[0]["family"], "cargo_test");
     assert!(families[0]["saved_bytes"].as_i64().unwrap() > 0, "{json}");

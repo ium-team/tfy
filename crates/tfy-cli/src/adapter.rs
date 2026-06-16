@@ -255,6 +255,7 @@ pub(crate) struct AdapterReport {
     negative_savings_avoided: usize,
     rendering_counts: BTreeMap<String, usize>,
     family_counts: BTreeMap<String, usize>,
+    strategy_counts: BTreeMap<String, usize>,
     families_by_saved_tokens: Vec<FamilySavings>,
     raw_refs: Vec<String>,
 }
@@ -270,6 +271,7 @@ pub(crate) fn build_adapter_report(ledger: PathBuf, session: &str) -> Result<Ada
             command,
             exit_code,
             command_family,
+            strategy_kind,
             raw_ref,
             raw_bytes,
             model_bytes,
@@ -314,6 +316,12 @@ pub(crate) fn build_adapter_report(ledger: PathBuf, session: &str) -> Result<Ada
                 command_family.clone()
             };
             *report.family_counts.entry(family).or_insert(0) += 1;
+            let strategy = if strategy_kind.is_empty() {
+                "legacy_unknown".to_string()
+            } else {
+                strategy_kind.clone()
+            };
+            *report.strategy_counts.entry(strategy).or_insert(0) += 1;
             report.raw_refs.push(raw_ref.clone());
         }
     }
@@ -420,6 +428,7 @@ pub(crate) fn execute_adapter_report(ledger: PathBuf, session: &str, json: bool)
             report.negative_savings_avoided, report.rendering_counts
         );
         println!("family_counts={:?}", report.family_counts);
+        println!("strategy_counts={:?}", report.strategy_counts);
         println!(
             "families_by_saved_tokens={}",
             serde_json::to_string(&report.families_by_saved_tokens)?
