@@ -108,8 +108,8 @@ Implemented binaries/surfaces:
 
 - `tfy runtime-capabilities`
 - `tfy runtime-negotiate`
-- `tfy tool-gateway -- <command>` and `tfy shell -- <command>` as text-first model-visible wrappers
-- `tfy tool-gateway --json|--jsonl` and `tfy shell --json|--jsonl` as debug/adapter/internal wrappers
+- `tfy tool-gateway -- <command>` and `tfy shell -- <command>` as text-first model-visible wrappers; `tfy shell <command>` is raw passthrough only
+- `tfy tool-gateway --json|--jsonl` and `tfy shell --json|--jsonl -- <command>` as debug/adapter/internal wrappers
 - `tfy context-gateway`
 - `tfy output-gateway` preview/validate
 - `tfy state-append`

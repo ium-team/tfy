@@ -131,7 +131,7 @@ Implemented test coverage now includes:
 - Capability negotiation acceptance and neutral-degrade/fail-closed cases.
 - State projection non-authoritative fallback when lineage/validation is missing.
 - `tfy tool-gateway --jsonl` structured event + response output.
-- `tfy shell --json` shell-adapter wrapper output.
+- `tfy shell --json -- <command>` shell-adapter wrapper output, plus `tfy shell <command>` raw passthrough with no TFY artifacts.
 - `tfy state-project` compact ledger projection.
 - `tfy context-gateway` runtime envelope for compact context.
 - `tfy output-gateway` preview/validate envelope for structured compact code plus proof-gated single-file selected-scope apply success/fail-closed cases.

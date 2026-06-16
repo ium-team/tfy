@@ -1784,10 +1784,10 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
     if targets.contains(&LifecycleTarget::Human) {
         if human_managed_session_available() {
             println!("human route_state=intent_recorded active=false support_status=managed_session_available ordinary_terminal_interception=false managed_session_available=true managed_session_entrypoint=\"tfy human shell\"");
-            println!("ordinary terminal commands are not globally intercepted; enter the explicit TFY-managed session with `tfy human shell` or generate a sourceable script with `tfy human install --dry-run`.");
+            println!("ordinary terminal commands are not globally intercepted; enter the explicit TFY-managed session with `tfy human shell`, generate a sourceable script with `tfy human install --dry-run`, use `tfy shell <command>` for raw passthrough, or use `tfy shell -- <command>` for the TFY gateway wrapper.");
         } else {
             println!("human route_state=intent_recorded active=false support_status=managed_session_unsupported_platform ordinary_terminal_interception=false managed_session_available=false managed_session_entrypoint=\"tfy human shell\"");
-            println!("ordinary terminal commands are not globally intercepted; TFY-managed human sessions are Linux bash only in v1 on this platform. Use explicit wrappers such as `tfy shell -- <command>`.");
+            println!("ordinary terminal commands are not globally intercepted; TFY-managed human sessions are Linux bash only in v1 on this platform. Use `tfy shell <command>` for raw passthrough or `tfy shell -- <command>` for the TFY gateway wrapper.");
         }
     }
     Ok(())
@@ -3906,14 +3906,14 @@ fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
             SurfaceStatus { name: "workspace_apply".into(), status: "active".into(), message: "Multi-file add/modify/delete/rename/move apply is proof-gated and rollback-journaled.".into() },
             SurfaceStatus { name: "fuzzy_refactor_apply".into(), status: "active".into(), message: "Fuzzy edits require unique anchors, confidence threshold, restored preview hashes, and conflict checks.".into() },
             SurfaceStatus { name: "codex_host_routing".into(), status: "config_snippet_available".into(), message: "TFY can configure supported Codex routing surfaces; launch support still requires host-bound smoke/ledger/raw evidence.".into() },
-            SurfaceStatus { name: "ordinary_human_terminal".into(), status: "not_supported".into(), message: "TFY does not globally intercept regular terminals; use `tfy human shell` for the explicit managed human session.".into() },
+            SurfaceStatus { name: "ordinary_human_terminal".into(), status: "not_supported".into(), message: "TFY does not globally intercept regular terminals; use `tfy human shell` for the explicit managed human session, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` for the TFY gateway wrapper.".into() },
             SurfaceStatus {
                 name: "human_managed_session".into(),
                 status: if human_managed_session_available() { "available" } else { "unsupported_platform" }.into(),
                 message: if human_managed_session_available() {
                     "Linux bash v1 can source a TFY-owned allowlist wrapper or run via `tfy human shell`; this is opt-in session scope only."
                 } else {
-                    "`tfy human shell` is Linux bash only in v1 on this platform; ordinary terminals remain outside TFY unless explicit wrappers such as `tfy shell -- <command>` are used."
+                    "`tfy human shell` is Linux bash only in v1 on this platform; ordinary terminals remain outside TFY unless explicit commands such as `tfy shell <command>` raw passthrough or `tfy shell -- <command>` gateway wrapper are used."
                 }.into()
             },
             SurfaceStatus { name: "provider_api_gateway".into(), status: "not_supported".into(), message: "OpenAI/provider request proxying is outside TFY scope.".into() },
@@ -4169,9 +4169,9 @@ fn effective_human_status(
         } else if !desired {
             "Run `tfy start --human` to opt into explicit human managed-session cleanup.".into()
         } else if !route_configured {
-            "TFY-managed human sessions are Linux bash only in v1 on this platform; ordinary terminals are not globally intercepted. Use explicit wrappers such as `tfy shell -- <command>`.".into()
+            "TFY-managed human sessions are Linux bash only in v1 on this platform; ordinary terminals are not globally intercepted. Use `tfy shell <command>` for raw passthrough or `tfy shell -- <command>` for the TFY gateway wrapper.".into()
         } else {
-            "Enter `tfy human shell` for ordinary-command summaries inside an explicit TFY-managed session; ordinary terminals outside that session are not globally intercepted.".into()
+            "Enter `tfy human shell` for ordinary-command summaries inside an explicit TFY-managed session; ordinary terminals outside that session are not globally intercepted. Use `tfy shell <command>` for raw passthrough or `tfy shell -- <command>` for explicit gateway wrapping.".into()
         },
     }
 }

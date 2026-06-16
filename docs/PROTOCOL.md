@@ -82,8 +82,10 @@ The default Tool Gateway contract is text-first:
 
 ```sh
 tfy tool-gateway -- <ordinary command>
-tfy shell -- <ordinary command>
+tfy shell -- <ordinary command>   # TFY Shell Gateway wrapper
 ```
+
+`tfy shell <ordinary command>` without the separator is deliberately outside this Tool Gateway contract: it is raw passthrough convenience for humans, with native stdout/stderr/exit code and no TFY summary, raw store, or ledger artifact.
 
 Execution flow:
 
@@ -135,7 +137,8 @@ Current runtime-facing CLI surfaces:
 tfy runtime-capabilities
 tfy runtime-negotiate --gateway tool --output-mode text
 tfy tool-gateway -- <command...>        # model-visible text default
-tfy shell -- <command...>               # model-visible text default
+tfy shell <command...>                  # raw passthrough convenience, no TFY savings/artifacts
+tfy shell -- <command...>               # model-visible text default through TFY gateway
 tfy tool-gateway --json -- <command...> # debug/adapter/internal only
 tfy tool-gateway --jsonl -- <command...># debug/adapter/internal only
 tfy shell --json -- <command...>        # debug/adapter/internal only
@@ -175,7 +178,7 @@ tfy state-append --payload event.json
 tfy state-project
 ```
 
-`tfy shell` is the local shell-adapter wrapper. `tfy agent run` is the AI-runtime wrapper with explicit origin/provenance and `user_shell_mutated=false`. Neither command magically modifies a third-party runtime by itself; a runtime must configure its command execution path to call the wrapper. `tfy mcp serve` is the supported MCP stdio integration point for MCP-aware hosts; it still requires host MCP routing and is not a private Codex hook or provider prompt gateway.
+`tfy shell <command>` is raw passthrough convenience; `tfy shell -- <command>` is the local shell-adapter wrapper. `tfy agent run` is the AI-runtime wrapper with explicit origin/provenance and `user_shell_mutated=false`. Neither command magically modifies a third-party runtime by itself; a runtime must configure its command execution path to call the wrapper. `tfy mcp serve` is the supported MCP stdio integration point for MCP-aware hosts; it still requires host MCP routing and is not a private Codex hook or provider prompt gateway.
 
 ## Product lifecycle protocol
 

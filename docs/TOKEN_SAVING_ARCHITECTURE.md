@@ -142,7 +142,8 @@ The full-agent-runtime foundation adds method families that operate at runtime b
 |---|---|---|---|---|
 | Runtime envelope refs | all gateways | `tfy-runtime` | carry refs/provenance instead of repeated raw payloads | version/capability validation and fallback reasons |
 | Structured tool events | Tool/State | `tool-gateway --jsonl`, `state-project` | compact command summaries plus event ledger | raw_ref and source event ids |
-| Shell wrapper | Tool | `tfy shell` | command output compression without changing agent shell intent | exit code, raw_ref, redaction |
+| Shell wrapper | Tool | `tfy shell --` | command output compression without changing agent shell intent | exit code, raw_ref, redaction |
+| Shell raw passthrough | None | `tfy shell <command>` | convenience execution only, no summarization or TFY artifacts | native stdout/stderr/exit code |
 | Context runtime envelope | Context | `context-gateway` | selected compact scope before full context | diagnostics-aware full/related fallback |
 | Output preview/validate | Output | `output-gateway` | compact code restored before model-visible/apply path | unmapped/stale/missing-provenance rejection |
 | Event-fed state projection | State | `state-append`, `state-project` | compact task state instead of raw transcript slices | non-authoritative state when lineage/validation is absent |

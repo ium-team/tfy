@@ -33,6 +33,7 @@ use product::{
     StopCmd, UseCmd,
 };
 use std::path::PathBuf;
+use std::process::Command;
 use tfy_core::*;
 use tfy_runtime::*;
 use util::{parse_gateway, parse_output_mode, print_json, read_payload, stable_id};
@@ -173,7 +174,7 @@ enum Cmd {
         command: Vec<String>,
     },
 
-    /// Shell adapter wrapper for runtimes that configure command execution through TFY.
+    /// Shell command surface: `tfy shell <command>` runs raw; `tfy shell -- <command>` uses the TFY gateway wrapper.
     Shell {
         #[arg(long, default_value = ".tfy/raw")]
         raw_dir: PathBuf,
@@ -272,7 +273,150 @@ enum Cmd {
         compactness: String,
     },
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ShellInvocationMode {
+    Gateway,
+    RawPassthrough,
+    TfyOptionWithoutSeparator(String),
+}
+
+fn classify_shell_invocation<I, S>(args: I) -> ShellInvocationMode
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let args: Vec<String> = args.into_iter().map(Into::into).collect();
+    let Some(shell_index) = args.iter().position(|arg| arg == "shell") else {
+        return ShellInvocationMode::Gateway;
+    };
+    let shell_args = &args[shell_index + 1..];
+    let mut seen_tfy_option: Option<String> = None;
+    let mut index = 0;
+    while index < shell_args.len() {
+        let arg = &shell_args[index];
+        if arg == "--" {
+            return ShellInvocationMode::Gateway;
+        }
+        if let Some(option) = recognized_tfy_shell_option(arg) {
+            seen_tfy_option.get_or_insert_with(|| option.name.to_string());
+            if option.takes_value && !arg.contains('=') {
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        return seen_tfy_option
+            .map(ShellInvocationMode::TfyOptionWithoutSeparator)
+            .unwrap_or(ShellInvocationMode::RawPassthrough);
+    }
+    seen_tfy_option
+        .map(ShellInvocationMode::TfyOptionWithoutSeparator)
+        .unwrap_or(ShellInvocationMode::Gateway)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShellOptionSpec {
+    name: &'static str,
+    takes_value: bool,
+    value_placeholder: &'static str,
+}
+
+const TFY_SHELL_OPTION_SPECS: &[ShellOptionSpec] = &[
+    ShellOptionSpec {
+        name: "--json",
+        takes_value: false,
+        value_placeholder: "",
+    },
+    ShellOptionSpec {
+        name: "--jsonl",
+        takes_value: false,
+        value_placeholder: "",
+    },
+    ShellOptionSpec {
+        name: "--raw-dir",
+        takes_value: true,
+        value_placeholder: "<dir>",
+    },
+    ShellOptionSpec {
+        name: "--ledger",
+        takes_value: true,
+        value_placeholder: "<path>",
+    },
+    ShellOptionSpec {
+        name: "--session-id",
+        takes_value: true,
+        value_placeholder: "<id>",
+    },
+    ShellOptionSpec {
+        name: "--request-id",
+        takes_value: true,
+        value_placeholder: "<id>",
+    },
+    ShellOptionSpec {
+        name: "--trace-id",
+        takes_value: true,
+        value_placeholder: "<id>",
+    },
+    ShellOptionSpec {
+        name: "--parent-event-id",
+        takes_value: true,
+        value_placeholder: "<id>",
+    },
+    ShellOptionSpec {
+        name: "--max-summary-bytes",
+        takes_value: true,
+        value_placeholder: "<bytes>",
+    },
+    ShellOptionSpec {
+        name: "--max-output-bytes",
+        takes_value: true,
+        value_placeholder: "<bytes>",
+    },
+];
+
+fn recognized_tfy_shell_option(arg: &str) -> Option<ShellOptionSpec> {
+    TFY_SHELL_OPTION_SPECS.iter().copied().find(|option| {
+        arg == option.name
+            || arg
+                .strip_prefix(option.name)
+                .is_some_and(|suffix| suffix.starts_with('='))
+    })
+}
+
+fn shell_option_guidance(option: &str) -> String {
+    let Some(spec) = TFY_SHELL_OPTION_SPECS
+        .iter()
+        .find(|spec| spec.name == option)
+    else {
+        return format!("tfy shell {option} -- <command>");
+    };
+    if spec.takes_value {
+        format!(
+            "tfy shell {} {} -- <command>",
+            spec.name, spec.value_placeholder
+        )
+    } else {
+        format!("tfy shell {} -- <command>", spec.name)
+    }
+}
+
+fn execute_shell_raw_passthrough(command: Vec<String>) -> Result<()> {
+    let Some((program, args)) = command.split_first() else {
+        anyhow::bail!("tfy shell requires a command; use `tfy shell -- <command>` for TFY gateway summarization");
+    };
+    let status = match Command::new(program).args(args).status() {
+        Ok(status) => status,
+        Err(err) => {
+            eprintln!("tfy shell: command launch failed for '{program}': {err}");
+            std::process::exit(127);
+        }
+    };
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 fn main() -> Result<()> {
+    let shell_invocation_mode = classify_shell_invocation(std::env::args().skip(1));
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Agent { cmd } => execute_agent(cmd)?,
@@ -353,21 +497,30 @@ fn main() -> Result<()> {
             trace_id,
             parent_event_id,
             command,
-        } => execute_structured_tool_gateway_with_origin(
-            command,
-            raw_dir,
-            max_summary_bytes,
-            json,
-            jsonl,
-            ledger,
-            session_id,
-            request_id,
-            trace_id,
-            parent_event_id,
-            AdapterKind::Shell,
-            Origin::agent_runtime(OriginHost::Generic, OriginInvocation::Wrapper),
-            RouteEvidence::generic_shell_adapter(),
-        )?,
+        } => match shell_invocation_mode {
+            ShellInvocationMode::RawPassthrough => execute_shell_raw_passthrough(command)?,
+            ShellInvocationMode::Gateway => execute_structured_tool_gateway_with_origin(
+                command,
+                raw_dir,
+                max_summary_bytes,
+                json,
+                jsonl,
+                ledger,
+                session_id,
+                request_id,
+                trace_id,
+                parent_event_id,
+                AdapterKind::Shell,
+                Origin::agent_runtime(OriginHost::Generic, OriginInvocation::Wrapper),
+                RouteEvidence::generic_shell_adapter(),
+            )?,
+            ShellInvocationMode::TfyOptionWithoutSeparator(option) => {
+                let guidance = shell_option_guidance(&option);
+                anyhow::bail!(
+                    "tfy shell option '{option}' requires the '--' command separator; use `{guidance}` for TFY gateway summarization or `tfy shell <command>` for raw passthrough"
+                );
+            }
+        },
         Cmd::RuntimeCapabilities => print_json(&AdapterCapabilities::cli_default())?,
         Cmd::RuntimeNegotiate {
             gateway,
