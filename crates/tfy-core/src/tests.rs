@@ -1,4 +1,5 @@
 use crate::*;
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 fn root() -> PathBuf {
@@ -1464,4 +1465,258 @@ fn suppressed_output_savings_pct_is_never_negative() {
     assert_eq!(summary.rendering_kind, "suppressed");
     assert_eq!(summary.savings_pct, 0.0);
     assert!(summary.model_text.len() > summary.raw_chars);
+}
+
+#[test]
+fn user_toml_rule_summarizes_custom_command_and_redacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+[[command]]
+id = "internal_build"
+match.argv_prefix = ["my-build", "run"]
+preserve_lines_matching = ["(?i)(error|warning|token)"]
+strip_lines_matching = ["(?i)^progress"]
+head_lines = 4
+tail_lines = 2
+max_lines = 8
+truncate_lines_at = 160
+on_empty = "internal_build: no relevant output"
+human_auto_safe = true
+agent_safe = true
+interactive_risk = "none"
+"#,
+        "user",
+    )
+    .unwrap();
+    let raw = format!(
+        "{}ERROR: failed with NPM_TOKEN=super-secret-value\nwarning: deprecated\n",
+        "progress downloading packages\n".repeat(120)
+    );
+    let argv = vec!["my-build".to_string(), "run".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "my-build run",
+        &argv,
+        &raw,
+        1,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rule_id.as_deref(), Some("internal_build"));
+    assert_eq!(summary.strategy_source_kind, "user");
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(summary.model_text.contains("strategy=user_toml"));
+    assert!(summary.model_text.contains("rule_id=internal_build"));
+    assert!(!summary.model_text.contains("super-secret-value"));
+    assert!(summary.model_text.contains("[REDACTED]"));
+}
+
+#[test]
+fn user_toml_rule_cannot_shadow_built_in_v1() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+[[command]]
+id = "shadow_df"
+match.argv_prefix = ["df"]
+preserve_lines_matching = ["(?i)filesystem"]
+max_lines = 8
+"#,
+        "user",
+    )
+    .unwrap();
+    let raw = "Filesystem      Size  Used Avail Use% Mounted on\n/dev/disk1s1    100G   95G    5G  95% /\n".repeat(40);
+    let argv = vec!["df".to_string()];
+    let summary =
+        summarize_command_output_with_rules("df", &argv, &raw, 0, dir.path(), Some(&rules))
+            .unwrap();
+    assert_eq!(summary.command_family, "df");
+    assert_eq!(summary.strategy_kind, "dsl");
+    assert_eq!(summary.rule_id, None);
+    assert!(summary
+        .command_rule_diagnostics
+        .iter()
+        .any(|d| d.code == "user_rule_shadowed_by_builtin"));
+}
+
+#[test]
+fn user_toml_strict_rejects_unknown_fields_and_invalid_regex() {
+    let unknown = r#"
+[[command]]
+id = "bad"
+match.argv_prefix = ["bad"]
+shell = "echo nope"
+"#;
+    assert!(CommandRuleSet::from_toml_str_strict(unknown, "user").is_err());
+    let invalid_regex = r#"
+[[command]]
+id = "bad_regex"
+match.argv_prefix = ["bad"]
+preserve_lines_matching = ["("]
+"#;
+    assert!(CommandRuleSet::from_toml_str_strict(invalid_regex, "user").is_err());
+}
+
+#[test]
+fn user_toml_long_summary_keeps_no_negative_passthrough() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+[[command]]
+id = "tiny"
+match.argv_prefix = ["tiny"]
+preserve_lines_matching = ["ok"]
+head_lines = 16
+tail_lines = 8
+max_lines = 32
+"#,
+        "user",
+    )
+    .unwrap();
+    let argv = vec!["tiny".to_string()];
+    let summary =
+        summarize_command_output_with_rules("tiny", &argv, "ok", 0, dir.path(), Some(&rules))
+            .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rendering_kind, "pass_through");
+    assert_eq!(summary.model_text, "ok");
+    assert_eq!(summary.savings_pct, 0.0);
+}
+
+#[test]
+fn user_toml_non_strict_keeps_valid_rules_when_one_rule_is_bad() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    std::fs::create_dir_all(&tfy).unwrap();
+    let rules = r#"
+[[command]]
+id = "valid"
+match.argv_prefix = ["custom"]
+preserve_lines_matching = ["ERROR"]
+max_lines = 8
+
+[[command]]
+id = "bad_regex"
+match.argv_prefix = ["bad"]
+preserve_lines_matching = ["("]
+"#;
+    std::fs::write(tfy.join("commands.toml"), rules).unwrap();
+    let hash = format!("{:x}", Sha256::digest(rules.as_bytes()));
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "command_rules": {"trusted": true, "rules_sha256": hash}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let rules = CommandRuleSet::load_standard(dir.path());
+    assert!(rules
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "user_rules_invalid_regex"));
+    let argv = vec!["custom".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "custom",
+        &argv,
+        &("noise\n".repeat(120) + "ERROR kept\n"),
+        1,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rule_id.as_deref(), Some("valid"));
+}
+
+#[test]
+fn user_toml_non_strict_reports_unknown_top_level_keys_with_valid_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    std::fs::create_dir_all(&tfy).unwrap();
+    let rules = r#"
+unknown = "typo"
+
+[[command]]
+id = "valid"
+match.argv_prefix = ["custom"]
+preserve_lines_matching = ["ERROR"]
+max_lines = 8
+"#;
+    std::fs::write(tfy.join("commands.toml"), rules).unwrap();
+    let hash = format!("{:x}", Sha256::digest(rules.as_bytes()));
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "command_rules": {"trusted": true, "rules_sha256": hash}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let rules = CommandRuleSet::load_standard(dir.path());
+    assert!(rules
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "user_rules_unsupported_field"));
+    let argv = vec!["custom".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "custom",
+        &argv,
+        &("noise\n".repeat(120) + "ERROR kept\n"),
+        1,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rule_id.as_deref(), Some("valid"));
+}
+
+#[test]
+fn user_toml_on_empty_does_not_leak_rule_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+[[command]]
+id = "empty_rule"
+match.argv_prefix = ["empty"]
+keep_lines_matching = ["NEVER_MATCHES"]
+max_lines = 8
+"#,
+        "user",
+    )
+    .unwrap();
+    let argv = vec!["empty".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "empty",
+        &argv,
+        &"noise\n".repeat(120),
+        0,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert!(summary
+        .model_text
+        .contains("empty_rule: no relevant output"));
+    assert!(!summary.model_text.contains("<memory>"));
+    assert!(!summary
+        .model_text
+        .contains(dir.path().to_string_lossy().as_ref()));
+}
+
+#[test]
+fn command_rule_diagnostic_deserializes_from_partial_object() {
+    let diagnostic: CommandRuleDiagnostic =
+        serde_json::from_str(r#"{"code":"repo_rules_untrusted"}"#).unwrap();
+    assert_eq!(diagnostic.code, "repo_rules_untrusted");
+    assert!(diagnostic.source_kind.is_empty());
+    assert!(diagnostic.path.is_empty());
+    assert!(diagnostic.message.is_empty());
 }

@@ -29,7 +29,25 @@ pub struct CommandSummary {
     pub human_auto_safe: bool,
     pub agent_safe: bool,
     pub interactive_risk: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub strategy_source_kind: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command_rule_diagnostics: Vec<CommandRuleDiagnostic>,
     pub output_sha256: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandRuleDiagnostic {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,6 +193,523 @@ pub enum ToolPolicy {
     GitGithub,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CommandRuleSet {
+    rules: Vec<CommandRule>,
+    diagnostics: Vec<CommandRuleDiagnostic>,
+}
+
+#[derive(Debug, Clone)]
+struct CommandRule {
+    id: String,
+    source_kind: String,
+    argv_prefix: Vec<String>,
+    command_regex: Option<Regex>,
+    filter: RuntimeFilter,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeFilter {
+    strip_ansi: bool,
+    strip_lines_matching: Vec<Regex>,
+    keep_lines_matching: Vec<Regex>,
+    preserve_lines_matching: Vec<Regex>,
+    truncate_lines_at: usize,
+    head_lines: usize,
+    tail_lines: usize,
+    max_lines: usize,
+    on_empty: String,
+    human_auto_safe: bool,
+    agent_safe: bool,
+    interactive_risk: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRulesFile {
+    #[serde(default)]
+    command: Vec<CommandRuleToml>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleToml {
+    id: String,
+    #[serde(default, rename = "description")]
+    _description: Option<String>,
+    #[serde(default, rename = "match")]
+    match_config: CommandRuleMatchToml,
+    #[serde(default = "default_true")]
+    strip_ansi: bool,
+    #[serde(default)]
+    preserve_lines_matching: Vec<String>,
+    #[serde(default)]
+    strip_lines_matching: Vec<String>,
+    #[serde(default)]
+    keep_lines_matching: Vec<String>,
+    #[serde(default = "default_truncate_lines_at")]
+    truncate_lines_at: usize,
+    #[serde(default = "default_head_lines")]
+    head_lines: usize,
+    #[serde(default = "default_tail_lines")]
+    tail_lines: usize,
+    #[serde(default = "default_max_lines")]
+    max_lines: usize,
+    #[serde(default)]
+    on_empty: String,
+    #[serde(default)]
+    human_auto_safe: bool,
+    #[serde(default = "default_true")]
+    agent_safe: bool,
+    #[serde(default = "default_interactive_risk")]
+    interactive_risk: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleMatchToml {
+    #[serde(default)]
+    argv_prefix: Vec<String>,
+    #[serde(default)]
+    command_regex: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_truncate_lines_at() -> usize {
+    180
+}
+
+fn default_head_lines() -> usize {
+    16
+}
+
+fn default_tail_lines() -> usize {
+    8
+}
+
+fn default_max_lines() -> usize {
+    32
+}
+
+fn default_interactive_risk() -> String {
+    "none".into()
+}
+
+impl CommandRuleDiagnostic {
+    fn new(source_kind: &str, path: &Path, code: &str, message: impl Into<String>) -> Self {
+        Self {
+            source_kind: source_kind.into(),
+            path: path.display().to_string(),
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl CommandRuleSet {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn diagnostics(&self) -> &[CommandRuleDiagnostic] {
+        &self.diagnostics
+    }
+
+    pub fn load_standard(cwd: impl AsRef<Path>) -> Self {
+        let cwd = cwd.as_ref();
+        let mut set = Self::default();
+        let repo_rules = find_repo_rules(cwd);
+        if let Some(repo_rules) = repo_rules {
+            let trust = repo_rules.parent().unwrap_or(cwd).join("trust.json");
+            match repo_rules_trusted(&repo_rules, &trust) {
+                Ok(true) => set.load_file_non_strict(&repo_rules, "repo"),
+                Ok(false) => set.diagnostics.push(CommandRuleDiagnostic::new(
+                    "repo",
+                    &repo_rules,
+                    "repo_rules_untrusted",
+                    "repo-local command rules are not trusted; run tfy trust command-rules after reviewing them",
+                )),
+                Err(message) => set.diagnostics.push(CommandRuleDiagnostic::new(
+                    "repo",
+                    &repo_rules,
+                    "repo_rules_hash_mismatch",
+                    message.to_string(),
+                )),
+            }
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            let user_rules = PathBuf::from(home)
+                .join(".config")
+                .join("tfy")
+                .join("commands.toml");
+            if user_rules.exists() {
+                set.load_file_non_strict(&user_rules, "user");
+            }
+        }
+        set
+    }
+
+    pub fn load_strict(path: impl AsRef<Path>, source_kind: &str) -> Result<Self> {
+        let path = path.as_ref();
+        let text = fs::read_to_string(path)
+            .map_err(|err| anyhow::anyhow!("read {}: {err}", path.display()))?;
+        let rules = parse_command_rules_strict(&text, source_kind, path)?;
+        Ok(Self {
+            rules,
+            diagnostics: Vec::new(),
+        })
+    }
+
+    pub fn from_toml_str_strict(text: &str, source_kind: &str) -> Result<Self> {
+        Ok(Self {
+            rules: parse_command_rules_strict(text, source_kind, Path::new("<memory>"))?,
+            diagnostics: Vec::new(),
+        })
+    }
+
+    fn load_file_non_strict(&mut self, path: &Path, source_kind: &str) {
+        match fs::read_to_string(path) {
+            Ok(text) => {
+                let (mut rules, mut diagnostics) =
+                    parse_command_rules_non_strict(&text, source_kind, path);
+                self.rules.append(&mut rules);
+                self.diagnostics.append(&mut diagnostics);
+            }
+            Err(err) => self.diagnostics.push(CommandRuleDiagnostic::new(
+                source_kind,
+                path,
+                "user_rules_invalid_toml",
+                format!("read {}: {err}", path.display()),
+            )),
+        }
+    }
+
+    fn first_match<'a>(
+        &'a self,
+        argv: &[String],
+        command_display: &str,
+    ) -> Option<&'a CommandRule> {
+        self.rules
+            .iter()
+            .find(|rule| rule.matches(argv, command_display))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn summary_candidate(
+        &self,
+        argv: &[String],
+        command_display: &str,
+        code: i32,
+        raw: &str,
+        evidence: &[String],
+        rr: &str,
+        risk: &str,
+    ) -> Option<UserRuleSummaryCandidate> {
+        let rule = self.first_match(argv, command_display)?;
+        let filtered = apply_runtime_filter(&rule.filter, raw)?;
+        let mut lines = vec![format!(
+            "TFY command summary: {} strategy=user_toml rule_id={} source={} exit={code} cmd={command_display}",
+            risk.to_uppercase(),
+            rule.id,
+            rule.source_kind
+        )];
+        lines.push(format!(
+            "- selected_lines={} original_lines={}",
+            filtered.selected_lines,
+            raw.lines().count()
+        ));
+        for line in filtered.preserved.iter().take(8) {
+            lines.push(format!("- preserved: {line}"));
+        }
+        for line in filtered.lines.iter().take(rule.filter.max_lines) {
+            lines.push(format!("- {line}"));
+        }
+        if risk != "success" {
+            lines.extend(evidence.iter().take(5).map(|e| format!("- evidence: {e}")));
+        }
+        lines.push(format!("raw_ref={rr}"));
+        lines.push(String::new());
+        Some(UserRuleSummaryCandidate {
+            text: lines.join("\n"),
+            rule_id: rule.id.clone(),
+            strategy_source_kind: rule.source_kind.clone(),
+            human_auto_safe: rule.filter.human_auto_safe,
+            agent_safe: rule.filter.agent_safe,
+            interactive_risk: rule.filter.interactive_risk.clone(),
+        })
+    }
+}
+
+struct UserRuleSummaryCandidate {
+    text: String,
+    rule_id: String,
+    strategy_source_kind: String,
+    human_auto_safe: bool,
+    agent_safe: bool,
+    interactive_risk: String,
+}
+
+impl CommandRule {
+    fn matches(&self, argv: &[String], command_display: &str) -> bool {
+        let argv_matches = !self.argv_prefix.is_empty()
+            && argv.len() >= self.argv_prefix.len()
+            && argv
+                .iter()
+                .zip(self.argv_prefix.iter())
+                .all(|(actual, expected)| actual == expected);
+        argv_matches
+            || self
+                .command_regex
+                .as_ref()
+                .is_some_and(|re| re.is_match(command_display))
+    }
+}
+
+fn find_repo_rules(cwd: &Path) -> Option<PathBuf> {
+    cwd.ancestors()
+        .map(|dir| dir.join(".tfy").join("commands.toml"))
+        .find(|path| path.exists())
+}
+
+fn repo_rules_trusted(rules_path: &Path, trust_path: &Path) -> Result<bool> {
+    if !trust_path.exists() {
+        return Ok(false);
+    }
+    let trust_text = fs::read_to_string(trust_path)?;
+    let trust: serde_json::Value = serde_json::from_str(&trust_text)?;
+    if trust["schema_version"].as_u64() != Some(1)
+        || trust["command_rules"]["trusted"].as_bool() != Some(true)
+    {
+        return Ok(false);
+    }
+    let Some(expected) = trust["command_rules"]["rules_sha256"].as_str() else {
+        return Ok(false);
+    };
+    let actual = sha256_hex(&fs::read(rules_path)?);
+    if expected == actual {
+        Ok(true)
+    } else {
+        bail!("repo-local command rules changed after trust; expected sha256 {expected}, got {actual}")
+    }
+}
+
+fn parse_command_rules_strict(
+    text: &str,
+    source_kind: &str,
+    path: &Path,
+) -> Result<Vec<CommandRule>> {
+    let parsed: CommandRulesFile =
+        toml::from_str(text).map_err(|err| anyhow::anyhow!("invalid TOML: {err}"))?;
+    let mut ids = std::collections::BTreeSet::new();
+    parsed
+        .command
+        .into_iter()
+        .map(|rule| build_command_rule(rule, source_kind, &mut ids))
+        .collect::<Result<Vec<_>>>()
+        .map_err(|err| anyhow::anyhow!("{}: {err}", path.display()))
+}
+
+fn parse_command_rules_non_strict(
+    text: &str,
+    source_kind: &str,
+    path: &Path,
+) -> (Vec<CommandRule>, Vec<CommandRuleDiagnostic>) {
+    let parsed = match text.parse::<toml::Value>() {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return (
+                Vec::new(),
+                vec![CommandRuleDiagnostic::new(
+                    source_kind,
+                    path,
+                    "user_rules_invalid_toml",
+                    format!("invalid TOML: {err}"),
+                )],
+            );
+        }
+    };
+
+    let mut diagnostics = Vec::new();
+    if let Some(table) = parsed.as_table() {
+        for key in table.keys().filter(|key| key.as_str() != "command") {
+            diagnostics.push(CommandRuleDiagnostic::new(
+                source_kind,
+                path,
+                "user_rules_unsupported_field",
+                format!("unknown top-level field {key:?}"),
+            ));
+        }
+    }
+    let Some(commands) = parsed.get("command") else {
+        return (Vec::new(), diagnostics);
+    };
+    let Some(commands) = commands.as_array() else {
+        return (
+            Vec::new(),
+            vec![CommandRuleDiagnostic::new(
+                source_kind,
+                path,
+                "user_rules_invalid_toml",
+                "command rules must use [[command]] arrays",
+            )],
+        );
+    };
+
+    let mut ids = std::collections::BTreeSet::new();
+    let mut rules = Vec::new();
+    for (index, value) in commands.iter().enumerate() {
+        let raw_rule = match value.clone().try_into::<CommandRuleToml>() {
+            Ok(rule) => rule,
+            Err(err) => {
+                diagnostics.push(CommandRuleDiagnostic::new(
+                    source_kind,
+                    path,
+                    diagnostic_code_from_message(&err.to_string()),
+                    format!("command[{index}]: {err}"),
+                ));
+                continue;
+            }
+        };
+        match build_command_rule(raw_rule, source_kind, &mut ids) {
+            Ok(rule) => rules.push(rule),
+            Err(err) => diagnostics.push(CommandRuleDiagnostic::new(
+                source_kind,
+                path,
+                diagnostic_code_from_message(&err.to_string()),
+                format!("command[{index}]: {err}"),
+            )),
+        }
+    }
+    (rules, diagnostics)
+}
+
+fn build_command_rule(
+    rule: CommandRuleToml,
+    source_kind: &str,
+    ids: &mut std::collections::BTreeSet<String>,
+) -> Result<CommandRule> {
+    if rule.id.trim().is_empty() {
+        bail!("command rule id must not be empty");
+    }
+    if !ids.insert(rule.id.clone()) {
+        bail!("duplicate command rule id: {}", rule.id);
+    }
+    if rule.match_config.argv_prefix.is_empty()
+        && rule
+            .match_config
+            .command_regex
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+    {
+        bail!(
+            "command rule {} needs match.argv_prefix or match.command_regex",
+            rule.id
+        );
+    }
+    validate_limit(rule.truncate_lines_at, 10_000, "truncate_lines_at")?;
+    validate_limit(rule.head_lines, 1_000, "head_lines")?;
+    validate_limit(rule.tail_lines, 1_000, "tail_lines")?;
+    validate_limit(rule.max_lines, 1_000, "max_lines")?;
+    validate_limit(rule.on_empty.chars().count(), 512, "on_empty")?;
+    validate_pattern_list(&rule.preserve_lines_matching, "preserve_lines_matching")?;
+    validate_pattern_list(&rule.strip_lines_matching, "strip_lines_matching")?;
+    validate_pattern_list(&rule.keep_lines_matching, "keep_lines_matching")?;
+    if !matches!(
+        rule.interactive_risk.as_str(),
+        "none" | "possible" | "unknown"
+    ) {
+        bail!(
+            "command rule {} has invalid interactive_risk {}",
+            rule.id,
+            rule.interactive_risk
+        );
+    }
+    let command_regex = rule
+        .match_config
+        .command_regex
+        .as_deref()
+        .filter(|pattern| !pattern.is_empty())
+        .map(|pattern| compile_user_regex(pattern, "command_regex"))
+        .transpose()?;
+    Ok(CommandRule {
+        id: rule.id.clone(),
+        source_kind: source_kind.into(),
+        argv_prefix: rule.match_config.argv_prefix,
+        command_regex,
+        filter: RuntimeFilter {
+            strip_ansi: rule.strip_ansi,
+            strip_lines_matching: compile_user_regexes(&rule.strip_lines_matching)?,
+            keep_lines_matching: compile_user_regexes(&rule.keep_lines_matching)?,
+            preserve_lines_matching: compile_user_regexes(&rule.preserve_lines_matching)?,
+            truncate_lines_at: rule.truncate_lines_at,
+            head_lines: rule.head_lines,
+            tail_lines: rule.tail_lines,
+            max_lines: rule.max_lines,
+            on_empty: if rule.on_empty.is_empty() {
+                format!("{}: no relevant output", rule.id)
+            } else {
+                cap_to_chars(&norm(&redact_public(&rule.on_empty)), 512)
+            },
+            human_auto_safe: rule.human_auto_safe,
+            agent_safe: rule.agent_safe,
+            interactive_risk: rule.interactive_risk,
+        },
+    })
+}
+
+fn validate_limit(value: usize, max: usize, name: &str) -> Result<()> {
+    if value > max {
+        bail!("{name} exceeds max {max}");
+    }
+    Ok(())
+}
+
+fn validate_pattern_list(patterns: &[String], name: &str) -> Result<()> {
+    if patterns.len() > 64 {
+        bail!("{name} has too many patterns");
+    }
+    for pattern in patterns {
+        if pattern.len() > 512 {
+            bail!("{name} pattern exceeds 512 bytes");
+        }
+    }
+    Ok(())
+}
+
+fn compile_user_regexes(patterns: &[String]) -> Result<Vec<Regex>> {
+    patterns
+        .iter()
+        .map(|pattern| compile_user_regex(pattern, "pattern"))
+        .collect()
+}
+
+fn compile_user_regex(pattern: &str, label: &str) -> Result<Regex> {
+    if pattern.len() > 512 {
+        bail!("{label} exceeds 512 bytes");
+    }
+    Regex::new(pattern).map_err(|err| anyhow::anyhow!("invalid regex {pattern:?}: {err}"))
+}
+
+fn diagnostic_code_from_message(message: &str) -> &'static str {
+    if message.contains("unknown field") || message.contains("unknown top-level field") {
+        "user_rules_unsupported_field"
+    } else if message.contains("invalid TOML") {
+        "user_rules_invalid_toml"
+    } else if message.contains("regex") {
+        "user_rules_invalid_regex"
+    } else if message.contains("duplicate") {
+        "user_rules_duplicate_id"
+    } else if message.contains("exceeds") || message.contains("too many patterns") {
+        "user_rules_unsafe_limit"
+    } else {
+        "user_rules_unsupported_field"
+    }
+}
+
 struct StoredRaw {
     raw_ref: String,
     output_sha256: String,
@@ -298,15 +833,27 @@ pub fn run_command(
     raw_dir: impl AsRef<Path>,
     max_summary_bytes: usize,
 ) -> Result<CommandSummary> {
+    run_command_with_rules(command, cwd, raw_dir, max_summary_bytes, None)
+}
+
+pub fn run_command_with_rules(
+    command: &[String],
+    cwd: Option<&Path>,
+    raw_dir: impl AsRef<Path>,
+    max_summary_bytes: usize,
+    rules: Option<&CommandRuleSet>,
+) -> Result<CommandSummary> {
     let store = RawStore::new(raw_dir)?;
     if command.is_empty() {
-        return compress(
+        return compress_with_rules(
             &store,
+            &[],
             "",
             "[tfy: command launch failed] empty command\n",
             127,
             Some(max_summary_bytes),
             ToolPolicy::Auto,
+            rules,
         );
     }
     let mut cmd = Command::new(&command[0]);
@@ -323,14 +870,17 @@ pub fn run_command(
             compress_bytes(
                 &store,
                 &command.join(" "),
+                Some(command),
                 &raw,
                 out.status.code().unwrap_or(-1),
                 Some(max_summary_bytes),
                 ToolPolicy::Auto,
+                rules,
             )
         }
-        Err(e) => compress(
+        Err(e) => compress_with_rules(
             &store,
+            command,
             &command.join(" "),
             &format!(
                 "[tfy: command launch failed] {}: {}\n",
@@ -340,6 +890,7 @@ pub fn run_command(
             127,
             Some(max_summary_bytes),
             ToolPolicy::Auto,
+            rules,
         ),
     }
 }
@@ -379,44 +930,75 @@ pub fn summarize_command_output_with_policy(
     policy: ToolPolicy,
 ) -> Result<CommandSummary> {
     let store = RawStore::new(raw_dir)?;
-    compress(&store, command, raw, exit_code, None, policy)
+    compress_with_rules(&store, &[], command, raw, exit_code, None, policy, None)
 }
 
-fn compress(
+pub fn summarize_command_output_with_rules(
+    command: &str,
+    argv: &[String],
+    raw: &str,
+    exit_code: i32,
+    raw_dir: impl AsRef<Path>,
+    rules: Option<&CommandRuleSet>,
+) -> Result<CommandSummary> {
+    let store = RawStore::new(raw_dir)?;
+    compress_with_rules(
+        &store,
+        argv,
+        command,
+        raw,
+        exit_code,
+        None,
+        ToolPolicy::Auto,
+        rules,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compress_with_rules(
     store: &RawStore,
+    argv: &[String],
     command: &str,
     raw: &str,
     exit_code: i32,
     max_summary_bytes: Option<usize>,
     requested_policy: ToolPolicy,
+    rules: Option<&CommandRuleSet>,
 ) -> Result<CommandSummary> {
     compress_bytes(
         store,
         command,
+        Some(argv),
         raw.as_bytes(),
         exit_code,
         max_summary_bytes,
         requested_policy,
+        rules,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compress_bytes(
     store: &RawStore,
     command: &str,
+    argv: Option<&[String]>,
     raw_bytes: &[u8],
     exit_code: i32,
     max_summary_bytes: Option<usize>,
     requested_policy: ToolPolicy,
+    rules: Option<&CommandRuleSet>,
 ) -> Result<CommandSummary> {
     let raw_ref = store.put_bytes(command, raw_bytes, exit_code)?;
     let raw = String::from_utf8_lossy(raw_bytes);
     compress_with_raw_ref(
         command,
+        argv.unwrap_or(&[]),
         &raw,
         raw_bytes.len(),
         exit_code,
         max_summary_bytes,
         requested_policy,
+        rules,
         StoredRaw {
             raw_ref,
             output_sha256: sha256_hex(raw_bytes),
@@ -424,13 +1006,16 @@ fn compress_bytes(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compress_with_raw_ref(
     command: &str,
+    argv: &[String],
     raw: &str,
     raw_len: usize,
     exit_code: i32,
     max_summary_bytes: Option<usize>,
     requested_policy: ToolPolicy,
+    rules: Option<&CommandRuleSet>,
     stored_raw: StoredRaw,
 ) -> Result<CommandSummary> {
     let raw_ref = stored_raw.raw_ref;
@@ -461,15 +1046,61 @@ fn compress_with_raw_ref(
         &policy,
     );
     let display_command = redact_public(command);
-    let summary_candidate = registry
-        .summary_candidate(StrategySummaryInput {
-            family: &command_family,
-            cmd: &display_command,
-            code: exit_code,
-            raw,
-            evidence: &evidence,
-            rr: &raw_ref,
-            risk: &risk,
+    let mut strategy_kind = strategy_metadata.strategy_kind;
+    let mut human_auto_safe = strategy_metadata.human_auto_safe;
+    let mut agent_safe = strategy_metadata.agent_safe;
+    let mut interactive_risk = strategy_metadata.interactive_risk;
+    let mut rule_id = None;
+    let mut strategy_source_kind = if strategy_kind == "generic" {
+        "none".to_string()
+    } else {
+        "built_in".to_string()
+    };
+    let mut command_rule_diagnostics = rules
+        .map(|rules| rules.diagnostics().to_vec())
+        .unwrap_or_default();
+    let built_in_candidate = registry.summary_candidate(StrategySummaryInput {
+        family: &command_family,
+        cmd: &display_command,
+        code: exit_code,
+        raw,
+        evidence: &evidence,
+        rr: &raw_ref,
+        risk: &risk,
+    });
+    if built_in_candidate.is_some() {
+        if let Some(rule_set) = rules {
+            if let Some(rule) = rule_set.first_match(argv, &display_command) {
+                command_rule_diagnostics.push(CommandRuleDiagnostic {
+                    source_kind: rule.source_kind.clone(),
+                    path: String::new(),
+                    code: "user_rule_shadowed_by_builtin".into(),
+                    message: format!(
+                        "user command rule {} matched but built-in strategy {strategy_kind} kept precedence",
+                        rule.id
+                    ),
+                });
+            }
+        }
+    }
+    let summary_candidate = built_in_candidate
+        .or_else(|| {
+            let user_candidate = rules?.summary_candidate(
+                argv,
+                &display_command,
+                exit_code,
+                raw,
+                &evidence,
+                &raw_ref,
+                &risk,
+            )?;
+            strategy_kind = "user_toml".into();
+            human_auto_safe = user_candidate.human_auto_safe;
+            agent_safe = user_candidate.agent_safe;
+            interactive_risk = user_candidate.interactive_risk;
+            rule_id = Some(user_candidate.rule_id);
+            strategy_source_kind = user_candidate.strategy_source_kind;
+            Some(user_candidate.text)
         })
         .unwrap_or_else(|| match risk.as_str() {
             "critical" => critical(&display_command, exit_code, &evidence, &raw_ref),
@@ -494,10 +1125,13 @@ fn compress_with_raw_ref(
         raw_ref,
         evidence,
         command_family,
-        strategy_kind: strategy_metadata.strategy_kind,
-        human_auto_safe: strategy_metadata.human_auto_safe,
-        agent_safe: strategy_metadata.agent_safe,
-        interactive_risk: strategy_metadata.interactive_risk,
+        strategy_kind,
+        human_auto_safe,
+        agent_safe,
+        interactive_risk,
+        rule_id,
+        strategy_source_kind,
+        command_rule_diagnostics,
         output_sha256,
     })
 }
@@ -1499,6 +2133,63 @@ fn apply_built_in_filter(filter: &BuiltInFilter, raw: &str) -> Option<FilteredOu
     }
     if lines.is_empty() && !filter.on_empty.is_empty() {
         lines.push(filter.on_empty.to_string());
+    }
+    let selected_lines = lines.len();
+    lines = select_head_tail(
+        lines,
+        filter.head_lines,
+        filter.tail_lines,
+        filter.max_lines,
+    );
+    Some(FilteredOutput {
+        lines,
+        preserved,
+        selected_lines,
+    })
+}
+
+fn apply_runtime_filter(filter: &RuntimeFilter, raw: &str) -> Option<FilteredOutput> {
+    let text = if filter.strip_ansi {
+        strip_ansi_sequences(raw)
+    } else {
+        raw.to_string()
+    };
+    let mut lines = Vec::new();
+    let mut preserved = Vec::new();
+    for line in text.lines() {
+        let redacted = redact_public(line);
+        let normalized = cap_to_chars(&norm(&redacted), filter.truncate_lines_at);
+        if normalized.is_empty()
+            || filter
+                .strip_lines_matching
+                .iter()
+                .any(|re| re.is_match(&normalized))
+        {
+            continue;
+        }
+        let is_preserved = filter
+            .preserve_lines_matching
+            .iter()
+            .any(|re| re.is_match(&normalized));
+        if is_preserved {
+            push(&mut preserved, normalized.clone());
+        }
+        if !filter.keep_lines_matching.is_empty()
+            && !filter
+                .keep_lines_matching
+                .iter()
+                .any(|re| re.is_match(&normalized))
+            && !is_preserved
+        {
+            continue;
+        }
+        lines.push(normalized);
+    }
+    if lines.is_empty() && !filter.on_empty.is_empty() {
+        lines.push(cap_to_chars(
+            &norm(&redact_public(&filter.on_empty)),
+            filter.truncate_lines_at.min(512),
+        ));
     }
     let selected_lines = lines.len();
     lines = select_head_tail(

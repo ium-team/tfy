@@ -47,6 +47,23 @@ fn adapter_run_intercepts_command_without_json_leakage_and_records_report() {
     assert_eq!(json["commands"], 1);
     assert_eq!(json["rendering_counts"]["pass_through"], 1);
     assert!(json["raw_refs"].as_array().unwrap().len() == 1);
+
+    let text_report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "adapter",
+            "report",
+            "--session",
+            "s-adapter",
+            "--ledger",
+            ledger.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(text_report.status.success());
+    let text = String::from_utf8_lossy(&text_report.stdout);
+    assert!(text.contains("rule_counts="), "{text}");
+    assert!(text.contains("strategy_source_counts="), "{text}");
+    assert!(text.contains("command_rule_diagnostic_counts="), "{text}");
 }
 
 #[test]

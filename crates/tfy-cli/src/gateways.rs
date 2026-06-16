@@ -122,6 +122,11 @@ pub(crate) fn tool_gateway_envelopes(
     i32,
 )> {
     let summary = run_tool_command(command, raw_dir, max_summary_bytes)?;
+    let command_rule_diagnostics = summary
+        .command_rule_diagnostics
+        .iter()
+        .map(runtime_command_rule_diagnostic)
+        .collect::<Vec<_>>();
     let request_id = request_id.unwrap_or_else(|| {
         stable_id(&format!(
             "tool:{}:{}:{}",
@@ -149,6 +154,9 @@ pub(crate) fn tool_gateway_envelopes(
             human_auto_safe: summary.human_auto_safe,
             agent_safe: summary.agent_safe,
             interactive_risk: summary.interactive_risk.clone(),
+            rule_id: summary.rule_id.clone(),
+            strategy_source_kind: summary.strategy_source_kind.clone(),
+            command_rule_diagnostics: command_rule_diagnostics.clone(),
             summary: summary.summary.clone(),
             model_text: summary.model_text.clone(),
             rendering_kind: summary.rendering_kind.clone(),
@@ -177,6 +185,9 @@ pub(crate) fn tool_gateway_envelopes(
             human_auto_safe: summary.human_auto_safe,
             agent_safe: summary.agent_safe,
             interactive_risk: summary.interactive_risk,
+            rule_id: summary.rule_id,
+            strategy_source_kind: summary.strategy_source_kind,
+            command_rule_diagnostics,
             raw_ref: summary.raw_ref,
             raw_bytes,
             model_bytes,
@@ -369,7 +380,26 @@ fn run_tool_command(
     if command.first().map(|s| s == "--").unwrap_or(false) {
         command.remove(0);
     }
-    run_command(&command, None, raw_dir, max_summary_bytes)
+    let cwd = std::env::current_dir()?;
+    let rules = CommandRuleSet::load_standard(&cwd);
+    for diagnostic in rules.diagnostics() {
+        eprintln!(
+            "tfy command-rules diagnostic: code={} source={} path={} message={}",
+            diagnostic.code, diagnostic.source_kind, diagnostic.path, diagnostic.message
+        );
+    }
+    run_command_with_rules(&command, None, raw_dir, max_summary_bytes, Some(&rules))
+}
+
+fn runtime_command_rule_diagnostic(
+    diagnostic: &tfy_core::CommandRuleDiagnostic,
+) -> tfy_runtime::CommandRuleDiagnostic {
+    tfy_runtime::CommandRuleDiagnostic {
+        source_kind: diagnostic.source_kind.clone(),
+        path: diagnostic.path.clone(),
+        code: diagnostic.code.clone(),
+        message: diagnostic.message.clone(),
+    }
 }
 
 pub(crate) fn execute_context_gateway(
