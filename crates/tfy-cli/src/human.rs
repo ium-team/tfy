@@ -26,6 +26,9 @@ pub(crate) enum HumanCmd {
         ledger: PathBuf,
         #[arg(long, default_value = "bash")]
         shell: String,
+        /// Disable allowlisted auto-wrappers and keep only the managed shell environment.
+        #[arg(long)]
+        no_auto_intercept: bool,
     },
     /// Generate a sourceable Linux bash integration script for a TFY-managed human session.
     Install {
@@ -84,7 +87,8 @@ pub(crate) fn execute_human(cmd: HumanCmd) -> Result<()> {
             raw_dir,
             ledger,
             shell,
-        } => execute_human_shell(&session, &raw_dir, &ledger, &shell),
+            no_auto_intercept,
+        } => execute_human_shell(&session, &raw_dir, &ledger, &shell, !no_auto_intercept),
         HumanCmd::Install {
             dry_run,
             output,
@@ -136,12 +140,21 @@ fn ensure_supported_shell(shell: &str) -> Result<()> {
     Ok(())
 }
 
-fn execute_human_shell(session: &str, raw_dir: &Path, ledger: &Path, shell: &str) -> Result<()> {
+pub(crate) fn execute_human_shell(
+    session: &str,
+    raw_dir: &Path,
+    ledger: &Path,
+    shell: &str,
+    auto_intercept: bool,
+) -> Result<()> {
     ensure_supported_shell(shell)?;
     let integration_dir = PathBuf::from(".tfy/human");
     fs::create_dir_all(&integration_dir).context("create .tfy/human")?;
     let rcfile = integration_dir.join("session.bashrc");
-    write_owned_script(&rcfile, &human_script(session, raw_dir, ledger, shell)?)?;
+    write_owned_script(
+        &rcfile,
+        &human_script(session, raw_dir, ledger, shell, auto_intercept)?,
+    )?;
     let status = Command::new(shell)
         .arg("--rcfile")
         .arg(&rcfile)
@@ -150,6 +163,17 @@ fn execute_human_shell(session: &str, raw_dir: &Path, ledger: &Path, shell: &str
         .env("TFY_HUMAN_SESSION", session)
         .env("TFY_HUMAN_RAW_DIR", raw_dir)
         .env("TFY_HUMAN_LEDGER", ledger)
+        .env(
+            "TFY_HUMAN_ROOT",
+            std::env::current_dir()?
+                .canonicalize()?
+                .display()
+                .to_string(),
+        )
+        .env(
+            "TFY_HUMAN_AUTO_INTERCEPT",
+            if auto_intercept { "1" } else { "0" },
+        )
         .status()
         .with_context(|| format!("launch {shell} for TFY human session"))?;
     std::process::exit(status.code().unwrap_or(1));
@@ -164,14 +188,14 @@ fn execute_human_install(
     shell: &str,
 ) -> Result<()> {
     ensure_supported_shell(shell)?;
-    let script = human_script(session, raw_dir, ledger, shell)?;
+    let script = human_script(session, raw_dir, ledger, shell, true)?;
     if dry_run || output.is_none() {
         let path = output
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| ".tfy/human/session.bashrc".into());
         println!("TFY human install dry-run");
-        println!("shell=bash status=supported scope=explicit_tfy_managed_session_only");
+        println!("shell=bash status=supported scope=project_scoped_tfy_managed_session");
         println!("would_write={path}");
         println!("source_command=source {}", shell_quote(&path));
         println!("script:\n{script}");
@@ -228,8 +252,13 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn human_script(session: &str, raw_dir: &Path, ledger: &Path, shell: &str) -> Result<String> {
-    ensure_supported_shell(shell)?;
+fn human_script(
+    session: &str,
+    raw_dir: &Path,
+    ledger: &Path,
+    _shell: &str,
+    auto_intercept: bool,
+) -> Result<String> {
     let session = shell_quote(session);
     let raw_dir = shell_quote(&raw_dir.display().to_string());
     let ledger = shell_quote(&ledger.display().to_string());
@@ -237,18 +266,62 @@ fn human_script(session: &str, raw_dir: &Path, ledger: &Path, shell: &str) -> Re
     script.push_str(START_MARKER);
     script.push('\n');
     script.push_str("# TFY-managed human shell integration. Source only in shells where you want TFY command summaries.\n");
-    script.push_str("# This is not global terminal interception; it only wraps the allowlisted functions below.\n");
-    script.push_str(&format!("export TFY_HUMAN_ACTIVE=1\nexport TFY_HUMAN_SESSION={}\nexport TFY_HUMAN_RAW_DIR={}\nexport TFY_HUMAN_LEDGER={}\n", session, raw_dir, ledger));
-    script.push_str("export PS1=\"(tfy-human) ${PS1:-$ }\"\n");
-    script.push_str("_tfy_human_run() {\n  if [ \"${TFY_HUMAN_BYPASS:-}\" = \"1\" ]; then\n    command \"$@\"\n    return $?\n  fi\n  TFY_HUMAN_BYPASS=1 command tfy human run --session \"${TFY_HUMAN_SESSION:-human}\" --raw-dir \"${TFY_HUMAN_RAW_DIR:-.tfy/raw}\" --ledger \"${TFY_HUMAN_LEDGER:-.tfy/human/ledger.jsonl}\" -- \"$@\"\n}\n");
-    for command in ALLOWLIST {
-        script.push_str(&format!(
-            "{0}() {{\n  _tfy_human_run {0} \"$@\"\n}}\n",
-            command
-        ));
+    script.push_str("# This is not global terminal interception; it routes commands only inside this managed bash session.\n");
+    script.push_str(&format!(
+        "export TFY_HUMAN_ACTIVE=1\nexport TFY_HUMAN_SESSION={}\n",
+        session
+    ));
+    script.push_str("TFY_HUMAN_ROOT=\"$(cd -P -- \"${TFY_HUMAN_ROOT:-$PWD}\" 2>/dev/null && pwd -P)\" || TFY_HUMAN_ROOT=\"${TFY_HUMAN_ROOT:-$PWD}\"\nexport TFY_HUMAN_ROOT\n");
+    script.push_str(&format!(
+        "TFY_HUMAN_RAW_DIR_INPUT={}\ncase \"$TFY_HUMAN_RAW_DIR_INPUT\" in\n  /*) export TFY_HUMAN_RAW_DIR=\"$TFY_HUMAN_RAW_DIR_INPUT\" ;;\n  *) export TFY_HUMAN_RAW_DIR=\"${{TFY_HUMAN_ROOT%/}}/$TFY_HUMAN_RAW_DIR_INPUT\" ;;\nesac\n",
+        raw_dir
+    ));
+    script.push_str(&format!(
+        "TFY_HUMAN_LEDGER_INPUT={}\ncase \"$TFY_HUMAN_LEDGER_INPUT\" in\n  /*) export TFY_HUMAN_LEDGER=\"$TFY_HUMAN_LEDGER_INPUT\" ;;\n  *) export TFY_HUMAN_LEDGER=\"${{TFY_HUMAN_ROOT%/}}/$TFY_HUMAN_LEDGER_INPUT\" ;;\nesac\n",
+        ledger
+    ));
+    script.push_str("export TFY_LAST_STATUS=0\n");
+    script.push_str(if auto_intercept {
+        "export TFY_HUMAN_AUTO_INTERCEPT=1\n"
+    } else {
+        "export TFY_HUMAN_AUTO_INTERCEPT=0\n"
+    });
+    script.push_str(
+        "export PS1='(tfy-human:${TFY_HUMAN_ROOT}) [tfy exit=${TFY_LAST_STATUS:-0}] ${PS1:-$ }'\n",
+    );
+    script.push_str("tfy-human-bypass() {\n  TFY_HUMAN_BYPASS=1 command \"$@\"\n  local status=$?\n  export TFY_LAST_STATUS=$status\n  return $status\n}\n");
+    if auto_intercept {
+        script.push_str("_tfy_human_in_scope() {\n  local cwd\n  cwd=\"$(pwd -P 2>/dev/null)\" || return 1\n  case \"$cwd/\" in\n    \"${TFY_HUMAN_ROOT%/}/\"*) return 0 ;;\n    *) return 1 ;;\n  esac\n}\n_tfy_human_run() {\n  if [ \"${TFY_HUMAN_BYPASS:-}\" = \"1\" ] || ! _tfy_human_in_scope; then\n    command \"$@\"\n    local status=$?\n    export TFY_LAST_STATUS=$status\n    return $status\n  fi\n  TFY_HUMAN_BYPASS=1 command tfy human run --session \"${TFY_HUMAN_SESSION:-human}\" --raw-dir \"${TFY_HUMAN_RAW_DIR}\" --ledger \"${TFY_HUMAN_LEDGER}\" -- \"$@\"\n  local status=$?\n  export TFY_LAST_STATUS=$status\n  return $status\n}\n");
+        for command in ALLOWLIST {
+            script.push_str(&format!(
+                "{0}() {{\n  _tfy_human_run {0} \"$@\"\n}}\n",
+                command
+            ));
+        }
     }
-    script.push_str("tfy-human-bypass() {\n  TFY_HUMAN_BYPASS=1 command \"$@\"\n}\n");
     script.push_str(END_MARKER);
     script.push('\n');
     Ok(script)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn human_script_respects_no_auto_intercept() {
+        let script = human_script(
+            "human",
+            Path::new(".tfy/raw"),
+            Path::new(".tfy/human/ledger.jsonl"),
+            "bash",
+            false,
+        )
+        .expect("script");
+
+        assert!(script.contains("TFY_HUMAN_AUTO_INTERCEPT=0"));
+        assert!(script.contains("tfy-human-bypass()"));
+        assert!(!script.contains("_tfy_human_run()"));
+        assert!(!script.contains("git() {"));
+    }
 }

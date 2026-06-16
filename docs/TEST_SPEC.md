@@ -207,3 +207,10 @@ Additional MCP hardening tests verify:
 - `tfy setup --ai --host cursor --apply --project` safely writes project `.cursor/mcp.json`, creates a TFY backup when modifying an existing file, preserves unrelated JSON keys and MCP servers, is idempotent, supports TFY-only uninstall, dry-runs without writing, and fails closed on malformed existing JSON.
 - `tfy status --json` exposes both canonical status and claim-tier taxonomy for required routes and named hosts.
 - `tfy launch-report --json` exposes the `mcp_stdio`, `tfy_agent_adapter`, `generic_shell`, and named-host readiness matrix, blocks release while required v1 hosts (`mcp_stdio`, `tfy_agent_adapter`, `generic_shell`) lack `launch_supported` evidence, promotes local smoke only to `verified_local_mcp`, requires artifact-backed `--host-evidence` JSON plus overhead evidence before `launch_supported`, keeps named hosts non-blocking below launch support without host-bound route/config/ledger/raw/no-negative/positive-savings evidence, lists unsupported provider/editor/private-hook/universal-terminal paths, reports exact byte savings plus conservative token proxy estimates, and includes the seven required launch benchmark scenario names.
+
+## Human `start --human` auto-intercept regression
+
+- On supported Linux bash, interactive project-only `tfy start --human` enters a TFY-managed project-scoped shell without requiring a second `tfy human shell` command; non-interactive invocations record lifecycle intent and do not hang.
+- Allowlisted managed-session commands are routed once through TFY run, store combined raw command output first, and summarize only when smaller than redacted raw output.
+- Direct-path, explicit `tfy-human-bypass`, TFY gateway, and outside-scope commands run raw and must not claim wrapped-command raw output or no-negative-savings; automatic stateful/TUI subcommand classification is not claimed in v1.
+- Ordinary terminals outside the managed session remain `ordinary_terminal_interception=false`; nested child-shell boundaries and bash `$?` parity are not claimed unless separately proven.

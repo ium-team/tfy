@@ -3952,6 +3952,22 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
         .output()
         .unwrap();
     assert!(start.status.success());
+    let start_text = String::from_utf8_lossy(&start.stdout);
+    assert!(
+        start_text.contains("ordinary_terminal_interception=false"),
+        "{start_text}"
+    );
+    if cfg!(target_os = "linux") {
+        assert!(
+            start_text.contains("managed_session_launch=requires_interactive_tty"),
+            "{start_text}"
+        );
+    } else {
+        assert!(
+            start_text.contains("support_status=managed_session_unsupported_platform"),
+            "{start_text}"
+        );
+    }
 
     let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3972,11 +3988,11 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
         managed_session_available
     );
     assert_eq!(human["managed_session_entrypoint"][0], "tfy");
-    assert_eq!(human["managed_session_entrypoint"][1], "human");
-    assert_eq!(human["managed_session_entrypoint"][2], "shell");
+    assert_eq!(human["managed_session_entrypoint"][1], "start");
+    assert_eq!(human["managed_session_entrypoint"][2], "--human");
     assert_eq!(
         human["managed_session_scope"],
-        "explicit_tfy_managed_session_only"
+        "project_scoped_tfy_managed_session"
     );
     assert_eq!(human["shells_supported"][0], "linux-bash");
     assert_eq!(human["ordinary_terminal_interception"], false);
@@ -3989,8 +4005,8 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
         }
     );
     assert_eq!(human["entrypoint"][0], "tfy");
-    assert_eq!(human["entrypoint"][1], "human");
-    assert_eq!(human["entrypoint"][2], "shell");
+    assert_eq!(human["entrypoint"][1], "start");
+    assert_eq!(human["entrypoint"][2], "--human");
 }
 
 #[test]
