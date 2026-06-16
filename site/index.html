@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="TFY is whole-workflow token-saving middleware for AI coding agents: compact what the model sees, keep raw evidence recoverable, and stay honest about support."
+    />
+    <title>TFY — Token-saving middleware for AI agents</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="noise" aria-hidden="true"></div>
+        <p class="eyebrow">AI agent I/O middleware · Rust-first · Developer Preview</p>
+        <h1 id="hero-title">Stop feeding your agent the same token sludge.</h1>
+        <p class="hero-copy">
+          TFY gives AI coding agents the smallest safe view of command output, project
+          context, model output, and task state while keeping the raw evidence close.
+        </p>
+        <nav class="actions" aria-label="Primary actions">
+          <a class="button primary" href="https://github.com/ium-team/tfy">View on GitHub</a>
+          <a class="button secondary" href="#try">Try the preview</a>
+        </nav>
+        <p class="name-note">
+          The name is a warning shot at wasted tokens. The product is disciplined about proof.
+        </p>
+      </section>
+
+      <section class="panel pain" aria-labelledby="pain-title">
+        <div>
+          <p class="section-kicker">The pain</p>
+          <h2 id="pain-title">Agents do better work when they stop drowning in noise.</h2>
+        </div>
+        <div class="grid three">
+          <article>
+            <span class="tag">01</span>
+            <h3>Tool output explodes</h3>
+            <p>Builds, tests, diffs, and CI checks can bury the few lines that actually matter.</p>
+          </article>
+          <article>
+            <span class="tag">02</span>
+            <h3>Context repeats</h3>
+            <p>Agents repeatedly re-read docs, schemas, and source fragments that should be reusable refs.</p>
+          </article>
+          <article>
+            <span class="tag">03</span>
+            <h3>Evidence gets lost</h3>
+            <p>Saving tokens is worthless if errors, warnings, or review blockers disappear.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="what-title">
+        <p class="section-kicker">What TFY does</p>
+        <h2 id="what-title">A representation ladder for the whole AI coding loop.</h2>
+        <div class="flow">
+          <div>
+            <strong>Tool Gateway</strong>
+            <span>Commands become compact, recoverable model text only when that is safer and smaller.</span>
+          </div>
+          <div>
+            <strong>Context Gateway</strong>
+            <span>Project context can move through summaries, skeletons, selected detail, or full fallback.</span>
+          </div>
+          <div>
+            <strong>Output Gateway</strong>
+            <span>Agent output can be previewed, restored, and validated before project-ready edits.</span>
+          </div>
+          <div>
+            <strong>State Gateway</strong>
+            <span>Long-running task state can become a compact ledger with refs back to evidence.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel split" aria-labelledby="safe-title">
+        <div>
+          <p class="section-kicker">Why it stays honest</p>
+          <h2 id="safe-title">TFY is not a lossy summarizer with a cool name.</h2>
+          <p>
+            The model-facing default is plain text plus local refs. JSON surfaces are explicit debug,
+            adapter, or internal contracts, not the default payload.
+          </p>
+        </div>
+        <ul class="checks">
+          <li><strong>Raw evidence first.</strong> Store exact stdout/stderr before reducing anything.</li>
+          <li><strong>No negative savings.</strong> Show compact output only when it beats redacted raw output.</li>
+          <li><strong>Fallback is success.</strong> Expand when diagnostics, uncertainty, or risk demands it.</li>
+          <li><strong>Agent-neutral core.</strong> Keep the protocol usable by ordinary tools and runtimes.</li>
+        </ul>
+      </section>
+
+      <section class="panel try" id="try" aria-labelledby="try-title">
+        <p class="section-kicker">Try the Developer Preview</p>
+        <h2 id="try-title">Install the preview, then prove the route.</h2>
+        <p>
+          The npm package is a launcher for the <code>tfy</code> command. Preview setup is useful for dogfooding;
+          setup success is not the same thing as measured token savings.
+        </p>
+        <pre><code>npm install -g token-fuck-you@preview
+tfy start --agent --host codex
+tfy start --human
+tfy status --json</code></pre>
+        <nav class="actions compact" aria-label="Preview references">
+          <a class="button secondary" href="https://github.com/ium-team/tfy#developer-preview-installation">Read install notes</a>
+          <a class="button secondary" href="https://github.com/ium-team/tfy/blob/develop/docs/RELEASE_READINESS.md">Read release gates</a>
+        </nav>
+      </section>
+
+      <section class="panel truth" aria-labelledby="truth-title">
+        <p class="section-kicker">Support truth table</p>
+        <h2 id="truth-title">No magic. No hand-waving. Routes earn stronger labels with evidence.</h2>
+        <table class="support-table" aria-label="TFY support states">
+          <thead>
+            <tr>
+              <th scope="col">Area</th>
+              <th scope="col">Current public posture</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Rust core + CLI</th>
+              <td>Implemented authority path for current preview work.</td>
+            </tr>
+            <tr>
+              <th scope="row">MCP / adapter routes</th>
+              <td>Configurable and evidence-gated; host routing must be proven per route.</td>
+            </tr>
+            <tr>
+              <th scope="row">Named AI hosts</th>
+              <td>Do not treat setup text as launch proof; real route evidence is required.</td>
+            </tr>
+            <tr>
+              <th scope="row">Provider or editor integrations</th>
+              <td>Future adapter territory unless implemented and verified separately.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel contribute" aria-labelledby="contribute-title">
+        <p class="section-kicker">Open source</p>
+        <h2 id="contribute-title">Bring your worst agent logs.</h2>
+        <p>
+          TFY is for developers who want smaller model-visible context without hiding the facts that keep
+          AI work correct. Read the architecture, run the preview, and help harden the evidence gates.
+        </p>
+        <nav class="actions" aria-label="Project links">
+          <a class="button primary" href="https://github.com/ium-team/tfy">GitHub</a>
+          <a class="button secondary" href="https://github.com/ium-team/tfy/blob/develop/docs/TOKEN_SAVING_ARCHITECTURE.md">Architecture</a>
+          <a class="button secondary" href="https://github.com/ium-team/tfy/blob/develop/docs/AGENT_MIDDLEWARE.md">Middleware model</a>
+        </nav>
+      </section>
+    </main>
+  </body>
+</html>
