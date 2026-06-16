@@ -178,7 +178,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
         .current_dir(dir.path())
         .arg("-lc")
         .arg(format!("source {}; sh -c 'printf ok'", script.display()))
-        .env("PATH", path)
+        .env("PATH", &path)
         .output()
         .unwrap();
     assert!(
