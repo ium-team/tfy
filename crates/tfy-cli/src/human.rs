@@ -287,7 +287,7 @@ fn human_script(
     );
     script.push_str("tfy-human-bypass() {\n  TFY_HUMAN_BYPASS=1 PATH=\"${TFY_HUMAN_ORIGINAL_PATH:-$PATH}\" command \"$@\"\n  local status=$?\n  export TFY_LAST_STATUS=$status\n  return $status\n}\n");
     if auto_intercept {
-        script.push_str(r##"export TFY_HUMAN_ORIGINAL_PATH="${TFY_HUMAN_ORIGINAL_PATH:-$PATH}"
+        script.push_str(r##"export TFY_HUMAN_ORIGINAL_PATH="$PATH"
 export TFY_HUMAN_SHIM_DIR="${TFY_HUMAN_ROOT%/}/.tfy/human/bin"
 	command -p mkdir -p "$TFY_HUMAN_SHIM_DIR" || return 1
 	command -p chmod 700 "$TFY_HUMAN_SHIM_DIR" 2>/dev/null || true
