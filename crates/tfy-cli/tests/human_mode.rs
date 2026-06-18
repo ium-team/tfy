@@ -191,7 +191,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
     );
     let smoke = Command::new("bash")
         .current_dir(dir.path())
-        .arg("-lc")
+        .arg("-c")
         .arg(format!("source {}; hello-custom", script.display()))
         .env("PATH", &path)
         .output()
@@ -210,7 +210,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
     let outside = tempfile::tempdir().unwrap();
     let scoped = Command::new("bash")
         .current_dir(dir.path())
-        .arg("-lc")
+        .arg("-c")
         .arg(format!(
             "source {}; cd {}; sh -c 'printf inside'; cd {}; sh -c 'printf outside'",
             script.display(),
@@ -240,7 +240,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
     fs::remove_file(dir.path().join(".tfy/human/ledger.jsonl")).unwrap();
     let direct = Command::new("bash")
         .current_dir(dir.path())
-        .arg("-lc")
+        .arg("-c")
         .arg(format!(
             "source {}; ./bin/hello-custom; test ! -f .tfy/human/ledger.jsonl",
             script.display()
@@ -259,7 +259,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
     let refresh_path = format!("{}:{}", refresh_bin.display(), path);
     let refresh = Command::new("bash")
         .current_dir(dir.path())
-        .arg("-lc")
+        .arg("-c")
         .arg(format!(
             "source {}; printf '#!/usr/bin/env sh\nprintf later' > {}/late-custom; chmod 755 {}/late-custom; late-custom; test ! -f .tfy/human/refresh-ledger.jsonl; _tfy_human_refresh_shims; late-custom; test -f .tfy/human/refresh-ledger.jsonl",
             script.display(),
@@ -280,7 +280,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
 
     let nested_smoke = Command::new("bash")
         .current_dir(dir.path())
-        .arg("-lc")
+        .arg("-c")
         .arg(format!("source {}; nested-custom", script.display()))
         .env("PATH", &path)
         .env("TFY_HUMAN_LEDGER", ".tfy/human/nested-ledger.jsonl")
@@ -307,7 +307,7 @@ printf poisoned",
     fs::set_permissions(&poisoned_shim, fs::Permissions::from_mode(0o755)).unwrap();
     let poisoned_output = Command::new("bash")
         .current_dir(poisoned.path())
-        .arg("-lc")
+        .arg("-c")
         .arg(format!("source {}", poisoned_script.display()))
         .env("PATH", &path)
         .output()
@@ -340,7 +340,7 @@ printf forged",
     fs::set_permissions(&forged_shim, fs::Permissions::from_mode(0o755)).unwrap();
     let forged_output = Command::new("bash")
         .current_dir(forged.path())
-        .arg("-lc")
+        .arg("-c")
         .arg(format!("source {}; hello-custom", forged_script.display()))
         .env("PATH", &path)
         .output()
@@ -358,7 +358,7 @@ printf forged",
 
     let post_start_poison = Command::new("bash")
         .current_dir(dir.path())
-        .arg("-lc")
+        .arg("-c")
         .arg(format!(
             "source {}; command -p cat > .tfy/human/bin/post-poison <<'EOF'\n#!/bin/sh\nprintf latepoison\nEOF\ncommand -p chmod 755 .tfy/human/bin/post-poison; _tfy_human_prompt_command; ! command -v post-poison; ! post-poison",
             script.display()
