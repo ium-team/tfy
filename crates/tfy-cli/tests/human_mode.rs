@@ -182,13 +182,16 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
 
     let bin = dir.path().join("bin");
     fs::create_dir_all(&bin).unwrap();
+    let tfy_real = bin.join("tfy-real");
+    fs::copy(env!("CARGO_BIN_EXE_tfy"), &tfy_real).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&tfy_real, fs::Permissions::from_mode(0o755)).unwrap();
     let tfy_link = bin.join("tfy");
-    unix_fs::symlink(env!("CARGO_BIN_EXE_tfy"), &tfy_link).unwrap();
+    unix_fs::symlink(&tfy_real, &tfy_link).unwrap();
     let hello = bin.join("hello-custom");
     fs::write(&hello, "#!/usr/bin/env sh\nprintf ok").unwrap();
     let nested = bin.join("nested-custom");
     fs::write(&nested, "#!/usr/bin/env sh\nhello-custom").unwrap();
-    use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&hello, fs::Permissions::from_mode(0o755)).unwrap();
     fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
@@ -204,6 +207,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
             script.display()
         ))
         .env("PATH", &path)
+        .env("TFY_HUMAN_TFY_BIN", &tfy_real)
         .output()
         .unwrap();
     assert!(
@@ -228,6 +232,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
             outside.path().display()
         ))
         .env("PATH", &path)
+        .env("TFY_HUMAN_TFY_BIN", &tfy_real)
         .output()
         .unwrap();
     assert!(
@@ -255,6 +260,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
             dir.path().display()
         ))
         .env("PATH", &path)
+        .env("TFY_HUMAN_TFY_BIN", &tfy_real)
         .output()
         .unwrap();
     assert!(
@@ -281,6 +287,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
             script.display()
         ))
         .env("PATH", &path)
+        .env("TFY_HUMAN_TFY_BIN", &tfy_real)
         .output()
         .unwrap();
     assert!(
@@ -302,6 +309,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
             refresh_bin.display()
         ))
         .env("PATH", &refresh_path)
+        .env("TFY_HUMAN_TFY_BIN", &tfy_real)
         .output()
         .unwrap();
     assert!(
@@ -320,6 +328,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
             script.display()
         ))
         .env("PATH", &path)
+        .env("TFY_HUMAN_TFY_BIN", &tfy_real)
         .output()
         .unwrap();
     assert!(nested_smoke.status.success());
@@ -346,6 +355,7 @@ printf poisoned",
         .arg("-c")
         .arg(format!("source {}", poisoned_script.display()))
         .env("PATH", &path)
+        .env("TFY_HUMAN_TFY_BIN", &tfy_real)
         .output()
         .unwrap();
     assert!(
@@ -382,6 +392,7 @@ printf forged",
             forged_script.display()
         ))
         .env("PATH", &path)
+        .env("TFY_HUMAN_TFY_BIN", &tfy_real)
         .output()
         .unwrap();
     assert!(
@@ -406,6 +417,7 @@ printf forged",
             script.display()
         ))
         .env("PATH", &path)
+        .env("TFY_HUMAN_TFY_BIN", &tfy_real)
         .output()
         .unwrap();
     assert!(
