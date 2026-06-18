@@ -150,4 +150,4 @@ The full-agent-runtime foundation adds method families that operate at runtime b
 
 ## Human managed-session command boundary
 
-Supported Linux bash human mode treats the TFY-managed session as a Tool boundary: `tfy start --human` starts a project-scoped managed bash from an interactive project-only terminal run, wraps allowlisted commands inside the managed bash session, stores raw evidence first for wrapped commands, and emits summaries only when no-negative-savings holds. Bypassed commands are not treated as capture-routed raw evidence and are not used for no-negative-savings claims.
+Supported Linux bash human mode treats the TFY-managed session as a Tool boundary: `tfy start --human` starts a project-scoped managed bash from an interactive project-only terminal run, routes PATH-resolved ordinary external commands known to the generated `.tfy/human/bin` shim inside the managed bash session, stores raw evidence first for wrapped commands, and emits summaries only when no-negative-savings holds. Bypassed commands are not treated as capture-routed raw evidence and are not used for no-negative-savings claims.

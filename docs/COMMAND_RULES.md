@@ -355,6 +355,8 @@ Diagnostic codes include:
 - `user_rule_override_family_mismatch`
 - `user_rule_overrode_builtin`
 
+Agent routes store weak/generic summary custom-rule candidates in `.tfy/agent/custom-guidance.jsonl`; `tfy agent report --session <id>` reports them to the user after the agent task without polluting model-visible command output.
+
 Gateway and ledger metadata include `rule_id`, `strategy_source_kind`, and `command_rule_diagnostics` when applicable. Adapter/MCP reports aggregate `rule_counts`, `strategy_source_counts`, and `command_rule_diagnostic_counts`.
 
 ## Authoring rules with an agent
@@ -372,4 +374,4 @@ Authoring must be validation-gated:
 
 ## Human mode note
 
-This feature does not by itself make `tfy start --human` intercept every command. Current managed human shell interception is still limited by the shell integration's wrapper behavior. User TOML rules work through TFY gateway paths such as `tfy tool-gateway`, `tfy shell`, and `tfy human run` when those paths receive the command argv.
+`tfy start --human` on supported Linux bash enters a project-scoped managed session whose default route uses a generated `.tfy/human/bin` PATH shim for PATH-resolved ordinary external commands known to that shim. User TOML rules apply when a command reaches TFY through the managed human route, configured agent route, `tfy tool-gateway`, `tfy shell --`, or `tfy human run`. Direct paths, shell builtins/keywords, aliases/functions, explicit bypass, outside-scope commands, and nested child-shell internals are not claimed unless separately routed.

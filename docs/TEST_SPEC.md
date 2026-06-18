@@ -210,7 +210,9 @@ Additional MCP hardening tests verify:
 
 ## Human `start --human` auto-intercept regression
 
-- On supported Linux bash, interactive project-only `tfy start --human` enters a TFY-managed project-scoped shell without requiring a second `tfy human shell` command; non-interactive invocations record lifecycle intent and do not hang.
-- Allowlisted managed-session commands are routed once through TFY run, store combined raw command output first, and summarize only when smaller than redacted raw output.
-- Direct-path, explicit `tfy-human-bypass`, TFY gateway, and outside-scope commands run raw and must not claim wrapped-command raw output or no-negative-savings; automatic stateful/TUI subcommand classification is not claimed in v1.
-- Ordinary terminals outside the managed session remain `ordinary_terminal_interception=false`; nested child-shell boundaries and bash `$?` parity are not claimed unless separately proven.
+- On supported Linux bash, interactive project-only `tfy start --human` enters a TFY-managed project-scoped PATH-shim shell without requiring a second `tfy human shell` command; non-interactive invocations record lifecycle intent and do not hang.
+- `tfy human install --dry-run|--output <path>` emits or writes a TFY-owned bash script with ownership markers; uninstall refuses to remove non-TFY scripts.
+- PATH-resolved ordinary external commands known to the generated `.tfy/human/bin` shim are routed once through TFY run, store combined raw command output first, and summarize only when smaller than redacted raw output.
+- The shim refresh refuses non-TFY-owned pre-existing shim entries, rewrites marker-bearing shims from the deterministic template, records prompt status without clobbering refresh status, and treats newly created PATH executables as raw/not-claimed until prompt-time refresh discovers them.
+- Direct paths, explicit `tfy-human-bypass`, TFY gateway, shell builtins/keywords, aliases/functions, outside-scope commands, and nested child-shell internals run raw and must not claim wrapped-command raw output or no-negative-savings; automatic stateful/TUI subcommand classification is not claimed in v1.
+- Ordinary terminals outside the managed session remain `ordinary_terminal_interception=false`.

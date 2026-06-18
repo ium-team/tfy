@@ -93,6 +93,155 @@ fn agent_run_records_agent_origin_without_human_shell_mutation() {
 }
 
 #[test]
+fn agent_run_records_custom_guidance_without_stdout_pollution_and_reports_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "agent",
+            "run",
+            "--session",
+            "agent-guidance",
+            "--ledger",
+            ".tfy/agent/ledger.jsonl",
+            "--raw-dir",
+            ".tfy/raw",
+            "--",
+            "sh",
+            "-c",
+            "for i in $(seq 1 80); do echo custom-line-$i; done",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("TFY command summary"), "{stdout}");
+    assert!(!stdout.contains("tfy custom"), "{stdout}");
+    assert!(!stdout.contains("custom-guidance"), "{stdout}");
+
+    let guidance_path = dir.path().join(".tfy/agent/custom-guidance.jsonl");
+    let guidance = std::fs::read_to_string(&guidance_path).unwrap();
+    assert!(guidance.contains("agent-guidance"), "{guidance}");
+    assert!(
+        guidance.contains("generic_summary_without_trusted_builtin_or_custom_rule"),
+        "{guidance}"
+    );
+
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["agent", "report", "--session", "agent-guidance"])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let report_stdout = String::from_utf8_lossy(&report.stdout);
+    assert!(
+        report_stdout.contains("needs_custom_rules=true"),
+        "{report_stdout}"
+    );
+    assert!(
+        report_stdout.contains("custom_rule_candidate command=sh"),
+        "{report_stdout}"
+    );
+}
+
+#[test]
+fn agent_run_does_not_record_custom_guidance_for_non_summary_renderings() {
+    let suppressed_dir = tempfile::tempdir().unwrap();
+    let suppressed = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(suppressed_dir.path())
+        .args([
+            "agent",
+            "run",
+            "--session",
+            "agent-suppressed-guidance",
+            "--ledger",
+            ".tfy/agent/ledger.jsonl",
+            "--raw-dir",
+            ".tfy/raw",
+            "--",
+            "python3",
+            "-c",
+            "import sys; sys.stdout.buffer.write(b'abc\\x00def')",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        suppressed.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&suppressed.stderr)
+    );
+    let suppressed_stdout = String::from_utf8_lossy(&suppressed.stdout);
+    assert!(
+        suppressed_stdout.contains("output suppressed"),
+        "{suppressed_stdout}"
+    );
+    assert!(
+        !suppressed_dir
+            .path()
+            .join(".tfy/agent/custom-guidance.jsonl")
+            .exists(),
+        "suppressed output is not a generic summary candidate"
+    );
+
+    let repeat_dir = tempfile::tempdir().unwrap();
+    let repeated_args = [
+        "agent",
+        "run",
+        "--session",
+        "agent-repeat-guidance",
+        "--ledger",
+        ".tfy/agent/ledger.jsonl",
+        "--raw-dir",
+        ".tfy/raw",
+        "--",
+        "sh",
+        "-c",
+        "for i in $(seq 1 80); do echo repeat-line-$i; done",
+    ];
+    let first = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(repeat_dir.path())
+        .args(repeated_args)
+        .output()
+        .unwrap();
+    assert!(
+        first.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let guidance_path = repeat_dir.path().join(".tfy/agent/custom-guidance.jsonl");
+    assert!(guidance_path.exists());
+    std::fs::remove_file(&guidance_path).unwrap();
+
+    let second = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(repeat_dir.path())
+        .args(repeated_args)
+        .output()
+        .unwrap();
+    assert!(
+        second.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let repeat_stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        repeat_stdout.contains("repeated unchanged command output elided"),
+        "{repeat_stdout}"
+    );
+    assert!(
+        !guidance_path.exists(),
+        "repeat elision is not a generic summary candidate"
+    );
+}
+
+#[test]
 fn restore_display_is_readable_and_not_apply_authority() {
     let mut payload = tempfile::NamedTempFile::new().unwrap();
     write!(

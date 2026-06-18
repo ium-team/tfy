@@ -1,7 +1,8 @@
 use crate::gateways::execute_structured_tool_gateway_with_origin;
 use crate::util::print_json;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Subcommand;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use tfy_runtime::{
@@ -21,6 +22,15 @@ pub(crate) enum AgentCmd {
         dry_run: bool,
         #[arg(long)]
         output: Option<PathBuf>,
+    },
+    /// Report agent-session custom summary guidance recorded without polluting model-visible output.
+    Report {
+        #[arg(long, default_value = "agent-session")]
+        session: String,
+        #[arg(long, default_value = ".tfy/agent/custom-guidance.jsonl")]
+        guidance: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
     /// Run an AI-agent-originated command through TFY with explicit origin provenance.
     Run {
@@ -74,6 +84,11 @@ pub(crate) fn execute_agent(cmd: AgentCmd) -> Result<()> {
             dry_run,
             output,
         } => execute_agent_install(&host, dry_run, output),
+        AgentCmd::Report {
+            session,
+            guidance,
+            json,
+        } => execute_agent_report(&session, &guidance, json),
         AgentCmd::Run {
             raw_dir,
             max_summary_bytes,
@@ -155,6 +170,68 @@ exec tfy agent run --host {host} --session "${{TFY_SESSION_ID:-agent-session}}" 
     println!("installed TFY AI-agent wrapper at {}", output.display());
     println!("ordinary terminal startup files were not modified");
     Ok(())
+}
+
+fn execute_agent_report(session: &str, guidance: &PathBuf, json: bool) -> Result<()> {
+    let entries = read_guidance_entries(guidance, session)?;
+    let mut command_counts = BTreeMap::<String, usize>::new();
+    let mut reason_counts = BTreeMap::<String, usize>::new();
+    for entry in &entries {
+        if let Some(command) = entry.get("argv0").and_then(|value| value.as_str()) {
+            *command_counts.entry(command.to_string()).or_default() += 1;
+        }
+        if let Some(reason) = entry.get("reason").and_then(|value| value.as_str()) {
+            *reason_counts.entry(reason.to_string()).or_default() += 1;
+        }
+    }
+    if json {
+        print_json(&serde_json::json!({
+            "schema_version": 1,
+            "session": session,
+            "guidance_path": guidance,
+            "needs_custom_rules": !entries.is_empty(),
+            "total": entries.len(),
+            "command_counts": command_counts,
+            "reason_counts": reason_counts,
+            "entries": entries,
+        }))?;
+        return Ok(());
+    }
+    println!("TFY agent custom summary report");
+    println!("session={session}");
+    println!("guidance_path={}", guidance.display());
+    if entries.is_empty() {
+        println!("needs_custom_rules=false");
+        println!("No weak/generic command summaries were recorded for this session.");
+        return Ok(());
+    }
+    println!("needs_custom_rules=true total={}", entries.len());
+    for (command, count) in command_counts {
+        println!("custom_rule_candidate command={command} count={count}");
+    }
+    println!(
+        "Run `tfy custom` to author trusted command rules for commands that need better summaries."
+    );
+    Ok(())
+}
+
+fn read_guidance_entries(path: &PathBuf, session: &str) -> Result<Vec<serde_json::Value>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let mut entries = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(line)
+            .with_context(|| format!("parse {} line {}", path.display(), idx + 1))?;
+        if value.get("session").and_then(|session| session.as_str()) == Some(session) {
+            entries.push(value);
+        }
+    }
+    Ok(entries)
 }
 
 fn parse_host(host: &str) -> OriginHost {

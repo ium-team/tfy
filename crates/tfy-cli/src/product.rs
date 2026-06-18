@@ -1788,7 +1788,7 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                 std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
             if targets.len() == 1 && scope == LifecycleScope::Project && interactive_terminal {
                 println!("human route_state=managed_session_starting active=false support_status=managed_session_available ordinary_terminal_interception=false managed_session_interception=true managed_session_available=true managed_session_scope_root={} managed_session_entrypoint=\"tfy start --human\"", std::env::current_dir()?.display());
-                println!("ordinary terminals outside this TFY-managed session are not globally intercepted; supported Linux bash now enters a project-scoped managed human session from `tfy start --human`. Use `tfy human shell --no-auto-intercept` for a managed shell without allowlisted wrappers, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` for explicit gateway wrapping.");
+                println!("ordinary terminals outside this TFY-managed session are not globally intercepted; supported Linux bash now enters a project-scoped managed human session from `tfy start --human`. Use `tfy human shell --no-auto-intercept` for a managed shell without PATH-shim routing, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` / `tfy tool-gateway -- <command>` for explicit one-off gateway wrapping.");
                 return execute_human_shell(
                     &cmd.session,
                     Path::new(".tfy/raw"),
@@ -3926,12 +3926,12 @@ fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
             SurfaceStatus { name: "workspace_apply".into(), status: "active".into(), message: "Multi-file add/modify/delete/rename/move apply is proof-gated and rollback-journaled.".into() },
             SurfaceStatus { name: "fuzzy_refactor_apply".into(), status: "active".into(), message: "Fuzzy edits require unique anchors, confidence threshold, restored preview hashes, and conflict checks.".into() },
             SurfaceStatus { name: "codex_host_routing".into(), status: "config_snippet_available".into(), message: "TFY can configure supported Codex routing surfaces; launch support still requires host-bound smoke/ledger/raw evidence.".into() },
-            SurfaceStatus { name: "ordinary_human_terminal".into(), status: "not_supported".into(), message: "TFY does not globally intercept regular terminals; supported Linux bash uses `tfy start --human` to enter a project-scoped managed session, while `tfy shell <command>` remains raw passthrough and `tfy shell -- <command>` remains the explicit gateway wrapper.".into() },
+            SurfaceStatus { name: "ordinary_human_terminal".into(), status: "not_supported".into(), message: "TFY does not globally intercept regular terminals; supported Linux bash uses `tfy start --human` to enter a project-scoped managed PATH-shim session, while `tfy shell <command>` remains raw passthrough and `tfy shell -- <command>` / `tfy tool-gateway -- <command>` remain explicit one-off gateway wrappers.".into() },
             SurfaceStatus {
                 name: "human_managed_session".into(),
                 status: if human_managed_session_available() { "available" } else { "unsupported_platform" }.into(),
                 message: if human_managed_session_available() {
-                    "Linux bash v1 can enter a TFY-managed project-scoped auto-intercept session via `tfy start --human`; this is opt-in managed-session scope only."
+                    "Linux bash v1 can enter a TFY-managed project-scoped PATH-shim auto-intercept session via `tfy start --human`; this is opt-in managed-session scope only and covers PATH-resolved ordinary external commands known to the shim."
                 } else {
                     "`tfy human shell` is Linux bash only in v1 on this platform; ordinary terminals remain outside TFY unless explicit commands such as `tfy shell <command>` raw passthrough or `tfy shell -- <command>` gateway wrapper are used."
                 }.into()
@@ -4191,7 +4191,7 @@ fn effective_human_status(
         } else if !route_configured {
             "TFY-managed human sessions are Linux bash only in v1 on this platform; ordinary terminals are not globally intercepted. Use `tfy shell <command>` for raw passthrough or `tfy shell -- <command>` for the TFY gateway wrapper.".into()
         } else {
-            "Run `tfy start --human` to enter the supported Linux bash project-scoped managed session; ordinary terminals outside that session are not globally intercepted. Use `tfy human shell --no-auto-intercept` for a managed shell without allowlisted wrappers, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` for explicit gateway wrapping.".into()
+            "Run `tfy start --human` to enter the supported Linux bash project-scoped managed session; ordinary terminals outside that session are not globally intercepted. Use `tfy human shell --no-auto-intercept` for a managed shell without PATH-shim routing, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` / `tfy tool-gateway -- <command>` for explicit one-off gateway wrapping.".into()
         },
     }
 }

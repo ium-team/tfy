@@ -1,6 +1,7 @@
 mod adapter;
 mod agent;
 mod custom;
+mod custom_guidance;
 mod display;
 mod gateways;
 mod hook;
