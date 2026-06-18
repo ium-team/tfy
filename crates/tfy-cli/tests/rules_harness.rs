@@ -600,7 +600,236 @@ max_lines = 4
     let status_json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status_json["repo_local"]["state"], "trusted_v2");
     assert_eq!(status_json["repo_local"]["trust_schema_version"], 2);
-    assert_eq!(status_json["user_global"]["state"], "absent");
+    assert_eq!(status_json["user_global_legacy"]["state"], "missing");
+    assert_eq!(status_json["global_custom"]["state"], "missing");
+
+    std::fs::write(
+        dir.path().join(".tfy/rule-fixtures/quality.txt"),
+        "tampered
+",
+    )
+    .unwrap();
+    let stale_status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args(["custom", "status", "--repo", repo, "--json"])
+        .output()
+        .unwrap();
+    assert!(stale_status.status.success());
+    let stale_json: serde_json::Value = serde_json::from_slice(&stale_status.stdout).unwrap();
+    assert_eq!(stale_json["repo_local"]["state"], "stale");
+}
+
+#[test]
+fn custom_global_wizard_initializes_global_store_without_repo_tfy() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("HOME", home.path())
+        .arg("custom")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.as_mut().unwrap().write_all(b"global\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("global scope selected"));
+    assert!(home
+        .path()
+        .join(".config/tfy/custom/commands.toml")
+        .exists());
+    assert!(home
+        .path()
+        .join(".config/tfy/custom/rule-fixtures")
+        .exists());
+    assert!(home
+        .path()
+        .join(".config/tfy/custom/agent/AGENT_INSTRUCTIONS.md")
+        .exists());
+    assert!(!home.path().join(".config/tfy/commands.toml").exists());
+    assert!(!dir.path().join(".tfy").exists());
+}
+
+#[test]
+fn tool_gateway_loads_trusted_global_custom_rule_across_repos_and_repo_untrusted_does_not_block() {
+    let global_author_repo = tempfile::tempdir().unwrap();
+    let run_repo = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let bin = env!("CARGO_BIN_EXE_tfy");
+    let global_author_arg = global_author_repo.path().to_str().unwrap();
+
+    Command::new(bin)
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "init",
+            "--scope",
+            "global",
+            "--repo",
+            global_author_arg,
+        ])
+        .status()
+        .unwrap();
+    let fixture = global_author_repo.path().join("fixture.txt");
+    std::fs::write(&fixture, "noise\nKEEP global\n".repeat(120)).unwrap();
+    Command::new(bin)
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "import-fixture",
+            "--scope",
+            "global",
+            "--repo",
+            global_author_arg,
+            "--name",
+            "runtimeglobal",
+            "--file",
+            fixture.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    let global_root = home.path().join(".config/tfy/custom");
+    std::fs::write(
+        global_root.join("commands.toml"),
+        r#"
+schema_version = 3
+
+[[command]]
+id = "runtime_global_rule"
+match.argv_prefix = ["sh", "-c"]
+keep_lines_matching = ["KEEP global"]
+max_lines = 4
+"#,
+    )
+    .unwrap();
+    let meta_path = global_root.join("agent/runtimeglobal.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+    meta["cmd"] = serde_json::json!([
+        "sh",
+        "-c",
+        "for i in 1 2 3 4 5 6 7 8 9 10; do echo noise; echo KEEP global; done"
+    ]);
+    meta["command_display"] = serde_json::json!("sh -c for i in ...");
+    std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+
+    let verify = Command::new(bin)
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "verify",
+            "--scope",
+            "global",
+            "--repo",
+            global_author_arg,
+            "--name",
+            "runtimeglobal",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        verify.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let trust = Command::new(bin)
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "trust",
+            "--scope",
+            "global",
+            "--repo",
+            global_author_arg,
+            "--name",
+            "runtimeglobal",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        trust.status.success(),
+        "{}",
+        String::from_utf8_lossy(&trust.stderr)
+    );
+
+    // A bad repo-local source must not short-circuit the later trusted global source.
+    std::fs::create_dir_all(run_repo.path().join(".tfy")).unwrap();
+    std::fs::write(
+        run_repo.path().join(".tfy/commands.toml"),
+        "schema_version = 3\n",
+    )
+    .unwrap();
+
+    let output = Command::new(bin)
+        .current_dir(run_repo.path())
+        .env("HOME", home.path())
+        .args([
+            "tool-gateway",
+            "--json",
+            "--",
+            "sh",
+            "-c",
+            "for i in 1 2 3 4 5 6 7 8 9 10; do echo noise; echo KEEP global; done",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("repo_rules_untrusted"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("runtime_global_rule"), "{stdout}");
+    assert!(stdout.contains("global_custom"), "{stdout}");
+
+    let status = Command::new(bin)
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "status",
+            "--repo",
+            run_repo.path().to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let status_json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status_json["global_custom"]["state"], "trusted_v2");
+    assert_eq!(status_json["user_global_legacy"]["state"], "missing");
+
+    std::fs::write(
+        global_root.join("rule-fixtures/runtimeglobal.txt"),
+        "tampered
+",
+    )
+    .unwrap();
+    let stale_status = Command::new(bin)
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "status",
+            "--repo",
+            run_repo.path().to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(stale_status.status.success());
+    let stale_json: serde_json::Value = serde_json::from_slice(&stale_status.stdout).unwrap();
+    assert_eq!(stale_json["global_custom"]["state"], "stale");
 }
 
 #[test]
@@ -1061,7 +1290,7 @@ fn bare_custom_wizard_repo_choice_initializes_repo_harness() {
 }
 
 #[test]
-fn bare_custom_wizard_global_choice_fails_closed_until_global_store_exists() {
+fn bare_custom_wizard_global_choice_initializes_global_store() {
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
@@ -1079,12 +1308,18 @@ fn bare_custom_wizard_global_choice_fails_closed_until_global_store_exists() {
         })
         .unwrap();
 
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("global scope is not active yet"));
-    assert!(!home
+    assert!(
+        output.status.success(),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("global scope selected"));
+    assert!(home
         .path()
         .join(".config/tfy/custom/commands.toml")
         .exists());
+    assert!(!dir.path().join(".tfy/commands.toml").exists());
 }
 
 #[test]

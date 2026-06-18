@@ -12,7 +12,7 @@ They never bypass TFY's core invariants:
 2. public/model-visible lines are redacted;
 3. summaries are shown only when smaller than redacted public raw output;
 4. plain text remains the default model-visible output;
-5. repo-local rules require an explicit trust record.
+5. repo-local and global custom rules require an explicit trust record.
 
 User TOML rules are additive by default. Existing TFY built-in Rust strategies and built-in DSL filters keep precedence unless a v3 rule explicitly opts in to a family-bound built-in override. If a user rule also matches a built-in family without a valid override, the built-in result is used and TFY records a `user_rule_shadowed_by_builtin` or `user_rule_override_family_mismatch` diagnostic.
 
@@ -21,14 +21,15 @@ User TOML rules are additive by default. Existing TFY built-in Rust strategies a
 TFY loads rules in this order for custom candidates. Built-ins normally win; only trusted v3 rules with `[command.override] built_in = true` and an exact `family` match can replace a built-in candidate:
 
 1. trusted repo-local `.tfy/commands.toml` discovered from the current directory or nearest ancestor;
-2. legacy/manual user-global `~/.config/tfy/commands.toml` compatibility rules;
-3. generic fallback / unsupported passthrough.
+2. trusted global custom `~/.config/tfy/custom/commands.toml`;
+3. legacy/manual user-global `~/.config/tfy/commands.toml` compatibility rules;
+4. generic fallback / unsupported passthrough.
 
-`tfy custom` is the recommended authoring path. Running bare `tfy custom` opens a scope wizard: choose the current repo to initialize `.tfy/`, or choose global to see the current fail-closed notice. Repo-local remains the only provenance-backed custom harness today. User-global rules still load at runtime for compatibility, but TFY emits `user_global_rules_legacy_manual` diagnostics and `tfy custom verify` refuses to proceed by default when a global rule file exists. Use `--allow-legacy-global-rules` only when intentionally recording that external/manual influence. A future global custom flow should add provenance-backed trust for global rules before activating them.
+`tfy custom` is the recommended authoring path. Running bare `tfy custom` opens a scope wizard: choose the current repo to initialize `.tfy/`, or choose global to initialize the provenance-backed global custom store at `~/.config/tfy/custom/`. Repo-local trusted rules are loaded before global trusted rules. Legacy `~/.config/tfy/commands.toml` still loads for compatibility, but it is separate from trusted global custom rules, emits `user_global_rules_legacy_manual`, and is never auto-promoted or overwritten by `tfy custom`. `tfy custom verify` refuses to proceed by default when the legacy global file exists; use `--allow-legacy-global-rules` only when intentionally recording that external/manual influence.
 
-## Repo-local trust
+## Repo-local and global custom trust
 
-Repo-local `.tfy/commands.toml` is trusted only when `.tfy/trust.json` exists and its hash matches the current rule file bytes. Legacy v1 trust is still accepted for compatibility and emits `repo_rules_legacy_trust`:
+Repo-local `.tfy/commands.toml` is trusted only when `.tfy/trust.json` exists and its hash matches the current rule file bytes. Global custom `~/.config/tfy/custom/commands.toml` is trusted only when `~/.config/tfy/custom/trust.json` exists, has schema v2 provenance, and its hash/fixture evidence matches the current bytes. Legacy v1 trust is accepted only for repo-local compatibility and emits `repo_rules_legacy_trust`; global custom does not support v1 trust.
 
 ```json
 {
@@ -58,7 +59,7 @@ Repo-local `.tfy/commands.toml` is trusted only when `.tfy/trust.json` exists an
 }
 ```
 
-If `.tfy/commands.toml` or a trusted fixture changes after trust, TFY skips repo-local rules and emits `repo_rules_hash_mismatch`. Missing trust emits `repo_rules_untrusted`. `tfy custom status --json` reports `repo_local.state` as `trusted_v2`, `trusted_v1_legacy`, `stale`, `invalid`, or `untrusted`, and includes `trust_schema_version` so migration state is explicit.
+If `.tfy/commands.toml` or a trusted fixture changes after trust, TFY skips repo-local rules and emits `repo_rules_hash_mismatch`. Missing repo trust emits `repo_rules_untrusted`. If `~/.config/tfy/custom/commands.toml` or a trusted global fixture changes after trust, TFY skips global custom rules and emits `global_custom_rules_hash_mismatch`, `global_custom_rules_invalid_trust`, `global_custom_rules_symlink_refused`, or `global_custom_rules_untrusted` as appropriate. `tfy custom status --json` reports `repo_local`, `global_custom`, and `user_global_legacy`; `repo_local.state` may include `trusted_v1_legacy`, while `global_custom.state` is one of `trusted_v2`, `stale`, `invalid`, `untrusted`, or `missing`.
 
 This trust authorizes only declarative summarization. It does not authorize code execution, workspace apply, shell mutation, OS-level sandboxing, or official support claims.
 
@@ -297,7 +298,7 @@ Override rules are still custom/local support. The control plane is deliberately
 - If the family is wrong, TFY keeps the built-in candidate and emits `user_rule_override_family_mismatch`.
 - If the override is valid, TFY uses the custom candidate, marks `strategy_kind = "user_toml"`, records `rule_id`, and emits `user_rule_overrode_builtin`.
 - Raw-first storage, redaction, capping, and the no-negative selector still run after the custom render. If the custom text is not smaller than redacted public raw output, model-visible output passes through instead of showing a larger summary.
-- Repo-local override rules still require `.tfy/trust.json`; user-global override rules remain legacy/manual local configuration until a provenance-backed global custom flow exists.
+- Repo-local override rules require `.tfy/trust.json`; global custom override rules require schema v2 trust under `~/.config/tfy/custom/trust.json`. Legacy/manual `~/.config/tfy/commands.toml` remains compatibility-only and is not a trusted custom override harness.
 - If no built-in candidate exists for the matched command, the same rule behaves like a normal custom rule; `override.family` only controls replacement of an existing built-in candidate.
 - Rule order is significant: TFY uses the first matching custom rule, so place a more specific override rule before broader custom rules for the same command.
 
@@ -316,7 +317,17 @@ tfy custom verify --repo . --name quality-report --json
 tfy custom trust --repo . --name quality-report --json
 ```
 
-For a pre-existing sample, use `tfy custom import-fixture --repo . --name quality-report --file sample.txt`. `tfy custom capture` runs the command from `--repo` and stores a merged stdout+stderr fixture view; use `import-fixture` when stream separation or secret-bearing argv would matter. `tfy custom verify` runs strict validation, preview, and custom-vs-built-in comparison evidence, and it fails unless the fixture actually exercises a `user_toml` rule with a concrete `rule_id`. It fails by default when `~/.config/tfy/commands.toml` exists; pass `--allow-legacy-global-rules` only to explicitly record that legacy/manual influence. If a built-in override is intentionally larger than the built-in/default result, `--accept-larger-than-built-in` must be passed to `verify` and is recorded in trust metadata.
+For cross-repo trusted custom rules, choose global in the wizard or pass `--scope global` explicitly:
+
+```bash
+tfy custom init --scope global --repo .
+tfy custom capture --scope global --repo . --name quality-report -- quality-report --json
+tfy custom prompt --scope global --repo . --agent codex --name quality-report
+tfy custom verify --scope global --repo . --name quality-report --json
+tfy custom trust --scope global --repo . --name quality-report --json
+```
+
+For a pre-existing sample, use `tfy custom import-fixture --repo . --name quality-report --file sample.txt` or add `--scope global` for the global store. `tfy custom capture` runs the command from `--repo` and stores a merged stdout+stderr fixture view; in global scope, `--repo` is only the execution cwd while trusted assets live under `~/.config/tfy/custom/`. Use `import-fixture` when stream separation or secret-bearing argv would matter. `tfy custom verify` runs strict validation, preview, and custom-vs-built-in comparison evidence, and it fails unless the fixture actually exercises a `user_toml` rule with a concrete `rule_id`. It fails by default when `~/.config/tfy/commands.toml` exists; pass `--allow-legacy-global-rules` only to explicitly record that legacy/manual influence. If a built-in override is intentionally larger than the built-in/default result, `--accept-larger-than-built-in` must be passed to `verify` and is recorded in trust metadata.
 
 Low-level `tfy rules validate`, `tfy rules preview`, `tfy rules compare-built-in`, and `tfy rules trust` remain expert primitives. Prefer `tfy custom` for user/agent-authored rules because it writes fixture metadata and v2 trust provenance.
 

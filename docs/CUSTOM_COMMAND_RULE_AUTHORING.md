@@ -11,12 +11,12 @@ An authoring agent may:
 - inspect existing `docs/COMMAND_RULES.md` and project command patterns;
 - run a representative command through a TFY gateway when safe and requested;
 - inspect a supplied raw output sample or raw ref;
-- draft repo-local `.tfy/commands.toml` rules inside the `tfy custom` harness;
+- draft repo-local `.tfy/commands.toml` or global `~/.config/tfy/custom/commands.toml` rules inside the `tfy custom` harness;
 - add v2 sections, counters, captures, and severity buckets;
 - add v3 bounded structured extracts, metrics, and groups when fixture evidence proves they are useful;
 - add explicit v3 built-in override metadata only when the user asks to replace a built-in summary and `compare-built-in` evidence supports the replacement;
 - validate strict parsing and preview model-visible output;
-- update `.tfy/trust.json` only through `tfy custom trust` after verification evidence matches the final rule bytes.
+- update `.tfy/trust.json` or `~/.config/tfy/custom/trust.json` only through `tfy custom trust` after verification evidence matches the final rule bytes.
 
 ## What an authoring agent must not do
 
@@ -32,9 +32,9 @@ An authoring agent must not:
 ## Required workflow
 
 1. **Choose scope**
-   - Run bare `tfy custom` to open the scope wizard. Choose repo for the active provenance-backed harness.
+   - Run bare `tfy custom` to open the scope wizard. Choose repo for project-specific commands or global for cross-repo rules.
    - Use repo-local `.tfy/commands.toml` through `tfy custom` for project-specific commands.
-   - Treat user-global `~/.config/tfy/commands.toml` as legacy/manual compatibility until a provenance-backed global custom flow exists; the bare wizard's global choice fails closed today instead of creating active global trust.
+   - Use global `~/.config/tfy/custom/commands.toml` through `tfy custom --scope global` for stable cross-repo commands. Treat legacy `~/.config/tfy/commands.toml` as manual compatibility only; it is separate from trusted global custom rules.
 
 2. **Collect evidence**
    - Prefer a TFY route so raw evidence is stored first.
@@ -52,10 +52,10 @@ An authoring agent must not:
    - Use captures only for display values, never execution input.
 
 4. **Validate with the harness**
-   - Bare `tfy custom` with the repo choice or `tfy custom init --repo .` must create the bounded workspace.
-   - `tfy custom capture --repo . --name <name> -- <command...>` or `tfy custom import-fixture --repo . --name <name> --file <sample>` must create fixture metadata. `capture` runs from `--repo` and records a merged stdout+stderr fixture; use `import-fixture` for stream-specific samples or secret-bearing commands.
-   - `tfy custom prompt --repo . --agent <codex|claude|generic> --name <name>` must generate bounded agent instructions.
-   - `tfy custom verify --repo . --name <name> --json` must accept the rule, prove the fixture exercised a concrete `user_toml` rule id, and record validate/preview/compare evidence.
+   - Bare `tfy custom` with the repo/global choice, `tfy custom init --repo .`, or `tfy custom init --scope global --repo .` must create the bounded workspace.
+   - `tfy custom capture --repo . --name <name> -- <command...>` or `tfy custom import-fixture --repo . --name <name> --file <sample>` must create fixture metadata; add `--scope global` to store the fixture under `~/.config/tfy/custom/`. `capture` runs from `--repo` and records a merged stdout+stderr fixture; use `import-fixture` for stream-specific samples or secret-bearing commands.
+   - `tfy custom prompt --repo . --agent <codex|claude|generic> --name <name>` must generate bounded agent instructions; add `--scope global` for global instructions.
+   - `tfy custom verify --repo . --name <name> --json` must accept the rule, prove the fixture exercised a concrete `user_toml` rule id, and record validate/preview/compare evidence; add `--scope global` for global rules.
    - Tiny outputs must still pass through under no-negative behavior.
    - Raw refs must remain recoverable.
    - If overriding a built-in, preview/compare output must show `strategy_kind = "user_toml"`, the expected `rule_id`, a `user_rule_overrode_builtin` diagnostic, and `comparison.override_active = true`; family mismatches must keep the built-in.
@@ -68,7 +68,7 @@ An authoring agent must not:
 
 6. **Report honestly**
    - State which rule id was added.
-   - State whether it is repo-local or user-global.
+   - State whether it is repo-local, global custom, or legacy/manual user-global.
    - State validation commands and results.
    - State unsupported assumptions and that this remains local/custom support.
 
@@ -119,4 +119,4 @@ cargo run -q -p tfy-cli -- custom trust --repo . --name <fixture> --json
 cargo test -p tfy-core user_toml
 ```
 
-Use low-level `tfy rules validate/preview/compare-built-in` only for expert debugging. For repo-local trust, prefer `tfy custom trust` because it records fixture and validation provenance.
+Use low-level `tfy rules validate/preview/compare-built-in` only for expert debugging. For repo-local and global custom trust, prefer `tfy custom trust` because it records fixture and validation provenance.

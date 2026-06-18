@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -12,19 +12,45 @@ use tfy_core::{summarize_command_output_bytes_with_rules, CommandRuleSet};
 use crate::product::{prompt_menu_tui, raw_terminal_unavailable};
 use crate::util::print_json;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CustomScope {
+    Repo,
+    Global,
+}
+
+impl CustomScope {
+    fn source_kind(self) -> &'static str {
+        match self {
+            CustomScope::Repo => "repo",
+            CustomScope::Global => "global_custom",
+        }
+    }
+
+    fn cli_flag(self) -> &'static str {
+        match self {
+            CustomScope::Repo => "repo",
+            CustomScope::Global => "global",
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub(crate) enum CustomCmd {
-    /// Initialize the repo-local TFY custom-rule harness workspace.
+    /// Initialize the selected TFY custom-rule harness workspace.
     Init {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CustomScope::Repo)]
+        scope: CustomScope,
         #[arg(long)]
         json: bool,
     },
-    /// Capture one command's output as a repo-local rule fixture without trusting rules.
+    /// Capture one command's output as a scoped rule fixture without trusting rules.
     Capture {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CustomScope::Repo)]
+        scope: CustomScope,
         #[arg(long)]
         name: String,
         #[arg(long)]
@@ -32,10 +58,12 @@ pub(crate) enum CustomCmd {
         #[arg(trailing_var_arg = true)]
         command: Vec<String>,
     },
-    /// Import an existing output sample as a repo-local rule fixture.
+    /// Import an existing output sample as a scoped rule fixture.
     ImportFixture {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CustomScope::Repo)]
+        scope: CustomScope,
         #[arg(long)]
         name: String,
         #[arg(long)]
@@ -47,6 +75,8 @@ pub(crate) enum CustomCmd {
     Prompt {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CustomScope::Repo)]
+        scope: CustomScope,
         #[arg(long, default_value = "generic")]
         agent: String,
         #[arg(long)]
@@ -58,6 +88,8 @@ pub(crate) enum CustomCmd {
     Verify {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CustomScope::Repo)]
+        scope: CustomScope,
         #[arg(long)]
         name: String,
         #[arg(long)]
@@ -67,10 +99,12 @@ pub(crate) enum CustomCmd {
         #[arg(long)]
         accept_larger_than_built_in: bool,
     },
-    /// Trust verified repo-local custom rules by writing schema v2 provenance.
+    /// Trust verified scoped custom rules by writing schema v2 provenance.
     Trust {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CustomScope::Repo)]
+        scope: CustomScope,
         #[arg(long)]
         name: String,
         #[arg(long)]
@@ -78,7 +112,7 @@ pub(crate) enum CustomCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Report repo-local custom trust state and legacy user-global influence separately.
+    /// Report repo-local, global custom, and legacy user-global trust state separately.
     Status {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
@@ -89,6 +123,8 @@ pub(crate) enum CustomCmd {
     Create {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CustomScope::Repo)]
+        scope: CustomScope,
         #[arg(long)]
         name: String,
         #[arg(long, default_value = "generic")]
@@ -183,33 +219,38 @@ pub(crate) fn execute_custom(cmd: Option<CustomCmd>) -> Result<()> {
         return execute_custom_wizard();
     };
     match cmd {
-        CustomCmd::Init { repo, json } => execute_init(repo, json),
+        CustomCmd::Init { repo, scope, json } => execute_init(repo, scope, json),
         CustomCmd::Capture {
             repo,
+            scope,
             name,
             json,
             command,
-        } => execute_capture(repo, name, command, json),
+        } => execute_capture(repo, scope, name, command, json),
         CustomCmd::ImportFixture {
             repo,
+            scope,
             name,
             file,
             json,
-        } => execute_import_fixture(repo, name, file, json),
+        } => execute_import_fixture(repo, scope, name, file, json),
         CustomCmd::Prompt {
             repo,
+            scope,
             agent,
             name,
             json,
-        } => execute_prompt(repo, agent, name, json),
+        } => execute_prompt(repo, scope, agent, name, json),
         CustomCmd::Verify {
             repo,
+            scope,
             name,
             json,
             allow_legacy_global_rules,
             accept_larger_than_built_in,
         } => execute_verify(
             repo,
+            scope,
             name,
             allow_legacy_global_rules,
             accept_larger_than_built_in,
@@ -217,13 +258,15 @@ pub(crate) fn execute_custom(cmd: Option<CustomCmd>) -> Result<()> {
         ),
         CustomCmd::Trust {
             repo,
+            scope,
             name,
             dry_run,
             json,
-        } => execute_trust(repo, name, dry_run, json),
+        } => execute_trust(repo, scope, name, dry_run, json),
         CustomCmd::Status { repo, json } => execute_status(repo, json),
         CustomCmd::Create {
             repo,
+            scope,
             name,
             agent,
             verify_and_trust,
@@ -233,6 +276,7 @@ pub(crate) fn execute_custom(cmd: Option<CustomCmd>) -> Result<()> {
             command,
         } => execute_create(CreateRequest {
             repo,
+            scope,
             name,
             agent,
             command,
@@ -247,17 +291,11 @@ pub(crate) fn execute_custom(cmd: Option<CustomCmd>) -> Result<()> {
 fn execute_custom_wizard() -> Result<()> {
     match prompt_custom_scope()? {
         CustomScopeChoice::Repo => {
-            let layout = prepare_workspace(PathBuf::from("."))?;
+            let layout = prepare_workspace(PathBuf::from("."), CustomScope::Repo)?;
             println!("tfy custom: repo scope selected");
             println!("repo={}", layout.repo.display());
-            println!(
-                "rules={}",
-                display_repo_path(&layout.repo, &layout.commands)
-            );
-            println!(
-                "fixtures={}",
-                display_repo_path(&layout.repo, &layout.fixtures_dir)
-            );
+            println!("rules={}", layout.display_path(&layout.commands));
+            println!("fixtures={}", layout.display_path(&layout.fixtures_dir));
             println!(
                 "next: run `tfy custom capture --name <name> -- <command>` or `tfy custom import-fixture --name <name> --file <output.txt>`"
             );
@@ -267,7 +305,19 @@ fn execute_custom_wizard() -> Result<()> {
             Ok(())
         }
         CustomScopeChoice::Global => {
-            bail!("tfy custom global scope is not active yet; use repo scope now, or keep legacy/manual ~/.config/tfy/commands.toml outside the trusted custom harness")
+            let layout = prepare_workspace(PathBuf::from("."), CustomScope::Global)?;
+            println!("tfy custom: global scope selected");
+            println!("execution_cwd={}", layout.repo.display());
+            println!("rules={}", layout.display_path(&layout.commands));
+            println!("fixtures={}", layout.display_path(&layout.fixtures_dir));
+            println!(
+                "next: run `tfy custom capture --scope global --name <name> -- <command>` or `tfy custom import-fixture --scope global --name <name> --file <output.txt>`"
+            );
+            println!(
+                "then: ask your agent using `{}/AGENT_INSTRUCTIONS.md`, run `tfy custom verify --scope global --name <name>`, then `tfy custom trust --scope global --name <name>`",
+                layout.custom_dir.display()
+            );
+            Ok(())
         }
     }
 }
@@ -282,7 +332,7 @@ fn prompt_custom_scope() -> Result<CustomScopeChoice> {
     if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
         let choices = [
             "Current repo (.tfy/) — recommended",
-            "Global (~/.config/tfy/) — not active yet",
+            "Global (~/.config/tfy/custom/) — cross-repo",
             "Cancel",
         ];
         match prompt_menu_tui("TFY custom: choose rule scope", &choices) {
@@ -324,8 +374,8 @@ fn parse_custom_scope_choice(choice: &str) -> Result<CustomScopeChoice> {
     }
 }
 
-fn execute_init(repo: PathBuf, json: bool) -> Result<()> {
-    let layout = prepare_workspace(repo)?;
+fn execute_init(repo: PathBuf, scope: CustomScope, json: bool) -> Result<()> {
+    let layout = prepare_workspace(repo, scope)?;
     let payload = init_payload(&layout, "generic")?;
     if json {
         print_json(&CustomResponse {
@@ -334,19 +384,24 @@ fn execute_init(repo: PathBuf, json: bool) -> Result<()> {
             payload,
         })
     } else {
-        println!("tfy custom init: ok repo={}", layout.repo.display());
-        println!("allowed_paths=.tfy/commands.toml .tfy/rule-fixtures/** .tfy/custom/**");
+        println!(
+            "tfy custom init: ok scope={} execution_cwd={}",
+            layout.scope_label(),
+            layout.repo.display()
+        );
+        println!("allowed_paths={}", allowed_paths(&layout).join(" "));
         Ok(())
     }
 }
 
 fn execute_capture(
     repo: PathBuf,
+    scope: CustomScope,
     name: String,
     mut command: Vec<String>,
     json: bool,
 ) -> Result<()> {
-    let layout = prepare_workspace(repo)?;
+    let layout = prepare_workspace(repo, scope)?;
     let name = safe_name(&name)?;
     if command.first().map(|arg| arg == "--").unwrap_or(false) {
         command.remove(0);
@@ -355,8 +410,14 @@ fn execute_capture(
     emit_fixture_metadata(&layout, "capture", meta, json)
 }
 
-fn execute_import_fixture(repo: PathBuf, name: String, file: PathBuf, json: bool) -> Result<()> {
-    let layout = prepare_workspace(repo)?;
+fn execute_import_fixture(
+    repo: PathBuf,
+    scope: CustomScope,
+    name: String,
+    file: PathBuf,
+    json: bool,
+) -> Result<()> {
+    let layout = prepare_workspace(repo, scope)?;
     let name = safe_name(&name)?;
     let file = canonicalize_existing_file(&file)?;
     let bytes =
@@ -372,8 +433,14 @@ fn execute_import_fixture(repo: PathBuf, name: String, file: PathBuf, json: bool
     emit_fixture_metadata(&layout, "import-fixture", meta, json)
 }
 
-fn execute_prompt(repo: PathBuf, agent: String, name: String, json: bool) -> Result<()> {
-    let layout = prepare_workspace(repo)?;
+fn execute_prompt(
+    repo: PathBuf,
+    scope: CustomScope,
+    agent: String,
+    name: String,
+    json: bool,
+) -> Result<()> {
+    let layout = prepare_workspace(repo, scope)?;
     let name = safe_name(&name)?;
     let meta = read_metadata(&layout, &name)?;
     let payload = write_prompt_payload(&layout, agent, &name, &meta)?;
@@ -395,11 +462,12 @@ fn execute_prompt(repo: PathBuf, agent: String, name: String, json: bool) -> Res
 
 fn verify_custom(
     repo: PathBuf,
+    scope: CustomScope,
     name: String,
     allow_legacy_global_rules: bool,
     accept_larger_than_built_in: bool,
 ) -> Result<VerifyEvidence> {
-    let layout = prepare_workspace(repo)?;
+    let layout = prepare_workspace(repo, scope)?;
     let name = safe_name(&name)?;
     let global_rules = user_global_rules_path();
     let has_global = global_rules.as_ref().is_some_and(|path| path.exists());
@@ -409,8 +477,8 @@ fn verify_custom(
     reject_symlink(&layout.tfy_dir)?;
     reject_symlink(&layout.commands)?;
     let meta = read_metadata(&layout, &name)?;
-    let fixture = layout.repo.join(&meta.fixture_path);
-    ensure_inside(&layout.repo, &fixture)?;
+    let fixture = layout.fixture_path_from_meta(&meta);
+    ensure_inside(&layout.fixtures_dir, &fixture)?;
     reject_symlink(&fixture)?;
     let fixture_bytes = fs::read(&fixture)?;
     let actual_fixture_hash = sha256_hex(&fixture_bytes);
@@ -420,7 +488,7 @@ fn verify_custom(
             meta.fixture_sha256
         );
     }
-    let rules = CommandRuleSet::load_strict(&layout.commands, "repo")?;
+    let rules = CommandRuleSet::load_strict(&layout.commands, layout.scope.source_kind())?;
     let rules_sha256 = sha256_hex(&fs::read(&layout.commands)?);
     let argv = if meta.cmd.is_empty() {
         vec![name.clone()]
@@ -521,6 +589,7 @@ fn verify_custom(
 
 fn execute_verify(
     repo: PathBuf,
+    scope: CustomScope,
     name: String,
     allow_legacy_global_rules: bool,
     accept_larger_than_built_in: bool,
@@ -528,11 +597,12 @@ fn execute_verify(
 ) -> Result<()> {
     let evidence = verify_custom(
         repo.clone(),
+        scope,
         name.clone(),
         allow_legacy_global_rules,
         accept_larger_than_built_in,
     )?;
-    let layout = workspace_paths(repo)?;
+    let layout = workspace_paths(repo, scope)?;
     let evidence_path = layout.custom_dir.join(format!("{name}.verify.json"));
     if json {
         print_json(&CustomResponse {
@@ -543,7 +613,7 @@ fn execute_verify(
     } else {
         println!(
             "tfy custom verify: ok name={name} evidence={}",
-            display_repo_path(&layout.repo, &evidence_path)
+            layout.display_path(&evidence_path)
         );
         Ok(())
     }
@@ -551,10 +621,11 @@ fn execute_verify(
 
 fn trust_custom(
     repo: PathBuf,
+    scope: CustomScope,
     name: String,
     dry_run: bool,
 ) -> Result<(serde_json::Value, PathBuf, PathBuf)> {
-    let layout = prepare_workspace(repo)?;
+    let layout = prepare_workspace(repo, scope)?;
     let name = safe_name(&name)?;
     reject_symlink(&layout.tfy_dir)?;
     reject_symlink(&layout.commands)?;
@@ -569,8 +640,8 @@ fn trust_custom(
     if current_rules_hash != evidence.rules_sha256 {
         bail!("rule bytes changed after verify; rerun tfy custom verify");
     }
-    let fixture = layout.repo.join(&meta.fixture_path);
-    ensure_inside(&layout.repo, &fixture)?;
+    let fixture = layout.fixture_path_from_meta(&meta);
+    ensure_inside(&layout.fixtures_dir, &fixture)?;
     reject_symlink(&fixture)?;
     let current_fixture_hash = sha256_hex(&fs::read(&fixture)?);
     if current_fixture_hash != evidence.fixture_sha256
@@ -583,7 +654,7 @@ fn trust_custom(
     {
         bail!("override compare evidence is missing");
     }
-    let trust_file = layout.tfy_dir.join("trust.json");
+    let trust_file = layout.trust_file();
     reject_existing_symlink(&trust_file)?;
     let trust = serde_json::json!({
         "schema_version": 2,
@@ -612,8 +683,14 @@ fn trust_custom(
     Ok((trust, layout.repo, trust_file))
 }
 
-fn execute_trust(repo: PathBuf, name: String, dry_run: bool, json: bool) -> Result<()> {
-    let (trust, repo, trust_file) = trust_custom(repo, name, dry_run)?;
+fn execute_trust(
+    repo: PathBuf,
+    scope: CustomScope,
+    name: String,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    let (trust, repo, trust_file) = trust_custom(repo, scope, name, dry_run)?;
     if json {
         print_json(&CustomResponse {
             ok: true,
@@ -630,63 +707,21 @@ fn execute_trust(repo: PathBuf, name: String, dry_run: bool, json: bool) -> Resu
 }
 
 fn execute_status(repo: PathBuf, json: bool) -> Result<()> {
-    let layout = workspace_paths(repo)?;
-    let rules_exists = layout.commands.exists();
-    let trust_file = layout.tfy_dir.join("trust.json");
-    let mut trust_schema_version = 0_u64;
-    let trust_state = if !trust_file.exists() {
-        "untrusted"
-    } else if reject_existing_symlink(&trust_file).is_err() {
-        "invalid_symlink"
-    } else {
-        let trust: serde_json::Value = serde_json::from_slice(&fs::read(&trust_file)?)?;
-        trust_schema_version = trust["schema_version"].as_u64().unwrap_or(0);
-        let diagnostics = CommandRuleSet::load_standard(&layout.repo)
-            .diagnostics()
-            .to_vec();
-        if diagnostics
-            .iter()
-            .any(|d| d.code == "repo_rules_hash_mismatch")
-        {
-            "invalid"
-        } else if diagnostics.iter().any(|d| d.code == "repo_rules_untrusted") {
-            "untrusted"
-        } else {
-            let expected = trust["command_rules"]["rules_sha256"]
-                .as_str()
-                .unwrap_or("");
-            let actual = if rules_exists {
-                sha256_hex(&fs::read(&layout.commands)?)
-            } else {
-                String::new()
-            };
-            match (
-                trust_schema_version,
-                expected == actual && !expected.is_empty(),
-            ) {
-                (1, true) => "trusted_v1_legacy",
-                (2, true) => "trusted_v2",
-                (_, true) => "trusted_unknown_schema",
-                _ => "stale",
-            }
-        }
-    };
-    let global_path = user_global_rules_path();
-    let global_exists = global_path.as_ref().is_some_and(|p| p.exists());
+    let repo_layout = workspace_paths(repo.clone(), CustomScope::Repo)?;
+    let global_layout = workspace_paths(repo, CustomScope::Global)?;
+    let repo_status = custom_layout_status(&repo_layout)?;
+    let global_status = custom_layout_status(&global_layout)?;
+    let legacy_path = user_global_rules_path();
+    let legacy_exists = legacy_path.as_ref().is_some_and(|p| p.exists());
     let payload = serde_json::json!({
-        "repo": layout.repo.display().to_string(),
-        "repo_local": {
-            "rules_file": display_repo_path(&layout.repo, &layout.commands),
-            "rules_exists": rules_exists,
-            "trust_file": display_repo_path(&layout.repo, &trust_file),
-            "state": trust_state,
-            "trust_schema_version": trust_schema_version,
-        },
-        "user_global": {
-            "path": global_path.map(|p| p.display().to_string()),
-            "exists": global_exists,
-            "state": if global_exists { "legacy_manual" } else { "absent" },
-            "diagnostic": if global_exists { "user_global_rules_legacy_manual" } else { "" },
+        "repo": repo_layout.repo.display().to_string(),
+        "repo_local": repo_status,
+        "global_custom": global_status,
+        "user_global_legacy": {
+            "path": legacy_path.map(|p| p.display().to_string()),
+            "exists": legacy_exists,
+            "state": if legacy_exists { "present_legacy_manual" } else { "missing" },
+            "diagnostic": if legacy_exists { "user_global_rules_legacy_manual" } else { "" },
         }
     });
     if json {
@@ -697,19 +732,101 @@ fn execute_status(repo: PathBuf, json: bool) -> Result<()> {
         })
     } else {
         println!(
-            "tfy custom status: repo_local={trust_state} user_global={}",
-            if global_exists {
-                "legacy_manual"
-            } else {
-                "absent"
-            }
+            "tfy custom status: repo_local={} global_custom={} user_global_legacy={}",
+            payload["repo_local"]["state"].as_str().unwrap_or("unknown"),
+            payload["global_custom"]["state"]
+                .as_str()
+                .unwrap_or("unknown"),
+            payload["user_global_legacy"]["state"]
+                .as_str()
+                .unwrap_or("unknown")
         );
         Ok(())
     }
 }
 
+fn runtime_diagnostic_state(layout: &CustomLayout) -> Option<&'static str> {
+    let diagnostics = CommandRuleSet::load_standard(&layout.repo)
+        .diagnostics()
+        .to_vec();
+    match layout.scope {
+        CustomScope::Repo => diagnostics
+            .iter()
+            .find(|d| d.source_kind == "repo")
+            .and_then(|d| match d.code.as_str() {
+                "repo_rules_untrusted" => Some("untrusted"),
+                "repo_rules_hash_mismatch" if d.message.contains("changed after trust") => {
+                    Some("stale")
+                }
+                "repo_rules_hash_mismatch" => Some("invalid"),
+                _ => None,
+            }),
+        CustomScope::Global => diagnostics
+            .iter()
+            .find(|d| d.source_kind == "global_custom")
+            .and_then(|d| match d.code.as_str() {
+                "global_custom_rules_untrusted" => Some("untrusted"),
+                "global_custom_rules_hash_mismatch" => Some("stale"),
+                "global_custom_rules_invalid_trust" | "global_custom_rules_symlink_refused" => {
+                    Some("invalid")
+                }
+                _ => None,
+            }),
+    }
+}
+
+fn custom_layout_status(layout: &CustomLayout) -> Result<serde_json::Value> {
+    let rules_exists = layout.commands.exists();
+    let trust_file = layout.trust_file();
+    let mut trust_schema_version = 0_u64;
+    let state = if !rules_exists {
+        "missing"
+    } else if !trust_file.exists() {
+        "untrusted"
+    } else if reject_existing_symlink(&layout.tfy_dir).is_err()
+        || reject_existing_symlink(&layout.commands).is_err()
+        || reject_existing_symlink(&trust_file).is_err()
+    {
+        "invalid"
+    } else {
+        match fs::read(&trust_file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        {
+            Some(trust) => {
+                trust_schema_version = trust["schema_version"].as_u64().unwrap_or(0);
+                let expected = trust["command_rules"]["rules_sha256"]
+                    .as_str()
+                    .unwrap_or("");
+                let actual = sha256_hex(&fs::read(&layout.commands)?);
+                if expected != actual || expected.is_empty() {
+                    "stale"
+                } else if let Some(state) = runtime_diagnostic_state(layout) {
+                    state
+                } else {
+                    match (layout.scope, trust_schema_version) {
+                        (CustomScope::Repo, 1) => "trusted_v1_legacy",
+                        (_, 2) => "trusted_v2",
+                        (CustomScope::Global, 1) => "invalid",
+                        _ => "invalid",
+                    }
+                }
+            }
+            None => "invalid",
+        }
+    };
+    Ok(serde_json::json!({
+        "rules_file": layout.display_path(&layout.commands),
+        "rules_exists": rules_exists,
+        "trust_file": layout.display_path(&trust_file),
+        "state": state,
+        "trust_schema_version": trust_schema_version,
+    }))
+}
+
 struct CreateRequest {
     repo: PathBuf,
+    scope: CustomScope,
     name: String,
     agent: String,
     command: Vec<String>,
@@ -720,18 +837,19 @@ struct CreateRequest {
 }
 
 fn execute_create(request: CreateRequest) -> Result<()> {
-    let layout = prepare_workspace(request.repo.clone())?;
+    let layout = prepare_workspace(request.repo.clone(), request.scope)?;
     let name = safe_name(&request.name)?;
     let meta = capture_command_fixture(&layout, &name, request.command)?;
     let prompt = write_prompt_payload(&layout, request.agent, &name, &meta)?;
     if request.verify_and_trust {
         let evidence = verify_custom(
             request.repo.clone(),
+            request.scope,
             request.name.clone(),
             request.allow_legacy_global_rules,
             request.accept_larger_than_built_in,
         )?;
-        let (trust, _, _) = trust_custom(request.repo, request.name.clone(), false)?;
+        let (trust, _, _) = trust_custom(request.repo, request.scope, request.name.clone(), false)?;
         if request.json {
             print_json(&serde_json::json!({
                 "ok": true,
@@ -766,12 +884,16 @@ fn execute_create(request: CreateRequest) -> Result<()> {
             "tfy custom prompt: ok instruction_file={}",
             prompt.instruction_file
         );
-        println!("tfy custom create: stopped before trust; edit .tfy/commands.toml then run tfy custom verify/trust");
+        println!(
+            "tfy custom create: stopped before trust; edit {} then run tfy custom verify/trust",
+            layout.display_path(&layout.commands)
+        );
         Ok(())
     }
 }
 
 struct CustomLayout {
+    scope: CustomScope,
     repo: PathBuf,
     tfy_dir: PathBuf,
     commands: PathBuf,
@@ -780,13 +902,46 @@ struct CustomLayout {
     created_paths: Vec<String>,
 }
 
-fn workspace_paths(repo: PathBuf) -> Result<CustomLayout> {
+impl CustomLayout {
+    fn scope_label(&self) -> &'static str {
+        self.scope.cli_flag()
+    }
+
+    fn display_path(&self, path: &Path) -> String {
+        match self.scope {
+            CustomScope::Repo => display_repo_path(&self.repo, path),
+            CustomScope::Global => path.display().to_string(),
+        }
+    }
+
+    fn trust_file(&self) -> PathBuf {
+        self.tfy_dir.join("trust.json")
+    }
+
+    fn fixture_path_from_meta(&self, meta: &FixtureMetadata) -> PathBuf {
+        let path = PathBuf::from(&meta.fixture_path);
+        if path.is_absolute() {
+            path
+        } else {
+            self.repo.join(path)
+        }
+    }
+}
+
+fn workspace_paths(repo: PathBuf, scope: CustomScope) -> Result<CustomLayout> {
     let repo = canonicalize_existing_dir(&repo)?;
-    let tfy_dir = repo.join(".tfy");
+    let tfy_dir = match scope {
+        CustomScope::Repo => repo.join(".tfy"),
+        CustomScope::Global => global_custom_root()?,
+    };
     let commands = tfy_dir.join("commands.toml");
     let fixtures_dir = tfy_dir.join("rule-fixtures");
-    let custom_dir = tfy_dir.join("custom");
+    let custom_dir = match scope {
+        CustomScope::Repo => tfy_dir.join("custom"),
+        CustomScope::Global => tfy_dir.join("agent"),
+    };
     Ok(CustomLayout {
+        scope,
         repo,
         tfy_dir,
         commands,
@@ -796,14 +951,14 @@ fn workspace_paths(repo: PathBuf) -> Result<CustomLayout> {
     })
 }
 
-fn prepare_workspace(repo: PathBuf) -> Result<CustomLayout> {
-    let mut layout = workspace_paths(repo)?;
+fn prepare_workspace(repo: PathBuf, scope: CustomScope) -> Result<CustomLayout> {
+    let mut layout = workspace_paths(repo, scope)?;
     reject_existing_symlink(&layout.tfy_dir)?;
     if !layout.tfy_dir.exists() {
         fs::create_dir_all(&layout.tfy_dir)?;
         layout
             .created_paths
-            .push(display_repo_path(&layout.repo, &layout.tfy_dir));
+            .push(layout.display_path(&layout.tfy_dir));
     }
     reject_symlink(&layout.tfy_dir)?;
     reject_existing_symlink(&layout.commands)?;
@@ -813,27 +968,25 @@ fn prepare_workspace(repo: PathBuf) -> Result<CustomLayout> {
         fs::create_dir_all(&layout.fixtures_dir)?;
         layout
             .created_paths
-            .push(display_repo_path(&layout.repo, &layout.fixtures_dir));
+            .push(layout.display_path(&layout.fixtures_dir));
     }
     if !layout.custom_dir.exists() {
         fs::create_dir_all(&layout.custom_dir)?;
         layout
             .created_paths
-            .push(display_repo_path(&layout.repo, &layout.custom_dir));
+            .push(layout.display_path(&layout.custom_dir));
     }
     if !layout.commands.exists() {
         fs::write(&layout.commands, "# TFY custom command rules. Edit through `tfy custom` harness and verify before trust.\nschema_version = 3\n")?;
         layout
             .created_paths
-            .push(display_repo_path(&layout.repo, &layout.commands));
+            .push(layout.display_path(&layout.commands));
     }
     let template = layout.custom_dir.join("AGENT_INSTRUCTIONS.md");
     reject_existing_symlink(&template)?;
     if !template.exists() {
-        fs::write(&template, base_agent_instructions("generic"))?;
-        layout
-            .created_paths
-            .push(display_repo_path(&layout.repo, &template));
+        fs::write(&template, base_agent_instructions(&layout, "generic"))?;
+        layout.created_paths.push(layout.display_path(&template));
     }
     Ok(layout)
 }
@@ -841,18 +994,13 @@ fn prepare_workspace(repo: PathBuf) -> Result<CustomLayout> {
 fn init_payload(layout: &CustomLayout, agent: &str) -> Result<InitPayload> {
     Ok(InitPayload {
         repo: layout.repo.display().to_string(),
-        allowed_paths: allowed_paths(),
-        forbidden_paths: vec![
-            "crates/**".into(),
-            "docs/** except referenced docs".into(),
-            ".github/**".into(),
-            "scripts/**".into(),
-        ],
+        allowed_paths: allowed_paths(layout),
+        forbidden_paths: forbidden_paths(layout),
         created_paths: layout.created_paths.clone(),
-        rule_file: display_repo_path(&layout.repo, &layout.commands),
-        fixture_dir: display_repo_path(&layout.repo, &layout.fixtures_dir),
-        custom_dir: display_repo_path(&layout.repo, &layout.custom_dir),
-        instruction_template: base_agent_instructions(agent),
+        rule_file: layout.display_path(&layout.commands),
+        fixture_dir: layout.display_path(&layout.fixtures_dir),
+        custom_dir: layout.display_path(&layout.custom_dir),
+        instruction_template: base_agent_instructions(layout, agent),
     })
 }
 
@@ -904,7 +1052,7 @@ fn write_fixture_and_metadata(
         name: name.into(),
         command_display: redact_command_display(&command),
         cmd: command,
-        fixture_path: display_repo_path(&layout.repo, &fixture),
+        fixture_path: layout.display_path(&fixture),
         fixture_sha256: sha256_hex(&bytes),
         exit_code,
         captured_at: now_stamp(),
@@ -915,7 +1063,7 @@ fn write_fixture_and_metadata(
 }
 
 fn emit_fixture_metadata(
-    layout: &CustomLayout,
+    _layout: &CustomLayout,
     command_name: &'static str,
     meta: FixtureMetadata,
     json: bool,
@@ -929,7 +1077,7 @@ fn emit_fixture_metadata(
     } else {
         println!(
             "tfy custom {command_name}: ok fixture={}",
-            display_repo_path(&layout.repo, &layout.repo.join(&meta.fixture_path))
+            meta.fixture_path
         );
         Ok(())
     }
@@ -951,41 +1099,95 @@ fn write_prompt_payload(
     meta: &FixtureMetadata,
 ) -> Result<PromptPayload> {
     let instruction_file = layout.custom_dir.join(format!("{name}.instructions.md"));
-    let prompt = agent_prompt(&agent, name, meta);
+    let prompt = agent_prompt(layout, &agent, name, meta);
     reject_existing_symlink(&instruction_file)?;
     fs::write(&instruction_file, &prompt)?;
     Ok(PromptPayload {
         agent,
         name: name.to_string(),
-        instruction_file: display_repo_path(&layout.repo, &instruction_file),
-        allowed_paths: allowed_paths(),
+        instruction_file: layout.display_path(&instruction_file),
+        allowed_paths: allowed_paths(layout),
         forbidden_actions: forbidden_actions(),
-        verify_command: format!("tfy custom verify --repo . --name {name}"),
+        verify_command: format!(
+            "tfy custom verify --scope {} --repo . --name {name}",
+            layout.scope.cli_flag()
+        ),
         prompt,
     })
 }
 
-fn agent_prompt(agent: &str, name: &str, meta: &FixtureMetadata) -> String {
-    format!("{}\n\nTask fixture: {name}\nCommand display: {}\nFixture: {}\n\nEdit only `.tfy/commands.toml` and fixture files under `.tfy/rule-fixtures/`. After editing, run `tfy custom verify --repo . --name {name}`. If you intentionally replace a built-in summary, use exact `[command.override]` family metadata and require compare evidence.\n", base_agent_instructions(agent), meta.command_display, meta.fixture_path)
+fn agent_prompt(layout: &CustomLayout, agent: &str, name: &str, meta: &FixtureMetadata) -> String {
+    let edit_target = match layout.scope {
+        CustomScope::Repo => {
+            "`.tfy/commands.toml` and fixture files under `.tfy/rule-fixtures/`".to_string()
+        }
+        CustomScope::Global => format!(
+            "`{}/commands.toml` and fixture files under `{}/rule-fixtures/`",
+            layout.tfy_dir.display(),
+            layout.tfy_dir.display()
+        ),
+    };
+    format!("{}\n\nTask fixture: {name}\nCommand display: {}\nFixture: {}\n\nEdit only {edit_target}. After editing, run `tfy custom verify --scope {} --repo . --name {name}`. If you intentionally replace a built-in summary, use exact `[command.override]` family metadata and require compare evidence.\n",
+        base_agent_instructions(layout, agent),
+        meta.command_display,
+        meta.fixture_path,
+        layout.scope.cli_flag()
+    )
 }
 
-fn base_agent_instructions(agent: &str) -> String {
-    format!("# TFY custom rule authoring instructions for {agent}\n\nAllowed writes:\n- `.tfy/commands.toml`\n- `.tfy/rule-fixtures/**`\n- `.tfy/custom/*.instructions.md` generated by TFY\n\nForbidden actions:\n- Do not edit Rust/source/config outside `.tfy/`.\n- Do not add scripts, hooks, subprocess launchers, plugin code, or official support claims.\n- Do not bypass raw-first, no-negative, redaction, trust, or plain-text-default invariants.\n- Do not claim TFY prevents OS-level edits; TFY invalidates trust/provenance when bytes change.\n")
+fn base_agent_instructions(layout: &CustomLayout, agent: &str) -> String {
+    match layout.scope {
+        CustomScope::Repo => format!("# TFY custom rule authoring instructions for {agent}\n\nScope: repo-local `.tfy/` custom rules.\n\nAllowed writes:\n- `.tfy/commands.toml`\n- `.tfy/rule-fixtures/**`\n- `.tfy/custom/*.instructions.md` generated by TFY\n\nForbidden actions:\n- Do not edit Rust/source/config outside `.tfy/`.\n- Do not add scripts, hooks, subprocess launchers, plugin code, or official support claims.\n- Do not bypass raw-first, no-negative, redaction, trust, or plain-text-default invariants.\n- Do not claim TFY prevents OS-level edits; TFY invalidates trust/provenance when bytes change.\n"),
+        CustomScope::Global => format!("# TFY custom rule authoring instructions for {agent}\n\nScope: global custom rules under `{}`. Commands may be captured from the current repo, but trust is anchored only in this global custom store.\n\nAllowed writes:\n- `{}/commands.toml`\n- `{}/rule-fixtures/**`\n- `{}/agent/*.instructions.md` generated by TFY\n\nForbidden actions:\n- Do not edit repo source, Rust/source/config, or files outside `{}`.\n- Do not edit legacy/manual `~/.config/tfy/commands.toml`.\n- Do not add scripts, hooks, subprocess launchers, plugin code, or official support claims.\n- Do not bypass raw-first, no-negative, redaction, trust, or plain-text-default invariants.\n- Do not claim TFY prevents OS-level edits; TFY invalidates trust/provenance when bytes change.\n",
+            layout.tfy_dir.display(),
+            layout.tfy_dir.display(),
+            layout.tfy_dir.display(),
+            layout.tfy_dir.display(),
+            layout.tfy_dir.display()
+        ),
+    }
 }
 
-fn allowed_paths() -> Vec<String> {
-    vec![
-        ".tfy/commands.toml".into(),
-        ".tfy/rule-fixtures/**".into(),
-        ".tfy/custom/**".into(),
-        "docs/COMMAND_RULES.md".into(),
-        "docs/CUSTOM_COMMAND_RULE_AUTHORING.md".into(),
-    ]
+fn allowed_paths(layout: &CustomLayout) -> Vec<String> {
+    match layout.scope {
+        CustomScope::Repo => vec![
+            ".tfy/commands.toml".into(),
+            ".tfy/rule-fixtures/**".into(),
+            ".tfy/custom/**".into(),
+            "docs/COMMAND_RULES.md".into(),
+            "docs/CUSTOM_COMMAND_RULE_AUTHORING.md".into(),
+        ],
+        CustomScope::Global => vec![
+            format!("{}/commands.toml", layout.tfy_dir.display()),
+            format!("{}/rule-fixtures/**", layout.tfy_dir.display()),
+            format!("{}/agent/**", layout.tfy_dir.display()),
+            "docs/COMMAND_RULES.md".into(),
+            "docs/CUSTOM_COMMAND_RULE_AUTHORING.md".into(),
+        ],
+    }
+}
+
+fn forbidden_paths(layout: &CustomLayout) -> Vec<String> {
+    match layout.scope {
+        CustomScope::Repo => vec![
+            "crates/**".into(),
+            "docs/** except referenced docs".into(),
+            ".github/**".into(),
+            "scripts/**".into(),
+        ],
+        CustomScope::Global => vec![
+            "repo source files".into(),
+            "~/.config/tfy/commands.toml legacy/manual path".into(),
+            "crates/**".into(),
+            ".github/**".into(),
+            "scripts/**".into(),
+        ],
+    }
 }
 
 fn forbidden_actions() -> Vec<String> {
     vec![
-        "edit source outside .tfy".into(),
+        "edit source outside selected TFY custom scope".into(),
         "add scripts/hooks/subprocess/plugin code".into(),
         "write trust without tfy custom verify".into(),
         "claim OS-level sandboxing".into(),
@@ -1039,10 +1241,11 @@ fn reject_existing_symlink(path: &Path) -> Result<()> {
     }
 }
 
-fn ensure_inside(repo: &Path, path: &Path) -> Result<()> {
+fn ensure_inside(root: &Path, path: &Path) -> Result<()> {
+    let root = root.canonicalize()?;
     let canonical = path.canonicalize()?;
-    if !canonical.starts_with(repo) {
-        bail!("path escapes repo harness: {}", path.display());
+    if !canonical.starts_with(&root) {
+        bail!("path escapes tfy custom harness: {}", path.display());
     }
     Ok(())
 }
@@ -1062,12 +1265,12 @@ fn prepare_custom_raw_dir(layout: &CustomLayout, name: &str) -> Result<PathBuf> 
     reject_existing_symlink(&custom_raw)?;
     fs::create_dir_all(&custom_raw)?;
     reject_symlink(&custom_raw)?;
-    ensure_inside(&layout.repo, &custom_raw)?;
+    ensure_inside(&layout.tfy_dir, &custom_raw)?;
     let raw_root = custom_raw.join(name);
     reject_existing_symlink(&raw_root)?;
     fs::create_dir_all(&raw_root)?;
     reject_symlink(&raw_root)?;
-    ensure_inside(&layout.repo, &raw_root)?;
+    ensure_inside(&layout.tfy_dir, &raw_root)?;
     Ok(raw_root)
 }
 
@@ -1155,6 +1358,16 @@ fn now_stamp() -> String {
         .expect("system clock is before UNIX_EPOCH")
         .as_secs();
     format!("unix:{secs}")
+}
+
+fn global_custom_root() -> Result<PathBuf> {
+    let Some(home) = std::env::var_os("HOME") else {
+        bail!("HOME is required for tfy custom --scope global");
+    };
+    Ok(PathBuf::from(home)
+        .join(".config")
+        .join("tfy")
+        .join("custom"))
 }
 
 fn user_global_rules_path() -> Option<PathBuf> {
