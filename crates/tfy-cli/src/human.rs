@@ -338,6 +338,7 @@ _tfy_human_disable_shims() {
   done
   IFS=$old_ifs
   export PATH="$new_path"
+  hash -r 2>/dev/null || true
 }
 _tfy_human_write_shim() {
   local name="$1"
@@ -404,6 +405,7 @@ case ":$PATH:" in
   *":$TFY_HUMAN_SHIM_DIR:"*) ;;
   *) export PATH="$TFY_HUMAN_SHIM_DIR:$PATH" ;;
 esac
+hash -r 2>/dev/null || true
 case ";${PROMPT_COMMAND:-};" in
   *";_tfy_human_prompt_command;"*) ;;
   *) PROMPT_COMMAND="_tfy_human_prompt_command${PROMPT_COMMAND:+; $PROMPT_COMMAND}" ;;
