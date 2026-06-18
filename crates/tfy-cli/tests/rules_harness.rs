@@ -1026,3 +1026,82 @@ fn custom_init_rejects_broken_symlinked_agent_template() {
     assert!(!outside_target.exists());
     assert!(String::from_utf8_lossy(&output.stderr).contains("refuses symlink path"));
 }
+
+#[test]
+fn bare_custom_wizard_repo_choice_initializes_repo_harness() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("HOME", home.path())
+        .arg("custom")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.as_mut().unwrap().write_all(b"repo\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(dir.path().join(".tfy/commands.toml").exists());
+    assert!(dir.path().join(".tfy/rule-fixtures").is_dir());
+    assert!(dir
+        .path()
+        .join(".tfy/custom/AGENT_INSTRUCTIONS.md")
+        .exists());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("repo scope selected"));
+}
+
+#[test]
+fn bare_custom_wizard_global_choice_fails_closed_until_global_store_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("HOME", home.path())
+        .arg("custom")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.as_mut().unwrap().write_all(b"global\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("global scope is not active yet"));
+    assert!(!home
+        .path()
+        .join(".config/tfy/custom/commands.toml")
+        .exists());
+}
+
+#[test]
+fn bare_custom_wizard_empty_non_tty_input_fails_closed_without_repo_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .env("HOME", home.path())
+        .arg("custom")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(!dir.path().join(".tfy/commands.toml").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("explicit scope choice"));
+}

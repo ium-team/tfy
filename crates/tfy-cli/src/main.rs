@@ -267,10 +267,10 @@ enum Cmd {
         #[arg(long, default_value = ".tfy/state/ledger.jsonl")]
         ledger: PathBuf,
     },
-    /// Official TFY-managed custom command summary authoring harness.
+    /// Open the custom-rule scope wizard, or run expert custom authoring subcommands.
     Custom {
         #[command(subcommand)]
-        cmd: CustomCmd,
+        cmd: Option<CustomCmd>,
     },
     /// Validate, preview, trust, and scaffold custom command summary rules.
     Rules {

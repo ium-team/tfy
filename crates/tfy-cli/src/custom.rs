@@ -3,11 +3,13 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::{BufRead, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tfy_core::{summarize_command_output_bytes_with_rules, CommandRuleSet};
 
+use crate::product::{prompt_menu_tui, raw_terminal_unavailable};
 use crate::util::print_json;
 
 #[derive(Subcommand)]
@@ -176,7 +178,10 @@ struct OverrideEvidence {
     override_active: bool,
 }
 
-pub(crate) fn execute_custom(cmd: CustomCmd) -> Result<()> {
+pub(crate) fn execute_custom(cmd: Option<CustomCmd>) -> Result<()> {
+    let Some(cmd) = cmd else {
+        return execute_custom_wizard();
+    };
     match cmd {
         CustomCmd::Init { repo, json } => execute_init(repo, json),
         CustomCmd::Capture {
@@ -236,6 +241,86 @@ pub(crate) fn execute_custom(cmd: CustomCmd) -> Result<()> {
             accept_larger_than_built_in,
             json,
         }),
+    }
+}
+
+fn execute_custom_wizard() -> Result<()> {
+    match prompt_custom_scope()? {
+        CustomScopeChoice::Repo => {
+            let layout = prepare_workspace(PathBuf::from("."))?;
+            println!("tfy custom: repo scope selected");
+            println!("repo={}", layout.repo.display());
+            println!(
+                "rules={}",
+                display_repo_path(&layout.repo, &layout.commands)
+            );
+            println!(
+                "fixtures={}",
+                display_repo_path(&layout.repo, &layout.fixtures_dir)
+            );
+            println!(
+                "next: run `tfy custom capture --name <name> -- <command>` or `tfy custom import-fixture --name <name> --file <output.txt>`"
+            );
+            println!(
+                "then: ask your agent using `.tfy/custom/AGENT_INSTRUCTIONS.md`, run `tfy custom verify --name <name>`, then `tfy custom trust --name <name>`"
+            );
+            Ok(())
+        }
+        CustomScopeChoice::Global => {
+            bail!("tfy custom global scope is not active yet; use repo scope now, or keep legacy/manual ~/.config/tfy/commands.toml outside the trusted custom harness")
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CustomScopeChoice {
+    Repo,
+    Global,
+}
+
+fn prompt_custom_scope() -> Result<CustomScopeChoice> {
+    if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        let choices = [
+            "Current repo (.tfy/) — recommended",
+            "Global (~/.config/tfy/) — not active yet",
+            "Cancel",
+        ];
+        match prompt_menu_tui("TFY custom: choose rule scope", &choices) {
+            Ok(0) => return Ok(CustomScopeChoice::Repo),
+            Ok(1) => return Ok(CustomScopeChoice::Global),
+            Ok(_) => bail!("tfy custom cancelled"),
+            Err(err) if raw_terminal_unavailable(&err) => {
+                eprintln!("TFY custom: TUI unavailable ({err}); falling back to line prompt");
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    eprintln!("TFY custom: choose rule scope: repo or global");
+    let input = read_custom_prompt_input()?;
+    let choice = input
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    parse_custom_scope_choice(choice)
+}
+
+fn read_custom_prompt_input() -> Result<String> {
+    let stdin = std::io::stdin();
+    let mut input = String::new();
+    if stdin.is_terminal() {
+        stdin.lock().read_line(&mut input)?;
+    } else {
+        stdin.lock().read_to_string(&mut input)?;
+    }
+    Ok(input)
+}
+
+fn parse_custom_scope_choice(choice: &str) -> Result<CustomScopeChoice> {
+    match choice.trim().to_ascii_lowercase().as_str() {
+        "1" | "r" | "repo" | "current" | "local" => Ok(CustomScopeChoice::Repo),
+        "2" | "g" | "global" => Ok(CustomScopeChoice::Global),
+        "3" | "c" | "cancel" | "q" | "quit" => bail!("tfy custom cancelled"),
+        _ => bail!("tfy custom requires an explicit scope choice: repo or global"),
     }
 }
 

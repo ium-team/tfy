@@ -24,7 +24,7 @@ TFY loads rules in this order for custom candidates. Built-ins normally win; onl
 2. legacy/manual user-global `~/.config/tfy/commands.toml` compatibility rules;
 3. generic fallback / unsupported passthrough.
 
-`tfy custom` is the recommended authoring path and is repo-local by default. User-global rules still load at runtime for compatibility, but TFY emits `user_global_rules_legacy_manual` diagnostics and `tfy custom verify` refuses to proceed by default when a global rule file exists. Use `--allow-legacy-global-rules` only when intentionally recording that external/manual influence. A future `tfy custom --global` flow should add provenance-backed trust for global rules.
+`tfy custom` is the recommended authoring path. Running bare `tfy custom` opens a scope wizard: choose the current repo to initialize `.tfy/`, or choose global to see the current fail-closed notice. Repo-local remains the only provenance-backed custom harness today. User-global rules still load at runtime for compatibility, but TFY emits `user_global_rules_legacy_manual` diagnostics and `tfy custom verify` refuses to proceed by default when a global rule file exists. Use `--allow-legacy-global-rules` only when intentionally recording that external/manual influence. A future global custom flow should add provenance-backed trust for global rules before activating them.
 
 ## Repo-local trust
 
@@ -308,6 +308,7 @@ Use `tfy rules compare-built-in ... --json` after adding override metadata to co
 Agents should use the official `tfy custom` harness instead of hand-editing without proof:
 
 ```bash
+tfy custom
 tfy custom init --repo .
 tfy custom capture --repo . --name quality-report -- quality-report --json
 tfy custom prompt --repo . --agent codex --name quality-report

@@ -1276,7 +1276,7 @@ fn confirm_fuckyou(yes: bool) -> Result<()> {
     }
 }
 
-fn prompt_menu_tui(title: &str, choices: &[&str]) -> Result<usize> {
+pub(crate) fn prompt_menu_tui(title: &str, choices: &[&str]) -> Result<usize> {
     let mut selected = 0usize;
     let mut stderr = std::io::stderr();
     let _raw = RawTerminalMode::enter()?;
@@ -1302,7 +1302,7 @@ fn prompt_menu_tui(title: &str, choices: &[&str]) -> Result<usize> {
     }
 }
 
-fn raw_terminal_unavailable(err: &anyhow::Error) -> bool {
+pub(crate) fn raw_terminal_unavailable(err: &anyhow::Error) -> bool {
     err.chain()
         .any(|cause| cause.to_string().contains("raw terminal unavailable"))
 }

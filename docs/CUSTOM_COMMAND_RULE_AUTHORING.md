@@ -32,8 +32,9 @@ An authoring agent must not:
 ## Required workflow
 
 1. **Choose scope**
+   - Run bare `tfy custom` to open the scope wizard. Choose repo for the active provenance-backed harness.
    - Use repo-local `.tfy/commands.toml` through `tfy custom` for project-specific commands.
-   - Treat user-global `~/.config/tfy/commands.toml` as legacy/manual compatibility until a provenance-backed `tfy custom --global` flow exists.
+   - Treat user-global `~/.config/tfy/commands.toml` as legacy/manual compatibility until a provenance-backed global custom flow exists; the bare wizard's global choice fails closed today instead of creating active global trust.
 
 2. **Collect evidence**
    - Prefer a TFY route so raw evidence is stored first.
@@ -51,7 +52,7 @@ An authoring agent must not:
    - Use captures only for display values, never execution input.
 
 4. **Validate with the harness**
-   - `tfy custom init --repo .` must create the bounded workspace.
+   - Bare `tfy custom` with the repo choice or `tfy custom init --repo .` must create the bounded workspace.
    - `tfy custom capture --repo . --name <name> -- <command...>` or `tfy custom import-fixture --repo . --name <name> --file <sample>` must create fixture metadata. `capture` runs from `--repo` and records a merged stdout+stderr fixture; use `import-fixture` for stream-specific samples or secret-bearing commands.
    - `tfy custom prompt --repo . --agent <codex|claude|generic> --name <name>` must generate bounded agent instructions.
    - `tfy custom verify --repo . --name <name> --json` must accept the rule, prove the fixture exercised a concrete `user_toml` rule id, and record validate/preview/compare evidence.
