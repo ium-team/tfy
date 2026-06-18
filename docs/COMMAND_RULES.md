@@ -14,11 +14,11 @@ They never bypass TFY's core invariants:
 4. plain text remains the default model-visible output;
 5. repo-local rules require an explicit trust record.
 
-User TOML rules are **additive-only**. Existing TFY built-in Rust strategies and built-in DSL filters keep precedence. If a user rule also matches a built-in family, the built-in result is used and TFY records a `user_rule_shadowed_by_builtin` diagnostic.
+User TOML rules are additive by default. Existing TFY built-in Rust strategies and built-in DSL filters keep precedence unless a v3 rule explicitly opts in to a family-bound built-in override. If a user rule also matches a built-in family without a valid override, the built-in result is used and TFY records a `user_rule_shadowed_by_builtin` or `user_rule_override_family_mismatch` diagnostic.
 
 ## Rule locations
 
-TFY loads rules in this order after built-in strategies do not produce a candidate:
+TFY loads rules in this order for custom candidates. Built-ins normally win; only trusted v3 rules with `[command.override] built_in = true` and an exact `family` match can replace a built-in candidate:
 
 1. trusted repo-local `.tfy/commands.toml` discovered from the current directory or nearest ancestor;
 2. user-global `~/.config/tfy/commands.toml`;
@@ -195,7 +195,7 @@ Custom severity may make a summary more cautious, but it cannot downgrade nonzer
 
 ## TOML v3 parity-oriented schema
 
-Use `schema_version = 3` when a custom rule needs structured extraction or aggregate views closer to built-in summaries. v3 is still declarative and additive-only: it does **not** enable built-in override, shell execution, arbitrary scripts, or official-support claims. Built-ins still win on family conflicts and emit `user_rule_shadowed_by_builtin`.
+Use `schema_version = 3` when a custom rule needs structured extraction or aggregate views closer to built-in summaries. v3 is still declarative: it does **not** enable shell execution, arbitrary scripts, or official-support claims. Built-ins still win on family conflicts by default and emit `user_rule_shadowed_by_builtin`.
 
 ```toml
 schema_version = 3
@@ -253,6 +253,38 @@ Structured extracts render as capture blocks and are still redacted/capped befor
 
 `[[command.group]]` counts a named regex capture and renders top values as a deterministic `group.<name>` section. `top_k` is capped at 100. Groups are useful for top failing files, tests, packages, shards, hosts, or error classes.
 
+### v3 built-in override control plane
+
+A v3 rule can intentionally replace a built-in summary only with explicit, family-bound metadata:
+
+```toml
+schema_version = 3
+
+[[command]]
+id = "project_df"
+match.argv_prefix = ["df"]
+keep_lines_matching = ["Filesystem|Use%|/dev/"]
+max_lines = 12
+
+[command.override]
+built_in = true
+family = "df"
+reason = "prefer project disk pressure view"
+```
+
+Override rules are still custom/local support. The control plane is deliberately narrow:
+
+- `schema_version = 3` alone never changes precedence.
+- `[command.override] built_in = true` requires `family`, and `family` must exactly match TFY's classified command family such as `df`.
+- If the family is wrong, TFY keeps the built-in candidate and emits `user_rule_override_family_mismatch`.
+- If the override is valid, TFY uses the custom candidate, marks `strategy_kind = "user_toml"`, records `rule_id`, and emits `user_rule_overrode_builtin`.
+- Raw-first storage, redaction, capping, and the no-negative selector still run after the custom render. If the custom text is not smaller than redacted public raw output, model-visible output passes through instead of showing a larger summary.
+- Repo-local override rules still require `.tfy/trust.json`; user-global override rules remain user-owned local configuration.
+- If no built-in candidate exists for the matched command, the same rule behaves like a normal custom rule; `override.family` only controls replacement of an existing built-in candidate.
+- Rule order is significant: TFY uses the first matching custom rule, so place a more specific override rule before broader custom rules for the same command.
+
+Use `tfy rules compare-built-in ... --json` after adding override metadata to compare effective custom-rule behavior against TFY built-in/default behavior for representative fixtures. The JSON includes `comparison.override_active`, both strategy kinds, and model-visible character counts so an authoring agent can flag overrides that are less useful than the built-in/default result.
+
 ### v3 harness commands
 
 Agents should use the CLI harness instead of hand-editing without proof:
@@ -265,7 +297,7 @@ tfy rules compare-built-in --file .tfy/commands.toml --cmd "quality-report" --ar
 tfy rules trust --file .tfy/commands.toml --repo .
 ```
 
-`agent-workspace` creates the bounded authoring area. `validate` is strict and never trusts the file. `preview` runs the shared raw-first/no-negative summarizer against a fixture; use repeated `--arg` values when real argv contains spaces or quoting. `compare-built-in` shows custom-vs-default output but does not enable override. `trust` records the reviewed `.tfy/commands.toml` sha256 in `.tfy/trust.json`.
+`agent-workspace` creates the bounded authoring area. `validate` is strict and never trusts the file. `preview` runs the shared raw-first/no-negative summarizer against a fixture; use repeated `--arg` values when real argv contains spaces or quoting. `compare-built-in` shows effective custom-vs-default output, including explicit overrides, plus a machine-readable `comparison` object. `trust` records the reviewed `.tfy/commands.toml` sha256 in `.tfy/trust.json`.
 
 ### Safety metadata
 
@@ -296,7 +328,10 @@ Diagnostic codes include:
 - `user_rules_invalid_extract`
 - `user_rules_invalid_metric`
 - `user_rules_invalid_group`
+- `user_rules_invalid_override`
 - `user_rule_shadowed_by_builtin`
+- `user_rule_override_family_mismatch`
+- `user_rule_overrode_builtin`
 
 Gateway and ledger metadata include `rule_id`, `strategy_source_kind`, and `command_rule_diagnostics` when applicable. Adapter/MCP reports aggregate `rule_counts`, `strategy_source_counts`, and `command_rule_diagnostic_counts`.
 

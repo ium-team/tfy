@@ -2219,6 +2219,122 @@ match = "Filesystem"
 }
 
 #[test]
+fn user_toml_v3_can_explicitly_override_built_in_family() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+schema_version = 3
+
+[[command]]
+id = "override_df"
+match.argv_prefix = ["df"]
+keep_lines_matching = ["Filesystem|Use%|/dev/disk1s1"]
+max_lines = 4
+on_empty = "override_df: no filesystem rows"
+
+[command.override]
+built_in = true
+family = "df"
+reason = "prefer project disk pressure view"
+
+[[command.metric]]
+name = "filesystems"
+op = "count"
+match = "^/dev/"
+"#,
+        "user",
+    )
+    .unwrap();
+    let raw = "Filesystem      Size  Used Avail Use% Mounted on
+/dev/disk1s1    100G   95G    5G  95% /
+"
+    .repeat(40);
+    let argv = vec!["df".to_string()];
+    let summary =
+        summarize_command_output_with_rules("df", &argv, &raw, 0, dir.path(), Some(&rules))
+            .unwrap();
+    assert_eq!(summary.command_family, "df");
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rule_id.as_deref(), Some("override_df"));
+    assert_eq!(summary.strategy_source_kind, "user");
+    assert!(summary.model_text.contains("strategy=user_toml"));
+    assert!(summary.model_text.contains("rule_id=override_df"));
+    assert!(summary.model_text.contains("counter.filesystems="));
+    assert!(summary
+        .command_rule_diagnostics
+        .iter()
+        .any(|d| d.code == "user_rule_overrode_builtin"));
+    assert!(!summary
+        .command_rule_diagnostics
+        .iter()
+        .any(|d| d.code == "user_rule_shadowed_by_builtin"));
+}
+
+#[test]
+fn user_toml_v3_override_family_mismatch_keeps_built_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+schema_version = 3
+
+[[command]]
+id = "wrong_override_df"
+match.argv_prefix = ["df"]
+keep_lines_matching = ["Filesystem"]
+max_lines = 4
+
+[command.override]
+built_in = true
+family = "git_status"
+reason = "wrong family is ignored"
+"#,
+        "user",
+    )
+    .unwrap();
+    let raw = "Filesystem      Size  Used Avail Use% Mounted on
+/dev/disk1s1    100G   95G    5G  95% /
+"
+    .repeat(40);
+    let argv = vec!["df".to_string()];
+    let summary =
+        summarize_command_output_with_rules("df", &argv, &raw, 0, dir.path(), Some(&rules))
+            .unwrap();
+    assert_eq!(summary.command_family, "df");
+    assert_eq!(summary.strategy_kind, "dsl");
+    assert_eq!(summary.rule_id, None);
+    assert!(summary
+        .command_rule_diagnostics
+        .iter()
+        .any(|d| d.code == "user_rule_override_family_mismatch"));
+}
+
+#[test]
+fn user_toml_override_requires_schema_version_three_and_family() {
+    let missing_schema = r#"
+[[command]]
+id = "old_override"
+match.argv_prefix = ["df"]
+
+[command.override]
+built_in = true
+family = "df"
+"#;
+    assert!(CommandRuleSet::from_toml_str_strict(missing_schema, "user").is_err());
+
+    let missing_family = r#"
+schema_version = 3
+
+[[command]]
+id = "missing_family"
+match.argv_prefix = ["df"]
+
+[command.override]
+built_in = true
+"#;
+    assert!(CommandRuleSet::from_toml_str_strict(missing_family, "user").is_err());
+}
+
+#[test]
 fn user_toml_v3_group_distinct_values_are_bounded() {
     let dir = tempfile::tempdir().unwrap();
     let rules = CommandRuleSet::from_toml_str_strict(

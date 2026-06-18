@@ -211,6 +211,7 @@ struct CommandRule {
     argv_prefix: Vec<String>,
     command_regex: Option<Regex>,
     safety: RuleSafetyMetadata,
+    override_policy: RuleOverridePolicy,
     operations: Vec<RuleOperation>,
 }
 
@@ -219,6 +220,19 @@ struct RuleSafetyMetadata {
     human_auto_safe: bool,
     agent_safe: bool,
     interactive_risk: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuleOverridePolicy {
+    built_in: bool,
+    family: Option<String>,
+    reason: Option<String>,
+}
+
+impl RuleOverridePolicy {
+    fn allows_family(&self, family: &str) -> bool {
+        self.built_in && self.family.as_deref() == Some(family)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -420,6 +434,19 @@ struct CommandRuleToml {
     agent_safe: bool,
     #[serde(default = "default_interactive_risk")]
     interactive_risk: String,
+    #[serde(default, rename = "override")]
+    override_config: Option<CommandRuleOverrideToml>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleOverrideToml {
+    #[serde(default)]
+    built_in: bool,
+    #[serde(default)]
+    family: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -713,6 +740,7 @@ impl CommandRuleSet {
             human_auto_safe: rule.safety.human_auto_safe,
             agent_safe: rule.safety.agent_safe,
             interactive_risk: rule.safety.interactive_risk.clone(),
+            override_policy: rule.override_policy.clone(),
         })
     }
 }
@@ -724,6 +752,7 @@ struct UserRuleSummaryCandidate {
     human_auto_safe: bool,
     agent_safe: bool,
     interactive_risk: String,
+    override_policy: RuleOverridePolicy,
 }
 
 impl CommandRule {
@@ -961,6 +990,7 @@ fn build_command_rule(
             rule.interactive_risk
         );
     }
+    let override_policy = build_override_policy(&rule, schema_version)?;
     let command_regex = rule
         .match_config
         .command_regex
@@ -1032,7 +1062,50 @@ fn build_command_rule(
             agent_safe: rule.agent_safe,
             interactive_risk: rule.interactive_risk,
         },
+        override_policy,
         operations,
+    })
+}
+
+fn build_override_policy(
+    rule: &CommandRuleToml,
+    schema_version: u16,
+) -> Result<RuleOverridePolicy> {
+    let Some(override_config) = &rule.override_config else {
+        return Ok(RuleOverridePolicy::default());
+    };
+    if schema_version < 3 {
+        bail!(
+            "command rule {} uses override without schema_version = 3",
+            rule.id
+        );
+    }
+    if !override_config.built_in {
+        return Ok(RuleOverridePolicy::default());
+    }
+    let Some(family) = override_config.family.as_deref() else {
+        bail!(
+            "command rule {} override.built_in requires override.family",
+            rule.id
+        );
+    };
+    validate_safe_name(family, "override.family")?;
+    let reason = match override_config.reason.as_deref() {
+        Some(reason) => {
+            validate_limit(reason.chars().count(), 240, "override.reason")?;
+            let reason = cap_to_chars(&norm(&redact_public(reason)), 240);
+            if reason.is_empty() {
+                None
+            } else {
+                Some(reason)
+            }
+        }
+        None => None,
+    };
+    Ok(RuleOverridePolicy {
+        built_in: true,
+        family: Some(family.to_string()),
+        reason,
     })
 }
 
@@ -1816,6 +1889,8 @@ fn diagnostic_code_from_message(message: &str) -> &'static str {
         "user_rules_invalid_capture"
     } else if message.contains("severity") {
         "user_rules_invalid_severity"
+    } else if message.contains("override") {
+        "user_rules_invalid_override"
     } else if message.contains("parse_") || message.contains("extract") {
         "user_rules_invalid_extract"
     } else if message.contains("metric") {
@@ -2205,45 +2280,106 @@ fn compress_with_raw_ref(
         rr: &raw_ref,
         risk: &risk,
     });
-    if built_in_candidate.is_some() {
-        if let Some(rule_set) = rules {
-            if let Some(rule) = rule_set.first_match(argv, &display_command) {
-                command_rule_diagnostics.push(CommandRuleDiagnostic {
-                    source_kind: rule.source_kind.clone(),
-                    path: String::new(),
-                    code: "user_rule_shadowed_by_builtin".into(),
-                    message: format!(
-                        "user command rule {} matched but built-in strategy {strategy_kind} kept precedence",
-                        rule.id
-                    ),
-                });
-            }
+    let user_candidate = rules.and_then(|rules| {
+        rules.summary_candidate(
+            argv,
+            &display_command,
+            exit_code,
+            raw,
+            &evidence,
+            &raw_ref,
+            &risk,
+        )
+    });
+    let use_user_candidate = match (&built_in_candidate, &user_candidate) {
+        (Some(_), Some(user_candidate))
+            if user_candidate
+                .override_policy
+                .allows_family(&command_family) =>
+        {
+            let reason = user_candidate
+                .override_policy
+                .reason
+                .as_deref()
+                .map(|reason| format!("; reason={reason}"))
+                .unwrap_or_default();
+            command_rule_diagnostics.push(CommandRuleDiagnostic {
+                source_kind: user_candidate.strategy_source_kind.clone(),
+                path: String::new(),
+                code: "user_rule_overrode_builtin".into(),
+                message: format!(
+                    "user command rule {} explicitly overrode built-in family {command_family}{reason}",
+                    user_candidate.rule_id
+                ),
+            });
+            true
         }
-    }
-    let summary_candidate = built_in_candidate
-        .or_else(|| {
-            let user_candidate = rules?.summary_candidate(
-                argv,
-                &display_command,
-                exit_code,
-                raw,
-                &evidence,
-                &raw_ref,
-                &risk,
-            )?;
-            strategy_kind = "user_toml".into();
-            human_auto_safe = user_candidate.human_auto_safe;
-            agent_safe = user_candidate.agent_safe;
-            interactive_risk = user_candidate.interactive_risk;
-            rule_id = Some(user_candidate.rule_id);
-            strategy_source_kind = user_candidate.strategy_source_kind;
-            Some(user_candidate.text)
-        })
-        .unwrap_or_else(|| match risk.as_str() {
+        (Some(_), Some(user_candidate)) if user_candidate.override_policy.built_in => {
+            let requested = user_candidate
+                .override_policy
+                .family
+                .as_deref()
+                .unwrap_or("<missing>");
+            command_rule_diagnostics.push(CommandRuleDiagnostic {
+                source_kind: user_candidate.strategy_source_kind.clone(),
+                path: String::new(),
+                code: "user_rule_override_family_mismatch".into(),
+                message: format!(
+                    "user command rule {} requested built-in override family {requested}, but command classified as {command_family}; built-in strategy {strategy_kind} kept precedence",
+                    user_candidate.rule_id
+                ),
+            });
+            false
+        }
+        (Some(_), Some(user_candidate)) => {
+            command_rule_diagnostics.push(CommandRuleDiagnostic {
+                source_kind: user_candidate.strategy_source_kind.clone(),
+                path: String::new(),
+                code: "user_rule_shadowed_by_builtin".into(),
+                message: format!(
+                    "user command rule {} matched but built-in strategy {strategy_kind} kept precedence",
+                    user_candidate.rule_id
+                ),
+            });
+            false
+        }
+        (Some(_), None) => {
+            if let Some(rule_set) = rules {
+                if let Some(rule) = rule_set.first_match(argv, &display_command) {
+                    command_rule_diagnostics.push(CommandRuleDiagnostic {
+                        source_kind: rule.source_kind.clone(),
+                        path: String::new(),
+                        code: "user_rule_shadowed_by_builtin".into(),
+                        message: format!(
+                            "user command rule {} matched but produced no summary candidate; built-in strategy {strategy_kind} kept precedence",
+                            rule.id
+                        ),
+                    });
+                }
+            }
+            false
+        }
+        (None, Some(_)) => true,
+        (None, None) => false,
+    };
+    let summary_candidate = if use_user_candidate {
+        let user_candidate = user_candidate.expect("user candidate exists when selected");
+        strategy_kind = "user_toml".into();
+        human_auto_safe = user_candidate.human_auto_safe;
+        agent_safe = user_candidate.agent_safe;
+        interactive_risk = user_candidate.interactive_risk;
+        rule_id = Some(user_candidate.rule_id);
+        strategy_source_kind = user_candidate.strategy_source_kind;
+        user_candidate.text
+    } else if let Some(built_in_candidate) = built_in_candidate {
+        built_in_candidate
+    } else {
+        match risk.as_str() {
             "critical" => critical(&display_command, exit_code, &evidence, &raw_ref),
             "success" => success(&display_command, exit_code, raw, &raw_ref),
             _ => unknown(&display_command, exit_code, raw, &evidence, &raw_ref),
-        });
+        }
+    };
     let summary_candidate =
         cap_summary_preserving_raw_ref(summary_candidate, &raw_ref, max_summary_bytes);
     let public_raw = public_raw_candidate(raw, &raw_ref);

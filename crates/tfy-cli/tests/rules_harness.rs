@@ -104,6 +104,162 @@ fn rules_preview_uses_raw_first_summary_and_redacts() {
 }
 
 #[test]
+fn rules_compare_built_in_reports_effective_override_behavior() {
+    let dir = tempfile::tempdir().unwrap();
+    let rule = dir.path().join("commands.toml");
+    let fixture = dir.path().join("df.txt");
+    std::fs::write(
+        &rule,
+        r#"
+schema_version = 3
+
+[[command]]
+id = "override_df"
+match.argv_prefix = ["df"]
+keep_lines_matching = ["Filesystem|Use%|/dev/disk1s1"]
+max_lines = 4
+
+[command.override]
+built_in = true
+family = "df"
+reason = "agent-authored disk view"
+
+[[command.metric]]
+name = "filesystems"
+op = "count"
+match = "^/dev/"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &fixture,
+        "Filesystem      Size  Used Avail Use% Mounted on
+/dev/disk1s1    100G   95G    5G  95% /
+"
+        .repeat(40),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "rules",
+            "compare-built-in",
+            "--file",
+            rule.to_str().unwrap(),
+            "--cmd",
+            "df",
+            "--arg",
+            "df",
+            "--fixture",
+            fixture.to_str().unwrap(),
+            "--raw-dir",
+            dir.path().join("raw").to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let note = json["note"].as_str().unwrap();
+    assert!(note.contains("effective custom-rule behavior"), "{note}");
+    assert!(!note.contains("override is not enabled"), "{note}");
+    assert_eq!(json["comparison"]["override_active"], true);
+    assert_eq!(json["comparison"]["with_rules_strategy_kind"], "user_toml");
+    assert_eq!(json["comparison"]["without_rules_strategy_kind"], "dsl");
+    assert!(json["comparison"]["with_rules_summary_chars"]
+        .as_u64()
+        .is_some());
+    assert!(json["comparison"]["without_rules_summary_chars"]
+        .as_u64()
+        .is_some());
+    assert_eq!(json["with_rules"]["strategy_kind"], "user_toml");
+    assert_eq!(json["with_rules"]["rule_id"], "override_df");
+    assert_eq!(json["without_rules"]["strategy_kind"], "dsl");
+    let diagnostics = json["with_rules"]["command_rule_diagnostics"]
+        .as_array()
+        .unwrap();
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["code"] == "user_rule_overrode_builtin"));
+}
+
+#[test]
+fn rules_preview_reports_explicit_built_in_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let rule = dir.path().join("commands.toml");
+    let fixture = dir.path().join("df.txt");
+    std::fs::write(
+        &rule,
+        r#"
+schema_version = 3
+
+[[command]]
+id = "override_df"
+match.argv_prefix = ["df"]
+keep_lines_matching = ["Filesystem|Use%|/dev/disk1s1"]
+max_lines = 4
+
+[command.override]
+built_in = true
+family = "df"
+reason = "agent-authored disk view"
+
+[[command.metric]]
+name = "filesystems"
+op = "count"
+match = "^/dev/"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &fixture,
+        "Filesystem      Size  Used Avail Use% Mounted on
+/dev/disk1s1    100G   95G    5G  95% /
+"
+        .repeat(40),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "rules",
+            "preview",
+            "--file",
+            rule.to_str().unwrap(),
+            "--cmd",
+            "df",
+            "--arg",
+            "df",
+            "--fixture",
+            fixture.to_str().unwrap(),
+            "--raw-dir",
+            dir.path().join("raw").to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["command_family"], "df");
+    assert_eq!(json["strategy_kind"], "user_toml");
+    assert_eq!(json["rule_id"], "override_df");
+    assert!(json["model_text"]
+        .as_str()
+        .unwrap()
+        .contains("counter.filesystems="));
+    let diagnostics = json["command_rule_diagnostics"].as_array().unwrap();
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["code"] == "user_rule_overrode_builtin"));
+}
+
+#[test]
 fn rules_preview_accepts_explicit_argv_for_quoted_commands() {
     let dir = tempfile::tempdir().unwrap();
     let rule = dir.path().join("commands.toml");

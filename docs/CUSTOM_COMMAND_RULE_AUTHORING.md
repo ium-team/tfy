@@ -14,6 +14,7 @@ An authoring agent may:
 - draft `.tfy/commands.toml` or `~/.config/tfy/commands.toml` rules;
 - add v2 sections, counters, captures, and severity buckets;
 - add v3 bounded structured extracts, metrics, and groups when fixture evidence proves they are useful;
+- add explicit v3 built-in override metadata only when the user asks to replace a built-in summary and `compare-built-in` evidence supports the replacement;
 - validate strict parsing and preview model-visible output;
 - update `.tfy/trust.json` only after the final rule bytes are reviewed.
 
@@ -23,7 +24,7 @@ An authoring agent must not:
 
 - add script execution, shell hooks, subprocesses, or plugin code to TOML rules;
 - claim a custom rule is official TFY support or RTK parity evidence;
-- override built-in TFY strategies or imply `schema_version = 3` changes precedence;
+- override built-in TFY strategies unless the user explicitly asks for a v3 `[command.override]` rule and fixture comparison proves the replacement is better; never imply `schema_version = 3` alone changes precedence;
 - mark a command `human_auto_safe = true` unless it is clearly noninteractive and low risk;
 - hide failures by stripping all error evidence;
 - skip validation because a TOML rule “looks right.”
@@ -43,16 +44,20 @@ An authoring agent must not:
    - Use a safe `command.id`: ASCII letters, digits, `_`, or `-`, length 1..64.
    - Prefer `match.argv_prefix` over `match.command_regex`.
    - Use `schema_version = 2` for sections/counters/captures/severity.
-   - Use `schema_version = 3` for bounded JSON/NDJSON/KV/table extracts, metrics, or groups.
+   - Use `schema_version = 3` for bounded JSON/NDJSON/KV/table extracts, metrics, groups, or explicit built-in override metadata.
+   - Add `[command.override] built_in = true` only with exact `family = "<classified_family>"` and a short redaction-safe `reason`.
+   - Put specific override rules before broader custom rules for the same command because first match wins.
    - Keep `max_lines`, `truncate_lines_at`, and `max_items` low enough for token savings.
    - Use captures only for display values, never execution input.
 
 4. **Validate with the harness**
    - `tfy rules validate --file .tfy/commands.toml` must accept the rule.
    - `tfy rules preview --file .tfy/commands.toml --cmd "<cmd>" --arg <argv0> --arg <argv1> --fixture .tfy/rule-fixtures/<name>.txt` must show redacted model-visible output.
-   - `tfy rules compare-built-in ... --json` should be used when a built-in family might already match; custom rules remain additive.
+   - `tfy rules compare-built-in ... --json` must be used when a built-in family might already match; it compares effective custom-rule behavior, including explicit overrides, against TFY built-in/default behavior.
    - Tiny outputs must still pass through under no-negative behavior.
    - Raw refs must remain recoverable.
+   - If overriding a built-in, preview/compare output must show `strategy_kind = "user_toml"`, the expected `rule_id`, a `user_rule_overrode_builtin` diagnostic, and `comparison.override_active = true`; family mismatches must keep the built-in.
+   - If `comparison.with_rules_larger_chars_vs_without_rules` is nonzero, report the token-saving regression and revise the rule unless the user explicitly accepts the local tradeoff.
 
 5. **Trust repo-local rules**
    - Review final `.tfy/commands.toml` bytes.
