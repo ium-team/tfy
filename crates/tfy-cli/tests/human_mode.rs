@@ -392,7 +392,10 @@ printf forged",
     );
     assert_eq!(String::from_utf8_lossy(&forged_output.stdout), "ok");
     let rewritten = fs::read_to_string(&forged_shim).unwrap();
-    assert!(rewritten.contains("exec tfy human run"), "{rewritten}");
+    assert!(
+        rewritten.contains("exec \"${TFY_HUMAN_TFY_BIN:?}\" human run"),
+        "{rewritten}"
+    );
     assert!(!rewritten.contains("printf forged"), "{rewritten}");
 
     let post_start_poison = Command::new("bash")
@@ -441,4 +444,225 @@ printf forged",
         String::from_utf8_lossy(&uninstall.stderr)
     );
     assert!(!script.exists());
+}
+
+#[test]
+fn human_auto_activate_rejects_both_target_before_agent_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = run_tfy(&["start", "both", "--auto-activate"], &dir);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("human-only"), "{stderr}");
+    assert!(!dir.path().join(".codex/config.toml").exists());
+    assert!(!dir.path().join(".tfy/host-config/codex.json").exists());
+    assert!(!dir.path().join(".tfy/human/auto-activate.json").exists());
+    assert!(!dir.path().join(".tfy/lifecycle.json").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn human_auto_activate_enables_fresh_bash_from_trusted_repo_marker() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let hello = bin.join("hello-auto");
+    fs::write(&hello, "#!/usr/bin/env sh\nprintf auto").unwrap();
+    fs::set_permissions(&hello, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let enable = run_tfy(&["start", "--human", "--auto-activate", "--no-apply"], &dir);
+    assert!(
+        enable.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&enable.stdout),
+        String::from_utf8_lossy(&enable.stderr)
+    );
+    assert!(dir.path().join(".tfy/human/auto-activate.json").exists());
+    assert!(dir.path().join(".tfy/human/auto-activate.bash").exists());
+
+    let rcfile = dir.path().join("test.bashrc");
+    let install = run_tfy(
+        &[
+            "human",
+            "auto-activate",
+            "install",
+            "--shell",
+            "bash",
+            "--rcfile",
+            rcfile.to_str().unwrap(),
+            "--apply",
+        ],
+        &dir,
+    );
+    assert!(
+        install.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let rc_text = fs::read_to_string(&rcfile).unwrap();
+    assert!(rc_text.contains("TFY:HUMAN-AUTO-ACTIVATE:START"));
+    assert!(rc_text.contains("TFY_HUMAN_AUTO_ACTIVATE_TFY="));
+
+    let fake = dir.path().join("fake");
+    fs::create_dir_all(&fake).unwrap();
+    fs::write(
+        fake.join("tfy"),
+        "#!/usr/bin/env sh\necho fake-tfy-executed >> ../fake-tfy.log\nexit 99\n",
+    )
+    .unwrap();
+    fs::set_permissions(fake.join("tfy"), fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}:{}",
+        fake.display(),
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let smoke = Command::new("bash")
+        .current_dir(dir.path())
+        .arg("--rcfile")
+        .arg(&rcfile)
+        .arg("-i")
+        .arg("-c")
+        .arg("hello-auto; test -f .tfy/human/ledger.jsonl; test \"$TFY_HUMAN_ROOT\" = \"$(pwd -P)\"; test -n \"$TFY_HUMAN_TFY_BIN\"")
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&smoke.stdout),
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&smoke.stdout), "auto");
+    assert!(!dir.path().join("fake-tfy.log").exists());
+
+    let subdir = dir.path().join("sub/dir");
+    fs::create_dir_all(&subdir).unwrap();
+    let nested = Command::new("bash")
+        .current_dir(&subdir)
+        .arg("--rcfile")
+        .arg(&rcfile)
+        .arg("-i")
+        .arg("-c")
+        .arg(format!(
+            "test \"$TFY_HUMAN_ROOT\" = {}; hello-auto",
+            shell_escape_for_test(&dir.path().canonicalize().unwrap().display().to_string())
+        ))
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(
+        nested.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&nested.stdout),
+        String::from_utf8_lossy(&nested.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&nested.stdout), "auto");
+
+    let outside = tempfile::tempdir().unwrap();
+    let outside_output = Command::new("bash")
+        .current_dir(outside.path())
+        .arg("--rcfile")
+        .arg(&rcfile)
+        .arg("-i")
+        .arg("-c")
+        .arg("test -z \"${TFY_HUMAN_ACTIVE:-}\"")
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(
+        outside_output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&outside_output.stdout),
+        String::from_utf8_lossy(&outside_output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn human_auto_activate_rejects_self_certifying_or_symlinked_state() {
+    use std::fs;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let dir = tempfile::tempdir().unwrap();
+    let enable = run_tfy(&["start", "--human", "--auto-activate", "--no-apply"], &dir);
+    assert!(enable.status.success());
+
+    fs::write(
+        dir.path().join(".tfy/human/auto-activate.bash"),
+        "# TFY:HUMAN-AUTO-SCRIPT:START\necho forged\n# TFY:HUMAN-AUTO-SCRIPT:END\n",
+    )
+    .unwrap();
+    let validate = run_tfy(
+        &[
+            "human",
+            "auto-activate",
+            "validate",
+            "--root",
+            dir.path().to_str().unwrap(),
+            "--shell",
+            "bash",
+        ],
+        &dir,
+    );
+    assert!(validate.status.success());
+    let repaired = fs::read_to_string(dir.path().join(".tfy/human/auto-activate.bash")).unwrap();
+    assert!(!repaired.contains("echo forged"), "{repaired}");
+    assert!(repaired.contains("TFY_HUMAN_TFY_BIN"), "{repaired}");
+
+    let symlinked = tempfile::tempdir().unwrap();
+    fs::create_dir_all(symlinked.path().join("real/human")).unwrap();
+    symlink(symlinked.path().join("real"), symlinked.path().join(".tfy")).unwrap();
+    let bad = run_tfy(
+        &[
+            "human",
+            "auto-activate",
+            "validate",
+            "--root",
+            symlinked.path().to_str().unwrap(),
+            "--shell",
+            "bash",
+        ],
+        &symlinked,
+    );
+    assert!(!bad.status.success());
+
+    let rcfile = dir.path().join("hook.bashrc");
+    let install = run_tfy(
+        &[
+            "human",
+            "auto-activate",
+            "install",
+            "--rcfile",
+            rcfile.to_str().unwrap(),
+            "--apply",
+        ],
+        &dir,
+    );
+    assert!(install.status.success());
+    fs::set_permissions(&rcfile, fs::Permissions::from_mode(0o644)).unwrap();
+    let uninstall = run_tfy(
+        &[
+            "human",
+            "auto-activate",
+            "uninstall",
+            "--rcfile",
+            rcfile.to_str().unwrap(),
+            "--apply",
+        ],
+        &dir,
+    );
+    assert!(uninstall.status.success());
+    assert!(!fs::read_to_string(&rcfile)
+        .unwrap()
+        .contains("TFY:HUMAN-AUTO-ACTIVATE"));
+}
+
+#[cfg(target_os = "linux")]
+fn shell_escape_for_test(value: &str) -> String {
+    assert!(!value.contains("'"));
+    format!("'{value}'")
 }
