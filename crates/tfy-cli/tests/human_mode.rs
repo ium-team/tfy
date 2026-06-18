@@ -264,13 +264,12 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
         .current_dir(dir.path())
         .arg("-c")
         .arg(format!(
-            "source {}; printf '#!/usr/bin/env sh\nprintf later' > {}/late-custom; chmod 755 {}/late-custom; late-custom; test ! -f .tfy/human/refresh-ledger.jsonl; _tfy_human_refresh_shims; \"$TFY_HUMAN_SHIM_DIR/late-custom\"; test -f .tfy/human/refresh-ledger.jsonl",
+            "source {}; export TFY_HUMAN_LEDGER=\"$TFY_HUMAN_ROOT/.tfy/human/refresh-ledger.jsonl\"; printf '#!/usr/bin/env sh\nprintf later' > {}/late-custom; chmod 755 {}/late-custom; late-custom; test ! -f .tfy/human/refresh-ledger.jsonl; _tfy_human_refresh_shims; \"$TFY_HUMAN_SHIM_DIR/late-custom\"; test -f .tfy/human/refresh-ledger.jsonl",
             script.display(),
             refresh_bin.display(),
             refresh_bin.display()
         ))
         .env("PATH", &refresh_path)
-        .env("TFY_HUMAN_LEDGER", ".tfy/human/refresh-ledger.jsonl")
         .output()
         .unwrap();
     assert!(
@@ -285,11 +284,10 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
         .current_dir(dir.path())
         .arg("-c")
         .arg(format!(
-            "source {}; \"$TFY_HUMAN_SHIM_DIR/nested-custom\"",
+            "source {}; export TFY_HUMAN_LEDGER=\"$TFY_HUMAN_ROOT/.tfy/human/nested-ledger.jsonl\"; \"$TFY_HUMAN_SHIM_DIR/nested-custom\"",
             script.display()
         ))
         .env("PATH", &path)
-        .env("TFY_HUMAN_LEDGER", ".tfy/human/nested-ledger.jsonl")
         .output()
         .unwrap();
     assert!(nested_smoke.status.success());
