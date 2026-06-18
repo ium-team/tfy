@@ -192,7 +192,10 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
     let smoke = Command::new("bash")
         .current_dir(dir.path())
         .arg("-c")
-        .arg(format!("source {}; hello-custom", script.display()))
+        .arg(format!(
+            "source {}; \"$TFY_HUMAN_SHIM_DIR/hello-custom\"",
+            script.display()
+        ))
         .env("PATH", &path)
         .output()
         .unwrap();
@@ -261,7 +264,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
         .current_dir(dir.path())
         .arg("-c")
         .arg(format!(
-            "source {}; printf '#!/usr/bin/env sh\nprintf later' > {}/late-custom; chmod 755 {}/late-custom; late-custom; test ! -f .tfy/human/refresh-ledger.jsonl; _tfy_human_refresh_shims; late-custom; test -f .tfy/human/refresh-ledger.jsonl",
+            "source {}; printf '#!/usr/bin/env sh\nprintf later' > {}/late-custom; chmod 755 {}/late-custom; late-custom; test ! -f .tfy/human/refresh-ledger.jsonl; _tfy_human_refresh_shims; \"$TFY_HUMAN_SHIM_DIR/late-custom\"; test -f .tfy/human/refresh-ledger.jsonl",
             script.display(),
             refresh_bin.display(),
             refresh_bin.display()
@@ -281,7 +284,10 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
     let nested_smoke = Command::new("bash")
         .current_dir(dir.path())
         .arg("-c")
-        .arg(format!("source {}; nested-custom", script.display()))
+        .arg(format!(
+            "source {}; \"$TFY_HUMAN_SHIM_DIR/nested-custom\"",
+            script.display()
+        ))
         .env("PATH", &path)
         .env("TFY_HUMAN_LEDGER", ".tfy/human/nested-ledger.jsonl")
         .output()
@@ -341,7 +347,10 @@ printf forged",
     let forged_output = Command::new("bash")
         .current_dir(forged.path())
         .arg("-c")
-        .arg(format!("source {}; hello-custom", forged_script.display()))
+        .arg(format!(
+            "source {}; \"$TFY_HUMAN_SHIM_DIR/hello-custom\"",
+            forged_script.display()
+        ))
         .env("PATH", &path)
         .output()
         .unwrap();
