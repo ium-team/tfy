@@ -309,8 +309,10 @@ _tfy_human_is_excluded_name() {
 _tfy_human_owned_shim() {
   [ -f "$1" ] || return 1
   [ ! -L "$1" ] || return 1
-  IFS= read -r first_line < "$1" || return 1
-  IFS= read -r second_line < "$1" || true
+  {
+    IFS= read -r first_line || return 1
+    IFS= read -r second_line || true
+  } < "$1"
   [ "$first_line" = "#!/bin/sh" ] && [ "$second_line" = "# TFY:HUMAN-SHIM:v1" ]
 }
 _tfy_human_validate_shim_dir() {
