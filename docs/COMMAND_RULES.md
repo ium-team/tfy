@@ -29,19 +29,9 @@ TFY loads rules in this order for custom candidates. Built-ins normally win; onl
 
 ## Repo-local and global custom trust
 
-Repo-local `.tfy/commands.toml` is trusted only when `.tfy/trust.json` exists and its hash matches the current rule file bytes. Global custom `~/.config/tfy/custom/commands.toml` is trusted only when `~/.config/tfy/custom/trust.json` exists, has schema v2 provenance, and its hash/fixture evidence matches the current bytes. Legacy v1 trust is accepted only for repo-local compatibility and emits `repo_rules_legacy_trust`; global custom does not support v1 trust.
+Repo-local `.tfy/commands.toml` and global custom `~/.config/tfy/custom/commands.toml` are trusted only when their matching `trust.json` files have schema v2 provenance and their rule/fixture evidence matches the current bytes. Schema v1 hash-only repo trust is no longer accepted; re-run `tfy custom verify --scope repo` and `tfy custom trust --scope repo` to migrate an old repo-local trust file.
 
-```json
-{
-  "schema_version": 1,
-  "command_rules": {
-    "trusted": true,
-    "rules_sha256": "<sha256 of .tfy/commands.toml>"
-  }
-}
-```
-
-`tfy custom trust` writes provenance-backed v2 trust instead:
+`tfy custom trust` writes provenance-backed v2 trust:
 
 ```json
 {
@@ -59,7 +49,7 @@ Repo-local `.tfy/commands.toml` is trusted only when `.tfy/trust.json` exists an
 }
 ```
 
-If `.tfy/commands.toml` or a trusted fixture changes after trust, TFY skips repo-local rules and emits `repo_rules_hash_mismatch`. Missing repo trust emits `repo_rules_untrusted`. If `~/.config/tfy/custom/commands.toml` or a trusted global fixture changes after trust, TFY skips global custom rules and emits `global_custom_rules_hash_mismatch`, `global_custom_rules_invalid_trust`, `global_custom_rules_symlink_refused`, or `global_custom_rules_untrusted` as appropriate. `tfy custom status --json` reports `repo_local`, `global_custom`, and `user_global_legacy`; `repo_local.state` may include `trusted_v1_legacy`, while `global_custom.state` is one of `trusted_v2`, `stale`, `invalid`, `untrusted`, or `missing`.
+If `.tfy/commands.toml` or a trusted fixture changes after trust, TFY skips repo-local rules and emits `repo_rules_hash_mismatch`. Missing or schema v1 repo trust emits `repo_rules_untrusted`. If `~/.config/tfy/custom/commands.toml` or a trusted global fixture changes after trust, TFY skips global custom rules and emits `global_custom_rules_hash_mismatch`, `global_custom_rules_invalid_trust`, `global_custom_rules_symlink_refused`, or `global_custom_rules_untrusted` as appropriate. `tfy custom status --json` reports `repo_local`, `global_custom`, and `user_global_legacy`; repo/global custom states are `trusted_v2`, `stale`, `invalid`, `untrusted`, or `missing`.
 
 This trust authorizes only declarative summarization. It does not authorize code execution, workspace apply, shell mutation, OS-level sandboxing, or official support claims.
 
@@ -329,7 +319,7 @@ tfy custom trust --scope global --repo . --name quality-report --json
 
 For a pre-existing sample, use `tfy custom import-fixture --repo . --name quality-report --file sample.txt` or add `--scope global` for the global store. `tfy custom capture` runs the command from `--repo` and stores a merged stdout+stderr fixture view; in global scope, `--repo` is only the execution cwd while trusted assets live under `~/.config/tfy/custom/`. Use `import-fixture` when stream separation or secret-bearing argv would matter. `tfy custom verify` runs strict validation, preview, and custom-vs-built-in comparison evidence, and it fails unless the fixture actually exercises a `user_toml` rule with a concrete `rule_id`. It fails by default when `~/.config/tfy/commands.toml` exists; pass `--allow-legacy-global-rules` only to explicitly record that legacy/manual influence. If a built-in override is intentionally larger than the built-in/default result, `--accept-larger-than-built-in` must be passed to `verify` and is recorded in trust metadata.
 
-Low-level `tfy rules validate`, `tfy rules preview`, `tfy rules compare-built-in`, and `tfy rules trust` remain expert primitives. Prefer `tfy custom` for user/agent-authored rules because it writes fixture metadata and v2 trust provenance.
+Low-level `tfy rules validate`, `tfy rules preview`, and `tfy rules compare-built-in` remain expert primitives. `tfy rules trust` is deprecated and fails closed because repo-local trust now requires schema v2 fixture/provenance evidence; use `tfy custom verify --scope repo` and `tfy custom trust --scope repo` for trusted repo-local rules.
 
 ### Safety metadata
 

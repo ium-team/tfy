@@ -795,20 +795,22 @@ fn custom_layout_status(layout: &CustomLayout) -> Result<serde_json::Value> {
         {
             Some(trust) => {
                 trust_schema_version = trust["schema_version"].as_u64().unwrap_or(0);
-                let expected = trust["command_rules"]["rules_sha256"]
-                    .as_str()
-                    .unwrap_or("");
-                let actual = sha256_hex(&fs::read(&layout.commands)?);
-                if expected != actual || expected.is_empty() {
-                    "stale"
-                } else if let Some(state) = runtime_diagnostic_state(layout) {
-                    state
+                if trust_schema_version == 1 {
+                    "untrusted"
                 } else {
-                    match (layout.scope, trust_schema_version) {
-                        (CustomScope::Repo, 1) => "trusted_v1_legacy",
-                        (_, 2) => "trusted_v2",
-                        (CustomScope::Global, 1) => "invalid",
-                        _ => "invalid",
+                    let expected = trust["command_rules"]["rules_sha256"]
+                        .as_str()
+                        .unwrap_or("");
+                    let actual = sha256_hex(&fs::read(&layout.commands)?);
+                    if expected != actual || expected.is_empty() {
+                        "stale"
+                    } else if let Some(state) = runtime_diagnostic_state(layout) {
+                        state
+                    } else {
+                        match trust_schema_version {
+                            2 => "trusted_v2",
+                            _ => "invalid",
+                        }
                     }
                 }
             }

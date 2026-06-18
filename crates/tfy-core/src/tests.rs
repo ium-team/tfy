@@ -1588,8 +1588,6 @@ max_lines = 32
 #[test]
 fn user_toml_non_strict_keeps_valid_rules_when_one_rule_is_bad() {
     let dir = tempfile::tempdir().unwrap();
-    let tfy = dir.path().join(".tfy");
-    std::fs::create_dir_all(&tfy).unwrap();
     let rules = r#"
 [[command]]
 id = "valid"
@@ -1602,19 +1600,8 @@ id = "bad_regex"
 match.argv_prefix = ["bad"]
 preserve_lines_matching = ["("]
 "#;
-    std::fs::write(tfy.join("commands.toml"), rules).unwrap();
-    let hash = format!("{:x}", Sha256::digest(rules.as_bytes()));
-    std::fs::write(
-        tfy.join("trust.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "command_rules": {"trusted": true, "rules_sha256": hash}
-        })
-        .to_string(),
-    )
-    .unwrap();
 
-    let rules = CommandRuleSet::load_standard(dir.path());
+    let rules = CommandRuleSet::from_toml_str_non_strict_for_tests(rules, "repo");
     assert!(rules
         .diagnostics()
         .iter()
@@ -1636,8 +1623,6 @@ preserve_lines_matching = ["("]
 #[test]
 fn user_toml_non_strict_reports_unknown_top_level_keys_with_valid_rules() {
     let dir = tempfile::tempdir().unwrap();
-    let tfy = dir.path().join(".tfy");
-    std::fs::create_dir_all(&tfy).unwrap();
     let rules = r#"
 unknown = "typo"
 
@@ -1647,19 +1632,8 @@ match.argv_prefix = ["custom"]
 preserve_lines_matching = ["ERROR"]
 max_lines = 8
 "#;
-    std::fs::write(tfy.join("commands.toml"), rules).unwrap();
-    let hash = format!("{:x}", Sha256::digest(rules.as_bytes()));
-    std::fs::write(
-        tfy.join("trust.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "command_rules": {"trusted": true, "rules_sha256": hash}
-        })
-        .to_string(),
-    )
-    .unwrap();
 
-    let rules = CommandRuleSet::load_standard(dir.path());
+    let rules = CommandRuleSet::from_toml_str_non_strict_for_tests(rules, "repo");
     assert!(rules
         .diagnostics()
         .iter()
@@ -1874,8 +1848,6 @@ match = "ERROR"
 #[test]
 fn user_toml_non_strict_rejects_invalid_schema_type_and_v1_v2_mixture() {
     let dir = tempfile::tempdir().unwrap();
-    let tfy = dir.path().join(".tfy");
-    std::fs::create_dir_all(&tfy).unwrap();
     let invalid_schema_type = r#"
 schema_version = "2"
 
@@ -1883,18 +1855,7 @@ schema_version = "2"
 id = "bad_schema_type"
 match.argv_prefix = ["bad-schema-type"]
 "#;
-    std::fs::write(tfy.join("commands.toml"), invalid_schema_type).unwrap();
-    let hash = format!("{:x}", Sha256::digest(invalid_schema_type.as_bytes()));
-    std::fs::write(
-        tfy.join("trust.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "command_rules": {"trusted": true, "rules_sha256": hash}
-        })
-        .to_string(),
-    )
-    .unwrap();
-    let rules = CommandRuleSet::load_standard(dir.path());
+    let rules = CommandRuleSet::from_toml_str_non_strict_for_tests(invalid_schema_type, "repo");
     assert!(rules
         .diagnostics()
         .iter()
@@ -1925,18 +1886,7 @@ match.argv_prefix = ["bad-v2-without-version"]
 level = "error"
 match = "ERROR"
 "#;
-    std::fs::write(tfy.join("commands.toml"), mixed_v1).unwrap();
-    let hash = format!("{:x}", Sha256::digest(mixed_v1.as_bytes()));
-    std::fs::write(
-        tfy.join("trust.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "command_rules": {"trusted": true, "rules_sha256": hash}
-        })
-        .to_string(),
-    )
-    .unwrap();
-    let rules = CommandRuleSet::load_standard(dir.path());
+    let rules = CommandRuleSet::from_toml_str_non_strict_for_tests(mixed_v1, "repo");
     assert!(rules
         .diagnostics()
         .iter()
@@ -1958,8 +1908,6 @@ match = "ERROR"
 #[test]
 fn user_toml_v2_non_strict_reports_invalid_operation_and_keeps_valid_rule() {
     let dir = tempfile::tempdir().unwrap();
-    let tfy = dir.path().join(".tfy");
-    std::fs::create_dir_all(&tfy).unwrap();
     let rules = r#"
 schema_version = 2
 
@@ -1980,18 +1928,7 @@ name = "files"
 pattern = "(?<other>.+)"
 field = "file"
 "#;
-    std::fs::write(tfy.join("commands.toml"), rules).unwrap();
-    let hash = format!("{:x}", Sha256::digest(rules.as_bytes()));
-    std::fs::write(
-        tfy.join("trust.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "command_rules": {"trusted": true, "rules_sha256": hash}
-        })
-        .to_string(),
-    )
-    .unwrap();
-    let rules = CommandRuleSet::load_standard(dir.path());
+    let rules = CommandRuleSet::from_toml_str_non_strict_for_tests(rules, "repo");
     assert!(rules
         .diagnostics()
         .iter()
@@ -2132,8 +2069,6 @@ match = "ERROR"
 #[test]
 fn user_toml_v3_non_strict_reports_invalid_operation_and_keeps_valid_rule() {
     let dir = tempfile::tempdir().unwrap();
-    let tfy = dir.path().join(".tfy");
-    std::fs::create_dir_all(&tfy).unwrap();
     let rules = r#"
 schema_version = 3
 
@@ -2155,18 +2090,7 @@ name = "by_file"
 pattern = "(?<other>.+)"
 field = "file"
 "#;
-    std::fs::write(tfy.join("commands.toml"), rules).unwrap();
-    let hash = format!("{:x}", Sha256::digest(rules.as_bytes()));
-    std::fs::write(
-        tfy.join("trust.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "command_rules": {"trusted": true, "rules_sha256": hash}
-        })
-        .to_string(),
-    )
-    .unwrap();
-    let rules = CommandRuleSet::load_standard(dir.path());
+    let rules = CommandRuleSet::from_toml_str_non_strict_for_tests(rules, "repo");
     assert!(rules
         .diagnostics()
         .iter()
@@ -2477,7 +2401,7 @@ keep_lines_matching = ["KEEP"]
 }
 
 #[test]
-fn repo_rules_v2_trust_rejects_stale_fixture_and_v1_reports_legacy() {
+fn repo_rules_v2_trust_rejects_stale_fixture_and_v1_trust() {
     let dir = tempfile::tempdir().unwrap();
     let tfy = dir.path().join(".tfy");
     let fixtures = tfy.join("rule-fixtures");
@@ -2527,17 +2451,17 @@ keep_lines_matching = ["KEEP"]
             "schema_version": 1,
             "command_rules": {
                 "trusted": true,
-                "rules_sha256": format!("{:x}", Sha256::digest(rules_text.as_bytes()))
+                "rules_sha256": "stale-v1-hash"
             }
         })
         .to_string(),
     )
     .unwrap();
-    let legacy = CommandRuleSet::load_standard(dir.path());
-    assert!(legacy
+    let v1 = CommandRuleSet::load_standard(dir.path());
+    assert!(v1
         .diagnostics()
         .iter()
-        .any(|d| d.code == "repo_rules_legacy_trust"));
+        .any(|d| d.code == "repo_rules_untrusted"));
 }
 
 #[test]

@@ -651,13 +651,10 @@ impl CommandRuleSet {
                 trust_path: trust,
                 path_base: repo_root,
                 fixture_root,
-                allow_legacy_v1: true,
                 untrusted_code: "repo_rules_untrusted",
                 hash_code: "repo_rules_hash_mismatch",
                 invalid_code: "repo_rules_hash_mismatch",
                 symlink_code: "repo_rules_hash_mismatch",
-                legacy_code: Some("repo_rules_legacy_trust"),
-                legacy_message: Some("repo-local command rules use legacy v1 hash-only trust; migrate with tfy custom trust for provenance-backed trust"),
                 untrusted_message: "repo-local command rules are not trusted; run tfy custom verify and tfy custom trust after reviewing them",
             });
         }
@@ -676,13 +673,10 @@ impl CommandRuleSet {
                     trust_path: trust,
                     path_base: global_root.clone(),
                     fixture_root,
-                    allow_legacy_v1: false,
                     untrusted_code: "global_custom_rules_untrusted",
                     hash_code: "global_custom_rules_hash_mismatch",
                     invalid_code: "global_custom_rules_invalid_trust",
                     symlink_code: "global_custom_rules_symlink_refused",
-                    legacy_code: None,
-                    legacy_message: None,
                     untrusted_message: "global custom command rules are not trusted; run tfy custom verify --scope global and tfy custom trust --scope global after reviewing them",
                 });
             }
@@ -707,18 +701,7 @@ impl CommandRuleSet {
 
     fn load_trusted_custom_source(&mut self, config: TrustedSourceConfig) {
         match rules_trust_status(&config) {
-            Ok(RuleTrustStatus::Trusted { legacy_v1 }) => {
-                if legacy_v1 {
-                    if let (Some(code), Some(message)) = (config.legacy_code, config.legacy_message)
-                    {
-                        self.diagnostics.push(CommandRuleDiagnostic::new(
-                            config.source_kind,
-                            &config.rules_path,
-                            code,
-                            message,
-                        ));
-                    }
-                }
+            Ok(RuleTrustStatus::Trusted) => {
                 self.load_file_non_strict(&config.rules_path, config.source_kind);
             }
             Ok(RuleTrustStatus::Untrusted) => self.diagnostics.push(CommandRuleDiagnostic::new(
@@ -762,6 +745,13 @@ impl CommandRuleSet {
             rules: parse_command_rules_strict(text, source_kind, Path::new("<memory>"))?,
             diagnostics: Vec::new(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_toml_str_non_strict_for_tests(text: &str, source_kind: &str) -> Self {
+        let (rules, diagnostics) =
+            parse_command_rules_non_strict(text, source_kind, Path::new("<memory>"));
+        Self { rules, diagnostics }
     }
 
     fn load_file_non_strict(&mut self, path: &Path, source_kind: &str) {
@@ -874,18 +864,15 @@ struct TrustedSourceConfig {
     trust_path: PathBuf,
     path_base: PathBuf,
     fixture_root: PathBuf,
-    allow_legacy_v1: bool,
     untrusted_code: &'static str,
     hash_code: &'static str,
     invalid_code: &'static str,
     symlink_code: &'static str,
-    legacy_code: Option<&'static str>,
-    legacy_message: Option<&'static str>,
     untrusted_message: &'static str,
 }
 
 enum RuleTrustStatus {
-    Trusted { legacy_v1: bool },
+    Trusted,
     Untrusted,
 }
 
@@ -955,22 +942,21 @@ fn rules_trust_status(config: &TrustedSourceConfig) -> Result<RuleTrustStatus> {
     if !trust.command_rules.trusted {
         return Ok(RuleTrustStatus::Untrusted);
     }
-    let Some(expected) = trust.command_rules.rules_sha256.as_deref() else {
-        return Ok(RuleTrustStatus::Untrusted);
-    };
-    let actual = sha256_hex(&fs::read(&config.rules_path)?);
-    if expected != actual {
-        bail!(
-            "{} command rules changed after trust; expected sha256 {expected}, got {actual}",
-            config.label
-        );
-    }
     match trust.schema_version {
-        1 if config.allow_legacy_v1 => Ok(RuleTrustStatus::Trusted { legacy_v1: true }),
         1 => Ok(RuleTrustStatus::Untrusted),
         2 => {
+            let Some(expected) = trust.command_rules.rules_sha256.as_deref() else {
+                return Ok(RuleTrustStatus::Untrusted);
+            };
+            let actual = sha256_hex(&fs::read(&config.rules_path)?);
+            if expected != actual {
+                bail!(
+                    "{} command rules changed after trust; expected sha256 {expected}, got {actual}",
+                    config.label
+                );
+            }
             validate_trust_v2(config, &trust.command_rules)?;
-            Ok(RuleTrustStatus::Trusted { legacy_v1: false })
+            Ok(RuleTrustStatus::Trusted)
         }
         _ => Ok(RuleTrustStatus::Untrusted),
     }

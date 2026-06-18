@@ -345,14 +345,14 @@ keep_lines_matching = ["KEEP"]
         .args(["rules", "trust", "--repo", &repo, "--json"])
         .output()
         .unwrap();
+    assert!(!trust.status.success());
+    let stderr = String::from_utf8_lossy(&trust.stderr);
+    assert!(stderr.contains("tfy rules trust is deprecated"), "{stderr}");
     assert!(
-        trust.status.success(),
-        "{}",
-        String::from_utf8_lossy(&trust.stderr)
+        stderr.contains("tfy custom verify --scope repo"),
+        "{stderr}"
     );
-    let json: serde_json::Value = serde_json::from_slice(&trust.stdout).unwrap();
-    assert_eq!(json["ok"], true);
-    assert!(dir.path().join(".tfy/trust.json").exists());
+    assert!(!dir.path().join(".tfy/trust.json").exists());
 
     let outside = dir.path().join("outside.toml");
     std::fs::write(&outside, "schema_version = 3\n").unwrap();
@@ -617,6 +617,23 @@ max_lines = 4
     assert!(stale_status.status.success());
     let stale_json: serde_json::Value = serde_json::from_slice(&stale_status.stdout).unwrap();
     assert_eq!(stale_json["repo_local"]["state"], "stale");
+
+    let mut v1_trust = trust_json;
+    v1_trust["schema_version"] = serde_json::json!(1);
+    v1_trust["command_rules"]["rules_sha256"] = serde_json::json!("stale-v1-hash");
+    std::fs::write(
+        dir.path().join(".tfy/trust.json"),
+        serde_json::to_string_pretty(&v1_trust).unwrap(),
+    )
+    .unwrap();
+    let v1_status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args(["custom", "status", "--repo", repo, "--json"])
+        .output()
+        .unwrap();
+    assert!(v1_status.status.success());
+    let v1_json: serde_json::Value = serde_json::from_slice(&v1_status.stdout).unwrap();
+    assert_eq!(v1_json["repo_local"]["state"], "untrusted");
 }
 
 #[test]

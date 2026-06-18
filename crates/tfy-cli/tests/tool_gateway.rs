@@ -454,10 +454,10 @@ max_lines = 8
 }
 
 #[test]
-fn tool_gateway_applies_hash_trusted_repo_local_toml_rule() {
+fn tool_gateway_applies_v2_trusted_repo_local_toml_rule() {
     let paths = isolated_tool_paths();
     let work = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(work.path().join(".tfy")).unwrap();
+    std::fs::create_dir_all(work.path().join(".tfy/rule-fixtures")).unwrap();
     let rules_path = work.path().join(".tfy/commands.toml");
     let rules = r#"
 [[command]]
@@ -468,12 +468,32 @@ strip_lines_matching = ["noise"]
 max_lines = 8
 "#;
     std::fs::write(&rules_path, rules).unwrap();
+    let fixture = "for i in $(seq 1 100); do echo noise; done; echo ERROR trusted\n";
+    std::fs::write(
+        work.path().join(".tfy/rule-fixtures/repo-rule.txt"),
+        fixture,
+    )
+    .unwrap();
     let hash = format!("{:x}", Sha256::digest(rules.as_bytes()));
     std::fs::write(
         work.path().join(".tfy/trust.json"),
         serde_json::json!({
-            "schema_version": 1,
-            "command_rules": {"trusted": true, "rules_sha256": hash}
+            "schema_version": 2,
+            "command_rules": {
+                "trusted": true,
+                "rules_sha256": hash,
+                "created_by": "tfy custom",
+                "validated_at": "unix:1",
+                "validated_with": ["validate", "preview", "compare-built-in"],
+                "fixtures": [{
+                    "name": "repo-rule",
+                    "fixture_sha256": format!("{:x}", Sha256::digest(fixture.as_bytes())),
+                    "path": ".tfy/rule-fixtures/repo-rule.txt",
+                    "cmd": ["sh", "-c", "for i in $(seq 1 100); do echo noise; done; echo ERROR trusted"]
+                }],
+                "agent": {"kind": "codex", "bounded_workspace": true},
+                "override_evidence": []
+            }
         })
         .to_string(),
     )
