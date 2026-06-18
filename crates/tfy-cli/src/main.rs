@@ -6,6 +6,7 @@ mod hook;
 mod human;
 mod mcp;
 mod product;
+mod rules;
 mod util;
 mod workspace;
 
@@ -32,6 +33,7 @@ use product::{
     GainCmd, GlobalCmd, InitCmd, LaunchReportCmd, RawCmd, SetupCmd, SmokeCmd, StartCmd, StatusCmd,
     StopCmd, UseCmd,
 };
+use rules::{execute_rules, RulesCmd};
 use std::path::PathBuf;
 use std::process::Command;
 use tfy_core::*;
@@ -262,6 +264,11 @@ enum Cmd {
     StateProject {
         #[arg(long, default_value = ".tfy/state/ledger.jsonl")]
         ledger: PathBuf,
+    },
+    /// Validate, preview, trust, and scaffold custom command summary rules.
+    Rules {
+        #[command(subcommand)]
+        cmd: RulesCmd,
     },
     /// Recover, inspect, export, or prune locally stored raw command evidence.
     Raw(RawCmd),
@@ -601,6 +608,7 @@ fn main() -> Result<()> {
             );
             print_json(&response)?;
         }
+        Cmd::Rules { cmd } => execute_rules(cmd)?,
         Cmd::Raw(cmd) => execute_raw(cmd)?,
         Cmd::Languages => print_json(&serde_json::json!({"languages": supported_languages()}))?,
         Cmd::EvalCode {

@@ -73,6 +73,9 @@ struct CommandStrategySpec {
 }
 
 const USER_RULE_PUBLIC_SCAN_LINE_CHARS: usize = 1_000;
+const USER_RULE_STRUCTURED_PARSE_MAX_BYTES: usize = 1_000_000;
+const USER_RULE_STRUCTURED_MAX_ITEMS: usize = 100;
+const USER_RULE_GROUP_MAX_DISTINCT: usize = 100;
 
 const RUST_STRATEGY_FAMILIES: &[&str] = &[
     "git_status",
@@ -225,6 +228,9 @@ enum RuleOperation {
     Counter(CounterSpec),
     Capture(CaptureSpec),
     Severity(SeveritySpec),
+    StructuredExtract(StructuredExtractSpec),
+    Metric(MetricSpec),
+    Group(GroupSpec),
 }
 
 #[derive(Debug, Clone)]
@@ -260,6 +266,65 @@ struct CaptureSpec {
 struct SeveritySpec {
     level: SeverityLevel,
     pattern: Regex,
+}
+
+#[derive(Debug, Clone)]
+enum StructuredExtractSpec {
+    Json(JsonExtractSpec),
+    Ndjson(JsonExtractSpec),
+    Kv(KvExtractSpec),
+    Table(TableExtractSpec),
+}
+
+#[derive(Debug, Clone)]
+struct JsonExtractSpec {
+    name: String,
+    path: String,
+    max_items: usize,
+}
+
+#[derive(Debug, Clone)]
+struct KvExtractSpec {
+    name: String,
+    key: String,
+    separators: Vec<char>,
+    max_items: usize,
+}
+
+#[derive(Debug, Clone)]
+struct TableExtractSpec {
+    name: String,
+    columns: Vec<String>,
+    delimiter: TableDelimiter,
+    max_rows: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TableDelimiter {
+    Whitespace,
+    Comma,
+}
+
+#[derive(Debug, Clone)]
+struct MetricSpec {
+    name: String,
+    op: MetricOp,
+    pattern: Regex,
+    max_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MetricOp {
+    Count,
+    UniqueCount,
+}
+
+#[derive(Debug, Clone)]
+struct GroupSpec {
+    name: String,
+    pattern: Regex,
+    field: String,
+    top_k: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -338,6 +403,18 @@ struct CommandRuleToml {
     #[serde(default)]
     severity: Vec<CommandRuleSeverityToml>,
     #[serde(default)]
+    parse_json: Vec<CommandRuleJsonExtractToml>,
+    #[serde(default)]
+    parse_ndjson: Vec<CommandRuleJsonExtractToml>,
+    #[serde(default)]
+    parse_kv: Vec<CommandRuleKvExtractToml>,
+    #[serde(default)]
+    parse_table: Vec<CommandRuleTableExtractToml>,
+    #[serde(default)]
+    metric: Vec<CommandRuleMetricToml>,
+    #[serde(default)]
+    group: Vec<CommandRuleGroupToml>,
+    #[serde(default)]
     human_auto_safe: bool,
     #[serde(default = "default_true")]
     agent_safe: bool,
@@ -408,6 +485,58 @@ struct CommandRuleSeverityToml {
     match_pattern: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleJsonExtractToml {
+    name: String,
+    path: String,
+    #[serde(default = "default_capture_max_items")]
+    max_items: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleKvExtractToml {
+    name: String,
+    key: String,
+    #[serde(default)]
+    separators: Vec<String>,
+    #[serde(default = "default_capture_max_items")]
+    max_items: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleTableExtractToml {
+    name: String,
+    columns: Vec<String>,
+    #[serde(default = "default_table_delimiter")]
+    delimiter: String,
+    #[serde(default = "default_table_max_rows")]
+    max_rows: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleMetricToml {
+    name: String,
+    op: String,
+    #[serde(rename = "match")]
+    match_pattern: String,
+    #[serde(default = "default_counter_max_count")]
+    max_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleGroupToml {
+    name: String,
+    pattern: String,
+    field: String,
+    #[serde(default = "default_group_top_k")]
+    top_k: usize,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -442,6 +571,18 @@ fn default_counter_max_count() -> usize {
 
 fn default_capture_max_items() -> usize {
     25
+}
+
+fn default_table_delimiter() -> String {
+    "whitespace".into()
+}
+
+fn default_table_max_rows() -> usize {
+    25
+}
+
+fn default_group_top_k() -> usize {
+    10
 }
 
 impl CommandRuleDiagnostic {
@@ -702,7 +843,7 @@ fn parse_command_rules_non_strict(
                     source_kind,
                     path,
                     "user_rules_unsupported_schema_version",
-                    "schema_version must be integer 1 or 2",
+                    "schema_version must be integer 1, 2, or 3",
                 ));
                 return (Vec::new(), diagnostics);
             }
@@ -793,7 +934,20 @@ fn build_command_rule(
             || !rule.severity.is_empty())
     {
         bail!(
-            "command rule {} uses v2 operations without schema_version = 2",
+            "command rule {} uses v2 operations without schema_version >= 2",
+            rule.id
+        );
+    }
+    if schema_version < 3
+        && (!rule.parse_json.is_empty()
+            || !rule.parse_ndjson.is_empty()
+            || !rule.parse_kv.is_empty()
+            || !rule.parse_table.is_empty()
+            || !rule.metric.is_empty()
+            || !rule.group.is_empty())
+    {
+        bail!(
+            "command rule {} uses v3 operations without schema_version = 3",
             rule.id
         );
     }
@@ -841,6 +995,32 @@ fn build_command_rule(
     }
     for severity in rule.severity {
         operations.push(RuleOperation::Severity(build_severity_spec(severity)?));
+    }
+    for extract in rule.parse_json {
+        operations.push(RuleOperation::StructuredExtract(
+            StructuredExtractSpec::Json(build_json_extract_spec(extract, "parse_json")?),
+        ));
+    }
+    for extract in rule.parse_ndjson {
+        operations.push(RuleOperation::StructuredExtract(
+            StructuredExtractSpec::Ndjson(build_json_extract_spec(extract, "parse_ndjson")?),
+        ));
+    }
+    for extract in rule.parse_kv {
+        operations.push(RuleOperation::StructuredExtract(StructuredExtractSpec::Kv(
+            build_kv_extract_spec(extract)?,
+        )));
+    }
+    for extract in rule.parse_table {
+        operations.push(RuleOperation::StructuredExtract(
+            StructuredExtractSpec::Table(build_table_extract_spec(extract)?),
+        ));
+    }
+    for metric in rule.metric {
+        operations.push(RuleOperation::Metric(build_metric_spec(metric)?));
+    }
+    for group in rule.group {
+        operations.push(RuleOperation::Group(build_group_spec(group)?));
     }
     Ok(CommandRule {
         id: rule.id,
@@ -951,6 +1131,119 @@ fn build_severity_spec(severity: CommandRuleSeverityToml) -> Result<SeveritySpec
     })
 }
 
+fn build_json_extract_spec(
+    extract: CommandRuleJsonExtractToml,
+    label: &str,
+) -> Result<JsonExtractSpec> {
+    validate_safe_name(&extract.name, "extract name")?;
+    validate_limit(extract.path.chars().count(), 240, label)?;
+    validate_limit(
+        extract.max_items,
+        USER_RULE_STRUCTURED_MAX_ITEMS,
+        "extract.max_items",
+    )?;
+    Ok(JsonExtractSpec {
+        name: extract.name,
+        path: extract.path,
+        max_items: extract.max_items,
+    })
+}
+
+fn build_kv_extract_spec(extract: CommandRuleKvExtractToml) -> Result<KvExtractSpec> {
+    validate_safe_name(&extract.name, "extract name")?;
+    validate_limit(extract.key.chars().count(), 120, "parse_kv.key")?;
+    validate_limit(
+        extract.max_items,
+        USER_RULE_STRUCTURED_MAX_ITEMS,
+        "parse_kv.max_items",
+    )?;
+    let separators = if extract.separators.is_empty() {
+        vec!['=', ':']
+    } else {
+        let mut separators = Vec::new();
+        for separator in extract.separators {
+            let mut chars = separator.chars();
+            let Some(ch) = chars.next() else {
+                bail!("parse_kv separator must not be empty");
+            };
+            if chars.next().is_some() {
+                bail!("parse_kv separator must be one character");
+            }
+            separators.push(ch);
+        }
+        separators
+    };
+    Ok(KvExtractSpec {
+        name: extract.name,
+        key: extract.key,
+        separators,
+        max_items: extract.max_items,
+    })
+}
+
+fn build_table_extract_spec(extract: CommandRuleTableExtractToml) -> Result<TableExtractSpec> {
+    validate_safe_name(&extract.name, "extract name")?;
+    validate_limit(extract.columns.len(), 20, "parse_table.columns")?;
+    validate_limit(
+        extract.max_rows,
+        USER_RULE_STRUCTURED_MAX_ITEMS,
+        "parse_table.max_rows",
+    )?;
+    if extract.columns.is_empty() {
+        bail!("parse_table.columns must not be empty");
+    }
+    for column in &extract.columns {
+        validate_safe_name(column, "table column")?;
+    }
+    let delimiter = match extract.delimiter.as_str() {
+        "whitespace" => TableDelimiter::Whitespace,
+        "comma" | "csv" => TableDelimiter::Comma,
+        other => bail!("invalid parse_table delimiter {other}"),
+    };
+    Ok(TableExtractSpec {
+        name: extract.name,
+        columns: extract.columns,
+        delimiter,
+        max_rows: extract.max_rows,
+    })
+}
+
+fn build_metric_spec(metric: CommandRuleMetricToml) -> Result<MetricSpec> {
+    validate_safe_name(&metric.name, "metric name")?;
+    validate_limit(metric.max_count, 1_000_000, "metric.max_count")?;
+    let op = match metric.op.as_str() {
+        "count" => MetricOp::Count,
+        "unique_count" => MetricOp::UniqueCount,
+        other => bail!("invalid metric op {other}"),
+    };
+    Ok(MetricSpec {
+        name: metric.name,
+        op,
+        pattern: compile_user_regex(&metric.match_pattern, "metric.match")?,
+        max_count: metric.max_count,
+    })
+}
+
+fn build_group_spec(group: CommandRuleGroupToml) -> Result<GroupSpec> {
+    validate_safe_name(&group.name, "group name")?;
+    validate_safe_name(&group.field, "group field")?;
+    validate_limit(group.top_k, 100, "group.top_k")?;
+    let pattern = compile_user_regex(&group.pattern, "group.pattern")?;
+    if pattern
+        .capture_names()
+        .flatten()
+        .all(|name| name != group.field)
+    {
+        bail!("group {} missing named field {}", group.name, group.field);
+    }
+    Ok(GroupSpec {
+        name: group.name,
+        pattern,
+        field: group.field,
+        top_k: group.top_k,
+    })
+}
+
 #[derive(Default)]
 struct SummaryParts {
     line_filter: Option<FilteredOutput>,
@@ -1043,6 +1336,20 @@ fn evaluate_rule(rule: &CommandRule, raw: &str) -> Option<SummaryParts> {
                         }));
                 }
             }
+            RuleOperation::StructuredExtract(extract) => {
+                if let Some(capture) = evaluate_structured_extract(extract, raw, &public_lines) {
+                    parts.captures.push(capture);
+                }
+            }
+            RuleOperation::Metric(metric) => {
+                let value = evaluate_metric(metric, &public_lines);
+                parts.counters.push((metric.name.clone(), value));
+            }
+            RuleOperation::Group(group) => {
+                if let Some(section) = evaluate_group(group, &public_lines) {
+                    parts.sections.push(section);
+                }
+            }
         }
     }
     if parts.line_filter.is_none()
@@ -1054,6 +1361,296 @@ fn evaluate_rule(rule: &CommandRule, raw: &str) -> Option<SummaryParts> {
         None
     } else {
         Some(parts)
+    }
+}
+
+fn evaluate_structured_extract(
+    extract: &StructuredExtractSpec,
+    raw: &str,
+    public_lines: &[String],
+) -> Option<RenderedCapture> {
+    match extract {
+        StructuredExtractSpec::Json(spec) => evaluate_json_extract(spec, raw),
+        StructuredExtractSpec::Ndjson(spec) => evaluate_ndjson_extract(spec, raw),
+        StructuredExtractSpec::Kv(spec) => evaluate_kv_extract(spec, public_lines),
+        StructuredExtractSpec::Table(spec) => evaluate_table_extract(spec, public_lines),
+    }
+}
+
+fn evaluate_json_extract(spec: &JsonExtractSpec, raw: &str) -> Option<RenderedCapture> {
+    if raw.len() > USER_RULE_STRUCTURED_PARSE_MAX_BYTES {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let items = json_path_values(&value, &spec.path)
+        .into_iter()
+        .take(spec.max_items)
+        .filter_map(public_json_value)
+        .collect::<Vec<_>>();
+    rendered_capture(&spec.name, items)
+}
+
+fn evaluate_ndjson_extract(spec: &JsonExtractSpec, raw: &str) -> Option<RenderedCapture> {
+    if raw.len() > USER_RULE_STRUCTURED_PARSE_MAX_BYTES {
+        return None;
+    }
+    let mut items = Vec::new();
+    for line in raw.lines().take(USER_RULE_STRUCTURED_MAX_ITEMS * 10) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        for value in json_path_values(&value, &spec.path) {
+            if let Some(item) = public_json_value(value) {
+                items.push(item);
+            }
+            if items.len() >= spec.max_items {
+                break;
+            }
+        }
+        if items.len() >= spec.max_items {
+            break;
+        }
+    }
+    rendered_capture(&spec.name, items)
+}
+
+fn evaluate_kv_extract(spec: &KvExtractSpec, public_lines: &[String]) -> Option<RenderedCapture> {
+    let mut items = Vec::new();
+    for line in public_lines {
+        let trimmed = line.trim();
+        for separator in &spec.separators {
+            let Some((key, value)) = trimmed.split_once(*separator) else {
+                continue;
+            };
+            if key.trim() == spec.key {
+                let item = cap_to_chars(&norm(&redact_public(value.trim())), 240);
+                if !item.is_empty() {
+                    items.push(item);
+                }
+            }
+            if items.len() >= spec.max_items {
+                break;
+            }
+        }
+        if items.len() >= spec.max_items {
+            break;
+        }
+    }
+    rendered_capture(&spec.name, items)
+}
+
+fn evaluate_table_extract(
+    spec: &TableExtractSpec,
+    public_lines: &[String],
+) -> Option<RenderedCapture> {
+    let non_empty = public_lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    let (header_index, indexes) = non_empty
+        .iter()
+        .enumerate()
+        .find_map(|(line_index, line)| {
+            let header = split_table_row(line, spec.delimiter);
+            let indexes = spec
+                .columns
+                .iter()
+                .filter_map(|column| {
+                    header
+                        .iter()
+                        .position(|cell| cell == column)
+                        .map(|index| (column, index))
+                })
+                .collect::<Vec<_>>();
+            (indexes.len() == spec.columns.len()).then_some((line_index, indexes))
+        })?;
+    let mut items = Vec::new();
+    for line in non_empty
+        .into_iter()
+        .skip(header_index + 1)
+        .take(spec.max_rows)
+    {
+        let cells = split_table_row(line, spec.delimiter);
+        let fields = indexes
+            .iter()
+            .filter_map(|(column, index)| {
+                cells.get(*index).map(|value| {
+                    format!(
+                        "{column}={}",
+                        cap_to_chars(&norm(&redact_public(value)), 120)
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        if !fields.is_empty() {
+            items.push(fields.join(" "));
+        }
+    }
+    rendered_capture(&spec.name, items)
+}
+
+fn evaluate_metric(spec: &MetricSpec, public_lines: &[String]) -> usize {
+    match spec.op {
+        MetricOp::Count => {
+            let mut count = 0usize;
+            for line in public_lines {
+                count = count.saturating_add(spec.pattern.find_iter(line).count());
+                if count >= spec.max_count {
+                    return spec.max_count;
+                }
+            }
+            count
+        }
+        MetricOp::UniqueCount => {
+            let mut seen = std::collections::BTreeSet::new();
+            for line in public_lines {
+                for m in spec.pattern.find_iter(line) {
+                    seen.insert(cap_to_chars(&norm(&redact_public(m.as_str())), 240));
+                    if seen.len() >= spec.max_count {
+                        return spec.max_count;
+                    }
+                }
+            }
+            seen.len()
+        }
+    }
+}
+
+fn evaluate_group(spec: &GroupSpec, public_lines: &[String]) -> Option<RenderedSection> {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut truncated = false;
+    for line in public_lines {
+        for caps in spec.pattern.captures_iter(line) {
+            let Some(value) = caps.name(&spec.field) else {
+                continue;
+            };
+            let key = cap_to_chars(&norm(&redact_public(value.as_str())), 240);
+            if !key.is_empty() {
+                if !counts.contains_key(&key) && counts.len() >= USER_RULE_GROUP_MAX_DISTINCT {
+                    truncated = true;
+                    continue;
+                }
+                *counts.entry(key).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut items = counts.into_iter().collect::<Vec<_>>();
+    items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut lines = items
+        .into_iter()
+        .take(spec.top_k)
+        .map(|(key, count)| format!("{key}={count}"))
+        .collect::<Vec<_>>();
+    if truncated {
+        lines.push(format!(
+            "[truncated distinct groups at {}]",
+            USER_RULE_GROUP_MAX_DISTINCT
+        ));
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(RenderedSection {
+            title: format!("group.{}", spec.name),
+            selected_lines: lines.len(),
+            lines,
+        })
+    }
+}
+
+fn rendered_capture(name: &str, items: Vec<String>) -> Option<RenderedCapture> {
+    let items = items
+        .into_iter()
+        .map(|item| cap_to_chars(&norm(&redact_public(&item)), 240))
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        None
+    } else {
+        Some(RenderedCapture {
+            name: name.to_string(),
+            items,
+        })
+    }
+}
+
+fn public_json_value(value: &serde_json::Value) -> Option<String> {
+    let text = match value {
+        serde_json::Value::Null => return None,
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            serde_json::to_string(value).ok()?
+        }
+    };
+    let text = cap_to_chars(&norm(&redact_public(&text)), 240);
+    (!text.is_empty()).then_some(text)
+}
+
+fn json_path_values<'a>(value: &'a serde_json::Value, path: &str) -> Vec<&'a serde_json::Value> {
+    let mut current = vec![value];
+    for segment in path.split('.').filter(|segment| !segment.is_empty()) {
+        let mut next = Vec::new();
+        for value in current {
+            next.extend(json_segment_values(value, segment));
+        }
+        current = next;
+        if current.is_empty() {
+            break;
+        }
+    }
+    current
+}
+
+fn json_segment_values<'a>(
+    value: &'a serde_json::Value,
+    segment: &str,
+) -> Vec<&'a serde_json::Value> {
+    let (name, selectors) = segment
+        .split_once('[')
+        .map_or((segment, ""), |(name, rest)| (name, rest));
+    let mut current = Vec::new();
+    if name.is_empty() {
+        current.push(value);
+    } else if let Some(child) = value.get(name) {
+        current.push(child);
+    }
+    let mut rest = selectors;
+    while !rest.is_empty() {
+        let Some((selector, remaining)) = rest.split_once(']') else {
+            return Vec::new();
+        };
+        let mut selected = Vec::new();
+        for value in current {
+            match selector {
+                "*" => {
+                    if let Some(array) = value.as_array() {
+                        selected.extend(array);
+                    }
+                }
+                index => {
+                    if let Ok(index) = index.parse::<usize>() {
+                        if let Some(child) = value.get(index) {
+                            selected.push(child);
+                        }
+                    }
+                }
+            }
+        }
+        current = selected;
+        rest = remaining.strip_prefix('[').unwrap_or("");
+    }
+    current
+}
+
+fn split_table_row(line: &str, delimiter: TableDelimiter) -> Vec<String> {
+    match delimiter {
+        TableDelimiter::Whitespace => line.split_whitespace().map(str::to_string).collect(),
+        TableDelimiter::Comma => line
+            .split(',')
+            .map(|cell| cell.trim().to_string())
+            .collect(),
     }
 }
 
@@ -1146,7 +1743,7 @@ fn public_rule_lines(raw: &str) -> Vec<String> {
 
 fn validate_schema_version(version: Option<u16>) -> Result<u16> {
     match version.unwrap_or(1) {
-        version @ (1 | 2) => Ok(version),
+        version @ 1..=3 => Ok(version),
         other => bail!("unsupported command rules schema_version {other}"),
     }
 }
@@ -1219,6 +1816,12 @@ fn diagnostic_code_from_message(message: &str) -> &'static str {
         "user_rules_invalid_capture"
     } else if message.contains("severity") {
         "user_rules_invalid_severity"
+    } else if message.contains("parse_") || message.contains("extract") {
+        "user_rules_invalid_extract"
+    } else if message.contains("metric") {
+        "user_rules_invalid_metric"
+    } else if message.contains("group") {
+        "user_rules_invalid_group"
     } else if message.contains("exceeds") || message.contains("too many patterns") {
         "user_rules_unsafe_limit"
     } else {
@@ -1457,12 +2060,30 @@ pub fn summarize_command_output_with_rules(
     raw_dir: impl AsRef<Path>,
     rules: Option<&CommandRuleSet>,
 ) -> Result<CommandSummary> {
-    let store = RawStore::new(raw_dir)?;
-    compress_with_rules(
-        &store,
-        argv,
+    summarize_command_output_bytes_with_rules(
         command,
-        raw,
+        argv,
+        raw.as_bytes(),
+        exit_code,
+        raw_dir,
+        rules,
+    )
+}
+
+pub fn summarize_command_output_bytes_with_rules(
+    command: &str,
+    argv: &[String],
+    raw_bytes: &[u8],
+    exit_code: i32,
+    raw_dir: impl AsRef<Path>,
+    rules: Option<&CommandRuleSet>,
+) -> Result<CommandSummary> {
+    let store = RawStore::new(raw_dir)?;
+    compress_bytes(
+        &store,
+        command,
+        Some(argv),
+        raw_bytes,
         exit_code,
         None,
         ToolPolicy::Auto,
@@ -3272,9 +3893,14 @@ fn redact_secret_like(text: &str) -> String {
         r"(?i)\b([A-Z0-9_.-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password))\s*([:=])\s*[A-Za-z0-9._~+/=-]{6,}",
     )
     .expect("valid secret assignment regex");
+    let json_field = Regex::new(
+        r#"(?i)([\"]?[A-Z0-9_.-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password)[\"]?\s*:\s*[\"])[^\"\s,}]{6,}([\"]?)"#,
+    )
+    .expect("valid secret JSON field regex");
     let bearer =
         Regex::new(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}").expect("valid bearer secret regex");
     let text = assignment.replace_all(text, "$1$2[REDACTED]");
+    let text = json_field.replace_all(&text, "$1[REDACTED]$2");
     bearer.replace_all(&text, "$1 [REDACTED]").to_string()
 }
 

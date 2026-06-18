@@ -16,9 +16,9 @@ pub use protocol::*;
 pub use tool_feedback::{
     classify_command_family, classify_command_strategy, command_strategy_metadata, raw_output,
     raw_output_bytes, run_command, run_command_with_rules, summarize_command_output,
-    summarize_command_output_with_policy, summarize_command_output_with_rules,
-    CommandRuleDiagnostic, CommandRuleSet, CommandStrategyMetadata, CommandStrategyRegistry,
-    CommandSummary, RawStore, ToolPolicy,
+    summarize_command_output_bytes_with_rules, summarize_command_output_with_policy,
+    summarize_command_output_with_rules, CommandRuleDiagnostic, CommandRuleSet,
+    CommandStrategyMetadata, CommandStrategyRegistry, CommandSummary, RawStore, ToolPolicy,
 };
 
 #[cfg(test)]
