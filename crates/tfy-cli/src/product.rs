@@ -150,7 +150,7 @@ pub(crate) struct StartCmd {
     /// Session id for generated MCP/server configuration.
     #[arg(long, default_value = "local-session")]
     pub session: String,
-    /// Enable trusted repo-local future-shell human auto-activation marker/script. Requires a separately installed user rc hook.
+    /// Explicitly enable trusted repo-local future-shell human auto-activation marker/script for automation. Interactive project human starts enable this by default. Requires a separately installed user rc hook.
     #[arg(long)]
     pub auto_activate: bool,
 }
@@ -1584,13 +1584,16 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
     if cmd.host.is_some() && !targets.contains(&LifecycleTarget::Agent) {
         bail!("tfy start --host configures AI-agent routing; include agent/ai or both");
     }
-    if cmd.auto_activate
-        && (scope != LifecycleScope::Project
-            || targets.len() != 1
-            || !targets.contains(&LifecycleTarget::Human))
-    {
+    let interactive_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let project_human_only = scope == LifecycleScope::Project
+        && targets.len() == 1
+        && targets.contains(&LifecycleTarget::Human);
+    if cmd.auto_activate && !project_human_only {
         bail!("tfy start --human --auto-activate is project human-only mode");
     }
+    let default_human_auto_activate =
+        project_human_only && interactive_terminal && human_managed_session_available();
+    let should_enable_human_auto_activation = cmd.auto_activate || default_human_auto_activate;
     let host_all = cmd
         .host
         .as_deref()
@@ -1718,12 +1721,18 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
             LifecycleTarget::Human => state.human = Some(human_started(&now)),
         }
     }
-    let human_auto_activation_root = if cmd.auto_activate {
+    let human_auto_activation_root = if should_enable_human_auto_activation {
+        let created_by = if cmd.auto_activate {
+            "tfy start --human --auto-activate"
+        } else {
+            "tfy start --human"
+        };
         let root = enable_human_auto_activate_repo(
             &cmd.session,
             Path::new(".tfy/raw"),
             Path::new(".tfy/human/ledger.jsonl"),
             "bash",
+            created_by,
         )?;
         if let Some(human) = &mut state.human {
             human.route_state = "auto_activation_marker_enabled".into();
@@ -1814,9 +1823,7 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
             println!("future-shell auto-activation requires one explicit user rc hook install: tfy human auto-activate install --shell bash --rcfile ~/.bashrc --apply");
         }
         if human_managed_session_available() {
-            let interactive_terminal =
-                std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-            if targets.len() == 1 && scope == LifecycleScope::Project && interactive_terminal {
+            if project_human_only && interactive_terminal && !cmd.auto_activate {
                 println!("human route_state=managed_session_starting active=false support_status=managed_session_available ordinary_terminal_interception=false managed_session_interception=true managed_session_available=true managed_session_scope_root={} managed_session_entrypoint=\"tfy start --human\"", std::env::current_dir()?.display());
                 println!("ordinary terminals outside this TFY-managed session are not globally intercepted; supported Linux bash now enters a project-scoped managed human session from `tfy start --human`. Use `tfy human shell --no-auto-intercept` for a managed shell without PATH-shim routing, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` / `tfy tool-gateway -- <command>` for explicit one-off gateway wrapping.");
                 return execute_human_shell(
@@ -1827,16 +1834,18 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                     true,
                 );
             } else {
-                let launch_reason = if targets.len() != 1 || scope != LifecycleScope::Project {
+                let launch_reason = if cmd.auto_activate {
+                    "explicit_auto_activate_only"
+                } else if !project_human_only {
                     "requires_project_human_only_target"
                 } else {
                     "requires_interactive_tty"
                 };
                 println!("human route_state=intent_recorded active=false support_status=managed_session_available ordinary_terminal_interception=false managed_session_interception=false managed_session_available=true managed_session_launch={launch_reason} managed_session_entrypoint=\"tfy start --human\"");
                 if cmd.auto_activate {
-                    println!("human lifecycle intent and repo auto-activation marker recorded; new interactive non-login bash shells auto-activate only after the explicit TFY rc hook is installed. This is not universal/global terminal interception.");
+                    println!("human lifecycle intent and repo auto-activation marker recorded by explicit automation request; new interactive non-login bash shells auto-activate only after the explicit TFY rc hook is installed. This is not universal/global terminal interception.");
                 } else {
-                    println!("human lifecycle intent recorded; run `tfy start --human` as the only project target from an interactive terminal to enter the managed session. Ordinary terminals outside that TFY-managed session are not globally intercepted.");
+                    println!("human lifecycle intent recorded; run `tfy start --human` as the only project target from an interactive terminal to create repo-local future-shell activation and enter the managed session. Non-interactive plain start remains intent-only; use `tfy start --human --auto-activate` for explicit automation persistence. Ordinary terminals outside TFY-managed sessions or trusted marked repos with the explicit rc hook are not globally intercepted.");
                 }
             }
         } else {

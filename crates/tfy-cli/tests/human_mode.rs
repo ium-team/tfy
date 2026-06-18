@@ -459,6 +459,42 @@ printf forged",
 }
 
 #[test]
+fn plain_noninteractive_human_start_is_intent_only_without_auto_activation_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = run_tfy(&["start", "--human", "--no-apply"], &dir);
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("human lifecycle intent recorded")
+            || stdout.contains("managed_session_unsupported_platform"),
+        "{stdout}"
+    );
+    assert!(dir.path().join(".tfy/lifecycle.json").exists());
+    assert!(!dir.path().join(".tfy/human/auto-activate.json").exists());
+    assert!(!dir.path().join(".tfy/human/auto-activate.bash").exists());
+}
+
+#[test]
+fn plain_both_start_is_intent_only_without_human_auto_activation_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = run_tfy(&["start", "both", "--no-apply"], &dir);
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(dir.path().join(".tfy/lifecycle.json").exists());
+    assert!(!dir.path().join(".tfy/human/auto-activate.json").exists());
+    assert!(!dir.path().join(".tfy/human/auto-activate.bash").exists());
+}
+
+#[test]
 fn human_auto_activate_rejects_both_target_before_agent_mutation() {
     let dir = tempfile::tempdir().unwrap();
     let output = run_tfy(&["start", "both", "--auto-activate"], &dir);
@@ -469,6 +505,92 @@ fn human_auto_activate_rejects_both_target_before_agent_mutation() {
     assert!(!dir.path().join(".tfy/host-config/codex.json").exists());
     assert!(!dir.path().join(".tfy/human/auto-activate.json").exists());
     assert!(!dir.path().join(".tfy/lifecycle.json").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn interactive_plain_human_start_creates_repo_auto_activation_marker_by_default() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let inner = format!("{} start --human", env!("CARGO_BIN_EXE_tfy"));
+    let command = format!(
+        "printf 'exit\n' | script -q -e -c {} /dev/null",
+        shell_escape_for_test(&inner)
+    );
+    let output = Command::new("sh")
+        .current_dir(dir.path())
+        .arg("-c")
+        .arg(&command)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "command={command} stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("human_auto_activation repo_marker.enabled=true"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("managed_session_starting"), "{stdout}");
+    assert!(dir.path().join(".tfy/human/auto-activate.json").exists());
+    assert!(dir.path().join(".tfy/human/auto-activate.bash").exists());
+
+    let marker: serde_json::Value = serde_json::from_slice(
+        &fs::read(dir.path().join(".tfy/human/auto-activate.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marker["enabled"], true);
+    assert_eq!(marker["created_by"], "tfy start --human");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn interactive_explicit_auto_activate_creates_marker_without_entering_managed_shell() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let inner = format!(
+        "{} start --human --auto-activate",
+        env!("CARGO_BIN_EXE_tfy")
+    );
+    let command = format!(
+        "script -q -e -c {} /dev/null",
+        shell_escape_for_test(&inner)
+    );
+    let output = Command::new("sh")
+        .current_dir(dir.path())
+        .arg("-c")
+        .arg(&command)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "command={command} stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("human_auto_activation repo_marker.enabled=true"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("managed_session_launch=explicit_auto_activate_only"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("managed_session_starting"),
+        "explicit automation must not enter managed shell: {stdout}"
+    );
+    let marker: serde_json::Value = serde_json::from_slice(
+        &fs::read(dir.path().join(".tfy/human/auto-activate.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marker["created_by"], "tfy start --human --auto-activate");
 }
 
 #[cfg(target_os = "linux")]
@@ -493,6 +615,11 @@ fn human_auto_activate_enables_fresh_bash_from_trusted_repo_marker() {
     );
     assert!(dir.path().join(".tfy/human/auto-activate.json").exists());
     assert!(dir.path().join(".tfy/human/auto-activate.bash").exists());
+    let marker: serde_json::Value = serde_json::from_slice(
+        &fs::read(dir.path().join(".tfy/human/auto-activate.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marker["created_by"], "tfy start --human --auto-activate");
 
     let rcfile = dir.path().join("test.bashrc");
     let install = run_tfy(

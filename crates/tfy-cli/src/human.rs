@@ -387,6 +387,7 @@ pub(crate) fn enable_human_auto_activate_repo(
     raw_dir: &Path,
     ledger: &Path,
     shell: &str,
+    created_by: &str,
 ) -> Result<PathBuf> {
     ensure_supported_shell(shell)?;
     let root = canonical_root(Path::new("."))?;
@@ -404,7 +405,7 @@ pub(crate) fn enable_human_auto_activate_repo(
         enabled: true,
         shell: shell.into(),
         root: root.display().to_string(),
-        created_by: "tfy start --human --auto-activate".into(),
+        created_by: created_by.into(),
         created_at: now_unix(),
         session: session.into(),
         raw_dir: raw_dir.display().to_string(),

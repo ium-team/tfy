@@ -66,12 +66,32 @@ assert.deepStrictEqual(releaseUrls('0.1.0-preview.0', target), {
   checksumUrl: 'https://github.com/ium-team/tfy/releases/download/v0.1.0-preview.0/tfy-0.1.0-linux-x86_64.tar.gz.sha256'
 });
 
+const rcHome = path.join(tmp, 'home');
+fs.mkdirSync(path.join(rcHome, '.config', 'fish'), { recursive: true });
+const rcFiles = [
+  path.join(rcHome, '.bashrc'),
+  path.join(rcHome, '.bash_profile'),
+  path.join(rcHome, '.zshrc'),
+  path.join(rcHome, '.config', 'fish', 'config.fish')
+];
+for (const rcFile of rcFiles) fs.writeFileSync(rcFile, `# user rc ${path.basename(rcFile)}\n`);
+const rcBefore = new Map(rcFiles.map(rcFile => [rcFile, fs.readFileSync(rcFile, 'utf8')]));
+const originalHome = process.env.HOME;
+const originalUserProfile = process.env.USERPROFILE;
+process.env.HOME = rcHome;
+process.env.USERPROFILE = rcHome;
+process.on('exit', () => {
+  if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
+  if (originalUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = originalUserProfile;
+});
+
 const localBinary = path.join(tmp, 'local-tfy');
 const copiedBinary = path.join(tmp, 'copied-local-tfy');
 fs.writeFileSync(localBinary, '#!/usr/bin/env sh\necho local\n');
 copyLocalBinary(localBinary, copiedBinary);
 assert.strictEqual(fs.readFileSync(copiedBinary, 'utf8'), fs.readFileSync(localBinary, 'utf8'));
 assert.match(manualInstallDestination(localBinary), /vendor[\\/]manual[\\/]local-tfy$/);
+for (const rcFile of rcFiles) assert.strictEqual(fs.readFileSync(rcFile, 'utf8'), rcBefore.get(rcFile));
 
 
 async function exerciseReleaseFlow() {
@@ -104,6 +124,7 @@ async function exerciseReleaseFlow() {
   });
   assert.deepStrictEqual(seen, [expected.archiveUrl, expected.checksumUrl]);
   assert.strictEqual(fs.readFileSync(releaseDestination, 'utf8'), fs.readFileSync(path.join(releaseSrc, target.binName), 'utf8'));
+  for (const rcFile of rcFiles) assert.strictEqual(fs.readFileSync(rcFile, 'utf8'), rcBefore.get(rcFile));
 }
 
 exerciseReleaseFlow().catch(error => {
