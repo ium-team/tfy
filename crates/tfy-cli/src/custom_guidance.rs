@@ -122,8 +122,8 @@ fn guidance_path(mode: GuidanceMode) -> PathBuf {
 }
 
 pub(crate) fn print_human_custom_guidance(guidance: &CustomGuidance) {
-    print!(
-        "\n[tfy] This command used generic summarization. Run `tfy custom` to add a trusted custom rule for `{}`; details saved in .tfy/human/custom-guidance.jsonl.\n",
+    eprintln!(
+        "[tfy] This command used generic summarization. Run `tfy custom` to add a trusted custom rule for `{}`; details saved in .tfy/human/custom-guidance.jsonl.",
         guidance.argv0
     );
 }

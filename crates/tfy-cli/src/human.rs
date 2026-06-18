@@ -287,8 +287,29 @@ fn human_script(
     );
     script.push_str("tfy-human-bypass() {\n  TFY_HUMAN_BYPASS=1 PATH=\"${TFY_HUMAN_ORIGINAL_PATH:-$PATH}\" command \"$@\"\n  local status=$?\n  export TFY_LAST_STATUS=$status\n  return $status\n}\n");
     if auto_intercept {
-        script.push_str(r##"export TFY_HUMAN_ORIGINAL_PATH="$PATH"
-export TFY_HUMAN_SHIM_DIR="${TFY_HUMAN_ROOT%/}/.tfy/human/bin"
+        script.push_str(r##"export TFY_HUMAN_SHIM_DIR="${TFY_HUMAN_ROOT%/}/.tfy/human/bin"
+_tfy_human_strip_shim_from_path() {
+  local input_path="$1"
+  local old_ifs part new_path
+  old_ifs=$IFS
+  IFS=:
+  new_path=
+  for part in $input_path; do
+    [ "$part" = "$TFY_HUMAN_SHIM_DIR" ] && continue
+    if [ -z "$new_path" ]; then
+      new_path=$part
+    else
+      new_path="$new_path:$part"
+    fi
+  done
+  IFS=$old_ifs
+  printf '%s' "$new_path"
+}
+if [ -n "${TFY_HUMAN_ORIGINAL_PATH:-}" ]; then
+  export TFY_HUMAN_ORIGINAL_PATH="$(_tfy_human_strip_shim_from_path "$TFY_HUMAN_ORIGINAL_PATH")"
+else
+  export TFY_HUMAN_ORIGINAL_PATH="$(_tfy_human_strip_shim_from_path "$PATH")"
+fi
 	command -p mkdir -p "$TFY_HUMAN_SHIM_DIR" || return 1
 	command -p chmod 700 "$TFY_HUMAN_SHIM_DIR" 2>/dev/null || true
 _tfy_human_in_scope() {
@@ -301,7 +322,7 @@ _tfy_human_in_scope() {
 }
 _tfy_human_is_excluded_name() {
   case "$1" in
-    ""|tfy|command|builtin|source|.|eval|exec|alias|unalias|function|export|readonly|local|declare|typeset|set|unset|cd|pwd|return|exit|break|continue|shift|test|true|false|printf|echo|read|mapfile|type|hash|help|history|jobs|fg|bg|wait|trap|times|ulimit|umask|dirs|pushd|popd|compgen|complete|compopt|shopt|let|caller|bind|enable|logout|suspend|sh|bash|dash|zsh|fish|ksh|csh|tcsh|basename|cat|chmod|mkdir|mv|rm|tfy-human-bypass|_tfy_human_refresh_shims|_tfy_human_prompt_command|_tfy_human_in_scope|_tfy_human_is_excluded_name|_tfy_human_owned_shim|_tfy_human_validate_shim_dir|_tfy_human_disable_shims) return 0 ;;
+    ""|tfy|command|builtin|source|.|eval|exec|alias|unalias|function|export|readonly|local|declare|typeset|set|unset|cd|pwd|return|exit|break|continue|shift|test|true|false|printf|echo|read|mapfile|type|hash|help|history|jobs|fg|bg|wait|trap|times|ulimit|umask|dirs|pushd|popd|compgen|complete|compopt|shopt|let|caller|bind|enable|logout|suspend|sh|bash|dash|zsh|fish|ksh|csh|tcsh|basename|cat|chmod|mkdir|mv|rm|tfy-human-bypass|_tfy_human_refresh_shims|_tfy_human_prompt_command|_tfy_human_in_scope|_tfy_human_is_excluded_name|_tfy_human_owned_shim|_tfy_human_validate_shim_dir|_tfy_human_disable_shims|_tfy_human_strip_shim_from_path) return 0 ;;
     *[!A-Za-z0-9._+-]*) return 0 ;;
     *) return 1 ;;
   esac

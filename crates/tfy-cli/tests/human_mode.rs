@@ -64,6 +64,12 @@ fn human_run_summarizes_long_output_and_records_human_route_metadata() {
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("TFY command summary"), "{text}");
     assert!(text.contains("raw_ref="), "{text}");
+    assert!(
+        !text.contains("tfy custom"),
+        "stdout must not include guidance: {text}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("tfy custom"), "{stderr}");
 
     let json_output = run_tfy(
         &[
@@ -162,6 +168,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
     assert!(script_text.contains("TFY_HUMAN_SHIM_DIR"));
     assert!(script_text.contains("_tfy_human_refresh_shims"));
     assert!(script_text.contains("TFY_HUMAN_ORIGINAL_PATH"));
+    assert!(script_text.contains("_tfy_human_strip_shim_from_path"));
     assert!(script_text.contains("TFY_LAST_STATUS"));
     assert!(script_text.contains("#!/bin/sh"));
     assert!(script_text.contains("command -p chmod 700"));
@@ -233,6 +240,31 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
         !outside.path().join(".tfy/human/ledger.jsonl").exists(),
         "outside cwd must not receive TFY human ledger"
     );
+    assert!(dir.path().join(".tfy/raw").exists());
+    assert!(dir.path().join(".tfy/human/ledger.jsonl").exists());
+
+    fs::remove_file(dir.path().join(".tfy/human/ledger.jsonl")).unwrap();
+    let double_source = Command::new("bash")
+        .current_dir(dir.path())
+        .arg("-c")
+        .arg(format!(
+            r#"source {}; source {}; case ":$TFY_HUMAN_ORIGINAL_PATH:" in *":$TFY_HUMAN_SHIM_DIR:"*) exit 9;; esac; hello-custom; test -f .tfy/human/ledger.jsonl; rm .tfy/human/ledger.jsonl; tfy-human-bypass hello-custom; test ! -f .tfy/human/ledger.jsonl; cd {}; "$TFY_HUMAN_SHIM_DIR/hello-custom"; cd {}; hello-custom; test -f .tfy/human/ledger.jsonl"#,
+            script.display(),
+            script.display(),
+            outside.path().display(),
+            dir.path().display()
+        ))
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(
+        double_source.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&double_source.stdout),
+        String::from_utf8_lossy(&double_source.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&double_source.stdout), "okokokok");
+
     let ledger_text = fs::read_to_string(dir.path().join(".tfy/human/ledger.jsonl")).unwrap();
     assert!(
         ledger_text.contains("human_managed_session"),
