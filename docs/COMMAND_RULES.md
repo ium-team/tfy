@@ -21,14 +21,14 @@ User TOML rules are additive by default. Existing TFY built-in Rust strategies a
 TFY loads rules in this order for custom candidates. Built-ins normally win; only trusted v3 rules with `[command.override] built_in = true` and an exact `family` match can replace a built-in candidate:
 
 1. trusted repo-local `.tfy/commands.toml` discovered from the current directory or nearest ancestor;
-2. user-global `~/.config/tfy/commands.toml`;
+2. legacy/manual user-global `~/.config/tfy/commands.toml` compatibility rules;
 3. generic fallback / unsupported passthrough.
 
-User-global rules are user-owned and load by default when present. Repo-local rules are ignored until trusted.
+`tfy custom` is the recommended authoring path and is repo-local by default. User-global rules still load at runtime for compatibility, but TFY emits `user_global_rules_legacy_manual` diagnostics and `tfy custom verify` refuses to proceed by default when a global rule file exists. Use `--allow-legacy-global-rules` only when intentionally recording that external/manual influence. A future `tfy custom --global` flow should add provenance-backed trust for global rules.
 
 ## Repo-local trust
 
-Repo-local `.tfy/commands.toml` is trusted only when `.tfy/trust.json` exists and its hash matches the current rule file bytes:
+Repo-local `.tfy/commands.toml` is trusted only when `.tfy/trust.json` exists and its hash matches the current rule file bytes. Legacy v1 trust is still accepted for compatibility and emits `repo_rules_legacy_trust`:
 
 ```json
 {
@@ -40,9 +40,27 @@ Repo-local `.tfy/commands.toml` is trusted only when `.tfy/trust.json` exists an
 }
 ```
 
-If `.tfy/commands.toml` changes after trust, TFY skips repo-local rules and emits `repo_rules_hash_mismatch`. Missing trust emits `repo_rules_untrusted`.
+`tfy custom trust` writes provenance-backed v2 trust instead:
 
-This trust authorizes only declarative summarization. It does not authorize code execution, workspace apply, shell mutation, or official support claims.
+```json
+{
+  "schema_version": 2,
+  "command_rules": {
+    "trusted": true,
+    "rules_sha256": "<sha256 of .tfy/commands.toml>",
+    "created_by": "tfy custom",
+    "validated_at": "unix:<seconds>",
+    "validated_with": ["validate", "preview", "compare-built-in"],
+    "fixtures": [{"name": "quality", "fixture_sha256": "<sha256>", "path": ".tfy/rule-fixtures/quality.txt", "cmd": ["pnpm", "test"]}],
+    "agent": {"kind": "user", "bounded_workspace": true},
+    "override_evidence": []
+  }
+}
+```
+
+If `.tfy/commands.toml` or a trusted fixture changes after trust, TFY skips repo-local rules and emits `repo_rules_hash_mismatch`. Missing trust emits `repo_rules_untrusted`. `tfy custom status --json` reports `repo_local.state` as `trusted_v2`, `trusted_v1_legacy`, `stale`, `invalid`, or `untrusted`, and includes `trust_schema_version` so migration state is explicit.
+
+This trust authorizes only declarative summarization. It does not authorize code execution, workspace apply, shell mutation, OS-level sandboxing, or official support claims.
 
 ## Safety pipeline
 
@@ -279,25 +297,27 @@ Override rules are still custom/local support. The control plane is deliberately
 - If the family is wrong, TFY keeps the built-in candidate and emits `user_rule_override_family_mismatch`.
 - If the override is valid, TFY uses the custom candidate, marks `strategy_kind = "user_toml"`, records `rule_id`, and emits `user_rule_overrode_builtin`.
 - Raw-first storage, redaction, capping, and the no-negative selector still run after the custom render. If the custom text is not smaller than redacted public raw output, model-visible output passes through instead of showing a larger summary.
-- Repo-local override rules still require `.tfy/trust.json`; user-global override rules remain user-owned local configuration.
+- Repo-local override rules still require `.tfy/trust.json`; user-global override rules remain legacy/manual local configuration until a provenance-backed global custom flow exists.
 - If no built-in candidate exists for the matched command, the same rule behaves like a normal custom rule; `override.family` only controls replacement of an existing built-in candidate.
 - Rule order is significant: TFY uses the first matching custom rule, so place a more specific override rule before broader custom rules for the same command.
 
 Use `tfy rules compare-built-in ... --json` after adding override metadata to compare effective custom-rule behavior against TFY built-in/default behavior for representative fixtures. The JSON includes `comparison.override_active`, both strategy kinds, and model-visible character counts so an authoring agent can flag overrides that are less useful than the built-in/default result.
 
-### v3 harness commands
+### Custom harness commands
 
-Agents should use the CLI harness instead of hand-editing without proof:
+Agents should use the official `tfy custom` harness instead of hand-editing without proof:
 
 ```bash
-tfy rules agent-workspace --repo .
-tfy rules validate --file .tfy/commands.toml
-tfy rules preview --file .tfy/commands.toml --cmd "quality-report" --arg quality-report --fixture .tfy/rule-fixtures/quality-report.txt
-tfy rules compare-built-in --file .tfy/commands.toml --cmd "quality-report" --arg quality-report --fixture .tfy/rule-fixtures/quality-report.txt --json
-tfy rules trust --file .tfy/commands.toml --repo .
+tfy custom init --repo .
+tfy custom capture --repo . --name quality-report -- quality-report --json
+tfy custom prompt --repo . --agent codex --name quality-report
+tfy custom verify --repo . --name quality-report --json
+tfy custom trust --repo . --name quality-report --json
 ```
 
-`agent-workspace` creates the bounded authoring area. `validate` is strict and never trusts the file. `preview` runs the shared raw-first/no-negative summarizer against a fixture; use repeated `--arg` values when real argv contains spaces or quoting. `compare-built-in` shows effective custom-vs-default output, including explicit overrides, plus a machine-readable `comparison` object. `trust` records the reviewed `.tfy/commands.toml` sha256 in `.tfy/trust.json`.
+For a pre-existing sample, use `tfy custom import-fixture --repo . --name quality-report --file sample.txt`. `tfy custom capture` runs the command from `--repo` and stores a merged stdout+stderr fixture view; use `import-fixture` when stream separation or secret-bearing argv would matter. `tfy custom verify` runs strict validation, preview, and custom-vs-built-in comparison evidence, and it fails unless the fixture actually exercises a `user_toml` rule with a concrete `rule_id`. It fails by default when `~/.config/tfy/commands.toml` exists; pass `--allow-legacy-global-rules` only to explicitly record that legacy/manual influence. If a built-in override is intentionally larger than the built-in/default result, `--accept-larger-than-built-in` must be passed to `verify` and is recorded in trust metadata.
+
+Low-level `tfy rules validate`, `tfy rules preview`, `tfy rules compare-built-in`, and `tfy rules trust` remain expert primitives. Prefer `tfy custom` for user/agent-authored rules because it writes fixture metadata and v2 trust provenance.
 
 ### Safety metadata
 

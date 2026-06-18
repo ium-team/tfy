@@ -11,12 +11,12 @@ An authoring agent may:
 - inspect existing `docs/COMMAND_RULES.md` and project command patterns;
 - run a representative command through a TFY gateway when safe and requested;
 - inspect a supplied raw output sample or raw ref;
-- draft `.tfy/commands.toml` or `~/.config/tfy/commands.toml` rules;
+- draft repo-local `.tfy/commands.toml` rules inside the `tfy custom` harness;
 - add v2 sections, counters, captures, and severity buckets;
 - add v3 bounded structured extracts, metrics, and groups when fixture evidence proves they are useful;
 - add explicit v3 built-in override metadata only when the user asks to replace a built-in summary and `compare-built-in` evidence supports the replacement;
 - validate strict parsing and preview model-visible output;
-- update `.tfy/trust.json` only after the final rule bytes are reviewed.
+- update `.tfy/trust.json` only through `tfy custom trust` after verification evidence matches the final rule bytes.
 
 ## What an authoring agent must not do
 
@@ -32,8 +32,8 @@ An authoring agent must not:
 ## Required workflow
 
 1. **Choose scope**
-   - Use repo-local `.tfy/commands.toml` for project-specific commands.
-   - Use user-global `~/.config/tfy/commands.toml` for personal commands across projects.
+   - Use repo-local `.tfy/commands.toml` through `tfy custom` for project-specific commands.
+   - Treat user-global `~/.config/tfy/commands.toml` as legacy/manual compatibility until a provenance-backed `tfy custom --global` flow exists.
 
 2. **Collect evidence**
    - Prefer a TFY route so raw evidence is stored first.
@@ -51,18 +51,19 @@ An authoring agent must not:
    - Use captures only for display values, never execution input.
 
 4. **Validate with the harness**
-   - `tfy rules validate --file .tfy/commands.toml` must accept the rule.
-   - `tfy rules preview --file .tfy/commands.toml --cmd "<cmd>" --arg <argv0> --arg <argv1> --fixture .tfy/rule-fixtures/<name>.txt` must show redacted model-visible output.
-   - `tfy rules compare-built-in ... --json` must be used when a built-in family might already match; it compares effective custom-rule behavior, including explicit overrides, against TFY built-in/default behavior.
+   - `tfy custom init --repo .` must create the bounded workspace.
+   - `tfy custom capture --repo . --name <name> -- <command...>` or `tfy custom import-fixture --repo . --name <name> --file <sample>` must create fixture metadata. `capture` runs from `--repo` and records a merged stdout+stderr fixture; use `import-fixture` for stream-specific samples or secret-bearing commands.
+   - `tfy custom prompt --repo . --agent <codex|claude|generic> --name <name>` must generate bounded agent instructions.
+   - `tfy custom verify --repo . --name <name> --json` must accept the rule, prove the fixture exercised a concrete `user_toml` rule id, and record validate/preview/compare evidence.
    - Tiny outputs must still pass through under no-negative behavior.
    - Raw refs must remain recoverable.
    - If overriding a built-in, preview/compare output must show `strategy_kind = "user_toml"`, the expected `rule_id`, a `user_rule_overrode_builtin` diagnostic, and `comparison.override_active = true`; family mismatches must keep the built-in.
    - If `comparison.with_rules_larger_chars_vs_without_rules` is nonzero, report the token-saving regression and revise the rule unless the user explicitly accepts the local tradeoff.
 
 5. **Trust repo-local rules**
-   - Review final `.tfy/commands.toml` bytes.
-   - Compute/update `.tfy/trust.json` only after review.
-   - If the file changes later, trust must fail until updated.
+   - Review final `.tfy/commands.toml` bytes and `.tfy/custom/<name>.verify.json` evidence.
+   - Run `tfy custom trust --repo . --name <name> --json`; this writes schema v2 trust provenance.
+   - If the rule file or fixture changes later, trust must fail until `verify` and `trust` are rerun.
 
 6. **Report honestly**
    - State which rule id was added.
@@ -109,11 +110,12 @@ max_items = 25
 ## Suggested validation commands
 
 ```bash
-cargo run -q -p tfy-cli -- rules agent-workspace --repo .
-cargo run -q -p tfy-cli -- rules validate --file .tfy/commands.toml
-cargo run -q -p tfy-cli -- rules preview --file .tfy/commands.toml --cmd "<command display>" --arg <command> --arg <arg> --fixture .tfy/rule-fixtures/<fixture>.txt
-cargo run -q -p tfy-cli -- rules compare-built-in --file .tfy/commands.toml --cmd "<command display>" --arg <command> --arg <arg> --fixture .tfy/rule-fixtures/<fixture>.txt --json
+cargo run -q -p tfy-cli -- custom init --repo .
+cargo run -q -p tfy-cli -- custom capture --repo . --name <fixture> -- <command> <arg>
+cargo run -q -p tfy-cli -- custom prompt --repo . --agent codex --name <fixture>
+cargo run -q -p tfy-cli -- custom verify --repo . --name <fixture> --json
+cargo run -q -p tfy-cli -- custom trust --repo . --name <fixture> --json
 cargo test -p tfy-core user_toml
 ```
 
-For repo-local trust, prefer `cargo run -q -p tfy-cli -- rules trust --file .tfy/commands.toml --repo .` after reviewing the final rule bytes.
+Use low-level `tfy rules validate/preview/compare-built-in` only for expert debugging. For repo-local trust, prefer `tfy custom trust` because it records fixture and validation provenance.

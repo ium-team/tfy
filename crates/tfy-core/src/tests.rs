@@ -2415,3 +2415,297 @@ max_rows = 5
         summary.model_text
     );
 }
+
+#[test]
+fn repo_rules_v2_trust_loads_with_custom_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    let fixtures = tfy.join("rule-fixtures");
+    std::fs::create_dir_all(&fixtures).unwrap();
+    let rules_text = r#"
+schema_version = 3
+
+[[command]]
+id = "custom_runtime"
+match.argv_prefix = ["custom-runtime"]
+keep_lines_matching = ["KEEP"]
+"#;
+    let fixture_bytes = b"noise\nKEEP\n".repeat(80);
+    std::fs::write(tfy.join("commands.toml"), rules_text).unwrap();
+    std::fs::write(fixtures.join("runtime.txt"), &fixture_bytes).unwrap();
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 2,
+            "command_rules": {
+                "trusted": true,
+                "rules_sha256": format!("{:x}", Sha256::digest(rules_text.as_bytes())),
+                "created_by": "tfy custom",
+                "validated_at": "unix:1",
+                "validated_with": ["validate", "preview", "compare-built-in"],
+                "fixtures": [{
+                    "name": "runtime",
+                    "fixture_sha256": format!("{:x}", Sha256::digest(&fixture_bytes)),
+                    "path": ".tfy/rule-fixtures/runtime.txt",
+                    "cmd": ["custom-runtime"]
+                }],
+                "agent": {"kind": "codex", "bounded_workspace": true},
+                "override_evidence": []
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let rules = CommandRuleSet::load_standard(dir.path());
+    assert!(!rules
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "repo_rules_hash_mismatch"));
+    let argv = vec!["custom-runtime".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "custom-runtime",
+        &argv,
+        &String::from_utf8_lossy(&fixture_bytes),
+        0,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rule_id.as_deref(), Some("custom_runtime"));
+}
+
+#[test]
+fn repo_rules_v2_trust_rejects_stale_fixture_and_v1_reports_legacy() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    let fixtures = tfy.join("rule-fixtures");
+    std::fs::create_dir_all(&fixtures).unwrap();
+    let rules_text = r#"
+schema_version = 3
+
+[[command]]
+id = "custom_runtime"
+match.argv_prefix = ["custom-runtime"]
+keep_lines_matching = ["KEEP"]
+"#;
+    std::fs::write(tfy.join("commands.toml"), rules_text).unwrap();
+    std::fs::write(fixtures.join("runtime.txt"), b"changed").unwrap();
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 2,
+            "command_rules": {
+                "trusted": true,
+                "rules_sha256": format!("{:x}", Sha256::digest(rules_text.as_bytes())),
+                "created_by": "tfy custom",
+                "validated_at": "unix:1",
+                "validated_with": ["validate", "preview", "compare-built-in"],
+                "fixtures": [{
+                    "name": "runtime",
+                    "fixture_sha256": "0000",
+                    "path": ".tfy/rule-fixtures/runtime.txt",
+                    "cmd": ["custom-runtime"]
+                }],
+                "agent": {"kind": "codex", "bounded_workspace": true},
+                "override_evidence": []
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let stale = CommandRuleSet::load_standard(dir.path());
+    assert!(stale
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "repo_rules_hash_mismatch"));
+
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "command_rules": {
+                "trusted": true,
+                "rules_sha256": format!("{:x}", Sha256::digest(rules_text.as_bytes()))
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let legacy = CommandRuleSet::load_standard(dir.path());
+    assert!(legacy
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "repo_rules_legacy_trust"));
+}
+
+#[test]
+fn repo_rules_v2_trust_rejects_empty_or_out_of_harness_fixtures() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    std::fs::create_dir_all(tfy.join("rule-fixtures")).unwrap();
+    let rules_text = r#"
+schema_version = 3
+
+[[command]]
+id = "custom_runtime"
+match.argv_prefix = ["custom-runtime"]
+keep_lines_matching = ["KEEP"]
+"#;
+    std::fs::write(tfy.join("commands.toml"), rules_text).unwrap();
+    let base = serde_json::json!({
+        "schema_version": 2,
+        "command_rules": {
+            "trusted": true,
+            "rules_sha256": format!("{:x}", Sha256::digest(rules_text.as_bytes())),
+            "created_by": "tfy custom",
+            "validated_at": "unix:1",
+            "validated_with": ["validate", "preview", "compare-built-in"],
+            "fixtures": [],
+            "agent": {"kind": "codex", "bounded_workspace": true},
+            "override_evidence": []
+        }
+    });
+    std::fs::write(tfy.join("trust.json"), base.to_string()).unwrap();
+    let empty = CommandRuleSet::load_standard(dir.path());
+    assert!(empty
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "repo_rules_hash_mismatch"));
+
+    let outside = dir.path().join("outside.txt");
+    std::fs::write(&outside, b"KEEP").unwrap();
+    let out_of_harness = serde_json::json!({
+        "schema_version": 2,
+        "command_rules": {
+            "trusted": true,
+            "rules_sha256": format!("{:x}", Sha256::digest(rules_text.as_bytes())),
+            "created_by": "tfy custom",
+            "validated_at": "unix:1",
+            "validated_with": ["validate", "preview", "compare-built-in"],
+            "fixtures": [{
+                "name": "outside",
+                "fixture_sha256": format!("{:x}", Sha256::digest(b"KEEP")),
+                "path": "outside.txt",
+                "cmd": ["custom-runtime"]
+            }],
+            "agent": {"kind": "codex", "bounded_workspace": true},
+            "override_evidence": []
+        }
+    });
+    std::fs::write(tfy.join("trust.json"), out_of_harness.to_string()).unwrap();
+    let escaped = CommandRuleSet::load_standard(dir.path());
+    assert!(escaped
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "repo_rules_hash_mismatch"));
+}
+
+#[test]
+fn repo_rules_v2_trust_ignores_comment_only_override_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    let fixtures = tfy.join("rule-fixtures");
+    std::fs::create_dir_all(&fixtures).unwrap();
+    let rules_text = r#"
+schema_version = 3
+# [command.override] appears only in a comment and must not require override evidence.
+
+[[command]]
+id = "custom_runtime"
+match.argv_prefix = ["custom-runtime"]
+keep_lines_matching = ["KEEP"]
+"#;
+    let fixture_bytes = b"noise\nKEEP\n".repeat(80);
+    std::fs::write(tfy.join("commands.toml"), rules_text).unwrap();
+    std::fs::write(fixtures.join("runtime.txt"), &fixture_bytes).unwrap();
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 2,
+            "command_rules": {
+                "trusted": true,
+                "rules_sha256": format!("{:x}", Sha256::digest(rules_text.as_bytes())),
+                "created_by": "tfy custom",
+                "validated_at": "unix:1",
+                "validated_with": ["validate", "preview", "compare-built-in"],
+                "fixtures": [{
+                    "name": "runtime",
+                    "fixture_sha256": format!("{:x}", Sha256::digest(&fixture_bytes)),
+                    "path": ".tfy/rule-fixtures/runtime.txt",
+                    "cmd": ["custom-runtime"]
+                }],
+                "agent": {"kind": "codex", "bounded_workspace": true},
+                "override_evidence": []
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let rules = CommandRuleSet::load_standard(dir.path());
+    assert!(!rules
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "repo_rules_hash_mismatch"));
+}
+
+#[test]
+#[cfg(unix)]
+fn repo_rules_v2_trust_rejects_symlinked_fixture_root() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    std::fs::create_dir_all(&tfy).unwrap();
+    std::fs::create_dir_all(outside.path().join("rule-fixtures")).unwrap();
+    symlink(
+        outside.path().join("rule-fixtures"),
+        tfy.join("rule-fixtures"),
+    )
+    .unwrap();
+    let rules_text = r#"
+schema_version = 3
+
+[[command]]
+id = "custom_runtime"
+match.argv_prefix = ["custom-runtime"]
+keep_lines_matching = ["KEEP"]
+"#;
+    let fixture_bytes = b"KEEP\n".repeat(80);
+    std::fs::write(tfy.join("commands.toml"), rules_text).unwrap();
+    std::fs::write(
+        outside.path().join("rule-fixtures/runtime.txt"),
+        &fixture_bytes,
+    )
+    .unwrap();
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 2,
+            "command_rules": {
+                "trusted": true,
+                "rules_sha256": format!("{:x}", Sha256::digest(rules_text.as_bytes())),
+                "created_by": "tfy custom",
+                "validated_at": "unix:1",
+                "validated_with": ["validate", "preview", "compare-built-in"],
+                "fixtures": [{
+                    "name": "runtime",
+                    "fixture_sha256": format!("{:x}", Sha256::digest(&fixture_bytes)),
+                    "path": ".tfy/rule-fixtures/runtime.txt",
+                    "cmd": ["custom-runtime"]
+                }],
+                "agent": {"kind": "codex", "bounded_workspace": true},
+                "override_evidence": []
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let rules = CommandRuleSet::load_standard(dir.path());
+    assert!(rules
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "repo_rules_hash_mismatch"));
+}

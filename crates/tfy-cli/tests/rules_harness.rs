@@ -493,3 +493,536 @@ keep_lines_matching = ["KEEP"]
         "do not overwrite"
     );
 }
+
+#[test]
+fn custom_init_capture_verify_trust_and_status_write_v2_trust() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let repo = dir.path().to_str().unwrap();
+
+    let init = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args(["custom", "init", "--repo", repo, "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    assert!(dir
+        .path()
+        .join(".tfy/custom/AGENT_INSTRUCTIONS.md")
+        .exists());
+
+    let capture = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "capture",
+            "--repo",
+            repo,
+            "--name",
+            "quality",
+            "--json",
+            "--",
+            "sh",
+            "-c",
+            "for i in 1 2 3 4 5 6 7 8 9 10; do echo noise; echo KEEP; done",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        capture.status.success(),
+        "{}",
+        String::from_utf8_lossy(&capture.stderr)
+    );
+    assert!(dir.path().join(".tfy/rule-fixtures/quality.txt").exists());
+    assert!(dir.path().join(".tfy/custom/quality.json").exists());
+
+    std::fs::write(
+        dir.path().join(".tfy/commands.toml"),
+        r#"
+schema_version = 3
+
+[[command]]
+id = "quality_rule"
+match.argv_prefix = ["sh", "-c"]
+keep_lines_matching = ["KEEP"]
+max_lines = 4
+"#,
+    )
+    .unwrap();
+
+    let verify = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "custom", "verify", "--repo", repo, "--name", "quality", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        verify.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let verify_json: serde_json::Value = serde_json::from_slice(&verify.stdout).unwrap();
+    assert_eq!(verify_json["ok"], true);
+    assert_eq!(verify_json["validated_with"][0], "validate");
+    assert_eq!(verify_json["preview_strategy_kind"], "user_toml");
+
+    let trust = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "custom", "trust", "--repo", repo, "--name", "quality", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        trust.status.success(),
+        "{}",
+        String::from_utf8_lossy(&trust.stderr)
+    );
+    let trust_json: serde_json::Value = serde_json::from_slice(&trust.stdout).unwrap();
+    assert_eq!(trust_json["schema_version"], 2);
+    assert_eq!(trust_json["command_rules"]["created_by"], "tfy custom");
+    assert_eq!(
+        trust_json["command_rules"]["agent"]["bounded_workspace"],
+        true
+    );
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args(["custom", "status", "--repo", repo, "--json"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let status_json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status_json["repo_local"]["state"], "trusted_v2");
+    assert_eq!(status_json["repo_local"]["trust_schema_version"], 2);
+    assert_eq!(status_json["user_global"]["state"], "absent");
+}
+
+#[test]
+fn custom_verify_fails_by_default_when_user_global_rules_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join(".config/tfy");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("commands.toml"), "schema_version = 3\n").unwrap();
+    let repo = dir.path().to_str().unwrap();
+
+    Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args(["custom", "init", "--repo", repo])
+        .status()
+        .unwrap();
+    std::fs::write(dir.path().join("sample.txt"), "KEEP\n".repeat(80)).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "import-fixture",
+            "--repo",
+            repo,
+            "--name",
+            "sample",
+            "--file",
+            dir.path().join("sample.txt").to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    std::fs::write(
+        dir.path().join(".tfy/commands.toml"),
+        r#"
+schema_version = 3
+
+[[command]]
+id = "sample_rule"
+match.argv_prefix = ["sample"]
+keep_lines_matching = ["KEEP"]
+"#,
+    )
+    .unwrap();
+
+    let rejected = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args(["custom", "verify", "--repo", repo, "--name", "sample"])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("--allow-legacy-global-rules"));
+
+    let accepted = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "verify",
+            "--repo",
+            repo,
+            "--name",
+            "sample",
+            "--allow-legacy-global-rules",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&accepted.stdout).unwrap();
+    assert_eq!(json["user_global_rules_legacy_manual"], true);
+    assert_eq!(json["allow_legacy_global_rules"], true);
+}
+
+#[test]
+fn tool_gateway_loads_v2_trusted_repo_custom_rule_and_diagnoses_global_legacy() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let repo = dir.path().to_str().unwrap();
+    let bin = env!("CARGO_BIN_EXE_tfy");
+
+    Command::new(bin)
+        .env("HOME", home.path())
+        .args(["custom", "init", "--repo", repo])
+        .status()
+        .unwrap();
+    let fixture = dir.path().join("fixture.txt");
+    std::fs::write(&fixture, "noise\nKEEP runtime\n".repeat(120)).unwrap();
+    Command::new(bin)
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "import-fixture",
+            "--repo",
+            repo,
+            "--name",
+            "runtime",
+            "--file",
+            fixture.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    std::fs::write(
+        dir.path().join(".tfy/commands.toml"),
+        r#"
+schema_version = 3
+
+[[command]]
+id = "runtime_rule"
+match.argv_prefix = ["sh", "-c"]
+keep_lines_matching = ["KEEP runtime"]
+max_lines = 4
+"#,
+    )
+    .unwrap();
+    let meta_path = dir.path().join(".tfy/custom/runtime.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+    meta["cmd"] = serde_json::json!([
+        "sh",
+        "-c",
+        "for i in 1 2 3 4 5 6 7 8 9 10; do echo noise; echo KEEP runtime; done"
+    ]);
+    meta["command_display"] = serde_json::json!("sh -c for i in ...");
+    std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+
+    let verify = Command::new(bin)
+        .env("HOME", home.path())
+        .args(["custom", "verify", "--repo", repo, "--name", "runtime"])
+        .output()
+        .unwrap();
+    assert!(
+        verify.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let trust = Command::new(bin)
+        .env("HOME", home.path())
+        .args(["custom", "trust", "--repo", repo, "--name", "runtime"])
+        .output()
+        .unwrap();
+    assert!(
+        trust.status.success(),
+        "{}",
+        String::from_utf8_lossy(&trust.stderr)
+    );
+
+    let config = home.path().join(".config/tfy");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("commands.toml"), "schema_version = 3\n").unwrap();
+    let output = Command::new(bin)
+        .current_dir(dir.path())
+        .env("HOME", home.path())
+        .args([
+            "tool-gateway",
+            "--json",
+            "--",
+            "sh",
+            "-c",
+            "for i in 1 2 3 4 5 6 7 8 9 10; do echo noise; echo KEEP runtime; done",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("user_global_rules_legacy_manual"),
+        "{stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("user_toml"), "{stdout}");
+    assert!(stdout.contains("runtime_rule"), "{stdout}");
+}
+
+#[test]
+fn custom_verify_rejects_fixture_that_does_not_match_user_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let repo = dir.path().to_str().unwrap();
+    let sample = dir.path().join("sample.txt");
+    std::fs::write(&sample, "noise\n".repeat(120)).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args(["custom", "init", "--repo", repo])
+        .status()
+        .unwrap();
+    Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "import-fixture",
+            "--repo",
+            repo,
+            "--name",
+            "sample",
+            "--file",
+            sample.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    std::fs::write(
+        dir.path().join(".tfy/commands.toml"),
+        r#"
+schema_version = 3
+
+[[command]]
+id = "other_rule"
+match.argv_prefix = ["other"]
+keep_lines_matching = ["KEEP"]
+"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args(["custom", "verify", "--repo", repo, "--name", "sample"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("did not exercise a user TOML rule"));
+}
+
+#[test]
+fn custom_capture_rejects_secret_like_args_and_create_json_is_single_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let repo = dir.path().to_str().unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "capture",
+            "--repo",
+            repo,
+            "--name",
+            "secret",
+            "--",
+            "echo",
+            "Authorization: Bearer abc123",
+        ])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("secret-like command arguments"));
+
+    let opaque = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "capture",
+            "--repo",
+            repo,
+            "--name",
+            "opaque",
+            "--",
+            "echo",
+            "aB3dE5gH7jK9mN2pQ4rS6tU8",
+        ])
+        .output()
+        .unwrap();
+    assert!(!opaque.status.success());
+    assert!(String::from_utf8_lossy(&opaque.stderr).contains("opaque high-entropy"));
+
+    let created = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "create",
+            "--repo",
+            repo,
+            "--name",
+            "onejson",
+            "--agent",
+            "codex",
+            "--json",
+            "--",
+            "sh",
+            "-c",
+            "printf KEEP",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&created.stdout);
+    assert!(stdout.trim_start().starts_with('{'), "{stdout}");
+    assert!(stdout.trim_end().ends_with('}'), "{stdout}");
+    let json: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "create");
+
+    let trusted_repo = tempfile::tempdir().unwrap();
+    let trusted_repo_arg = trusted_repo.path().to_str().unwrap();
+    std::fs::create_dir_all(trusted_repo.path().join(".tfy")).unwrap();
+    std::fs::write(
+        trusted_repo.path().join(".tfy/commands.toml"),
+        r#"
+schema_version = 3
+
+[[command]]
+id = "create_rule"
+match.argv_prefix = ["sh", "-c"]
+keep_lines_matching = ["KEEP"]
+max_lines = 4
+"#,
+    )
+    .unwrap();
+    let trusted = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "create",
+            "--repo",
+            trusted_repo_arg,
+            "--name",
+            "trustedjson",
+            "--agent",
+            "codex",
+            "--verify-and-trust",
+            "--json",
+            "--",
+            "sh",
+            "-c",
+            "for i in 1 2 3 4 5 6 7 8; do echo noise; echo KEEP; done",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        trusted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&trusted.stderr)
+    );
+    let trusted_json: serde_json::Value = serde_json::from_slice(&trusted.stdout).unwrap();
+    assert_eq!(trusted_json["ok"], true);
+    assert_eq!(trusted_json["stopped_before_trust"], false);
+    assert_eq!(trusted_json["verify"]["preview_strategy_kind"], "user_toml");
+    assert_eq!(trusted_json["trust"]["schema_version"], 2);
+}
+
+#[test]
+#[cfg(unix)]
+fn custom_verify_rejects_symlinked_raw_dir() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let repo = dir.path().to_str().unwrap();
+    let sample = dir.path().join("sample.txt");
+    std::fs::write(&sample, "KEEP\n".repeat(120)).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args(["custom", "init", "--repo", repo])
+        .status()
+        .unwrap();
+    Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "custom",
+            "import-fixture",
+            "--repo",
+            repo,
+            "--name",
+            "sample",
+            "--file",
+            sample.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    std::fs::write(
+        dir.path().join(".tfy/commands.toml"),
+        r#"
+schema_version = 3
+
+[[command]]
+id = "sample_rule"
+match.argv_prefix = ["sample"]
+keep_lines_matching = ["KEEP"]
+"#,
+    )
+    .unwrap();
+    let raw = dir.path().join(".tfy/custom/raw");
+    std::fs::create_dir_all(raw.parent().unwrap()).unwrap();
+    symlink(outside.path(), &raw).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args(["custom", "verify", "--repo", repo, "--name", "sample"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("refuses symlink path"));
+}
+
+#[test]
+#[cfg(unix)]
+fn custom_init_rejects_broken_symlinked_agent_template() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    let custom_dir = repo.join(".tfy/custom");
+    std::fs::create_dir_all(&custom_dir).unwrap();
+    let outside_target = outside.path().join("outside-agent-instructions.md");
+    symlink(&outside_target, custom_dir.join("AGENT_INSTRUCTIONS.md")).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args(["custom", "init", "--repo", repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(!outside_target.exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("refuses symlink path"));
+}

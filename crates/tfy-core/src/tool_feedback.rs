@@ -632,19 +632,33 @@ impl CommandRuleSet {
         &self.diagnostics
     }
 
+    pub fn has_builtin_overrides(&self) -> bool {
+        self.rules.iter().any(|rule| rule.override_policy.built_in)
+    }
+
     pub fn load_standard(cwd: impl AsRef<Path>) -> Self {
         let cwd = cwd.as_ref();
         let mut set = Self::default();
         let repo_rules = find_repo_rules(cwd);
         if let Some(repo_rules) = repo_rules {
             let trust = repo_rules.parent().unwrap_or(cwd).join("trust.json");
-            match repo_rules_trusted(&repo_rules, &trust) {
-                Ok(true) => set.load_file_non_strict(&repo_rules, "repo"),
-                Ok(false) => set.diagnostics.push(CommandRuleDiagnostic::new(
+            match repo_rules_trust_status(&repo_rules, &trust) {
+                Ok(RepoTrustStatus::Trusted { legacy_v1 }) => {
+                    if legacy_v1 {
+                        set.diagnostics.push(CommandRuleDiagnostic::new(
+                            "repo",
+                            &repo_rules,
+                            "repo_rules_legacy_trust",
+                            "repo-local command rules use legacy v1 hash-only trust; migrate with tfy custom trust for provenance-backed trust",
+                        ));
+                    }
+                    set.load_file_non_strict(&repo_rules, "repo")
+                }
+                Ok(RepoTrustStatus::Untrusted) => set.diagnostics.push(CommandRuleDiagnostic::new(
                     "repo",
                     &repo_rules,
                     "repo_rules_untrusted",
-                    "repo-local command rules are not trusted; run tfy trust command-rules after reviewing them",
+                    "repo-local command rules are not trusted; run tfy custom verify and tfy custom trust after reviewing them",
                 )),
                 Err(message) => set.diagnostics.push(CommandRuleDiagnostic::new(
                     "repo",
@@ -660,6 +674,12 @@ impl CommandRuleSet {
                 .join("tfy")
                 .join("commands.toml");
             if user_rules.exists() {
+                set.diagnostics.push(CommandRuleDiagnostic::new(
+                    "user",
+                    &user_rules,
+                    "user_global_rules_legacy_manual",
+                    "user-global command rules loaded as legacy/manual compatibility; tfy custom uses repo-local trust by default",
+                ));
                 set.load_file_non_strict(&user_rules, "user");
             }
         }
@@ -777,26 +797,181 @@ fn find_repo_rules(cwd: &Path) -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
-fn repo_rules_trusted(rules_path: &Path, trust_path: &Path) -> Result<bool> {
+enum RepoTrustStatus {
+    Trusted { legacy_v1: bool },
+    Untrusted,
+}
+
+#[derive(Deserialize)]
+struct RepoTrustFile {
+    schema_version: u64,
+    command_rules: RepoTrustCommandRules,
+}
+
+#[derive(Deserialize)]
+struct RepoTrustCommandRules {
+    trusted: bool,
+    rules_sha256: Option<String>,
+    #[serde(default)]
+    created_by: Option<String>,
+    #[serde(default)]
+    validated_at: Option<String>,
+    #[serde(default)]
+    validated_with: Vec<String>,
+    #[serde(default)]
+    fixtures: Vec<RepoTrustFixture>,
+    #[serde(default)]
+    agent: Option<RepoTrustAgent>,
+    #[serde(default)]
+    override_evidence: Vec<RepoTrustOverrideEvidence>,
+}
+
+#[derive(Deserialize)]
+struct RepoTrustFixture {
+    name: String,
+    fixture_sha256: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    cmd: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RepoTrustAgent {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    bounded_workspace: bool,
+}
+
+#[derive(Deserialize)]
+struct RepoTrustOverrideEvidence {
+    #[serde(default)]
+    rule_id: String,
+    #[serde(default)]
+    family: String,
+    #[serde(default)]
+    override_active: bool,
+}
+
+fn repo_rules_trust_status(rules_path: &Path, trust_path: &Path) -> Result<RepoTrustStatus> {
     if !trust_path.exists() {
-        return Ok(false);
+        return Ok(RepoTrustStatus::Untrusted);
     }
+    reject_symlink_path(rules_path)?;
+    if let Some(tfy_dir) = rules_path.parent() {
+        reject_symlink_path(tfy_dir)?;
+    }
+    reject_symlink_path(trust_path)?;
     let trust_text = fs::read_to_string(trust_path)?;
-    let trust: serde_json::Value = serde_json::from_str(&trust_text)?;
-    if trust["schema_version"].as_u64() != Some(1)
-        || trust["command_rules"]["trusted"].as_bool() != Some(true)
-    {
-        return Ok(false);
+    let trust: RepoTrustFile = serde_json::from_str(&trust_text)?;
+    if !trust.command_rules.trusted {
+        return Ok(RepoTrustStatus::Untrusted);
     }
-    let Some(expected) = trust["command_rules"]["rules_sha256"].as_str() else {
-        return Ok(false);
+    let Some(expected) = trust.command_rules.rules_sha256.as_deref() else {
+        return Ok(RepoTrustStatus::Untrusted);
     };
     let actual = sha256_hex(&fs::read(rules_path)?);
-    if expected == actual {
-        Ok(true)
-    } else {
-        bail!("repo-local command rules changed after trust; expected sha256 {expected}, got {actual}")
+    if expected != actual {
+        bail!("repo-local command rules changed after trust; expected sha256 {expected}, got {actual}");
     }
+    match trust.schema_version {
+        1 => Ok(RepoTrustStatus::Trusted { legacy_v1: true }),
+        2 => {
+            validate_repo_trust_v2(rules_path, trust_path, &trust.command_rules)?;
+            Ok(RepoTrustStatus::Trusted { legacy_v1: false })
+        }
+        _ => Ok(RepoTrustStatus::Untrusted),
+    }
+}
+
+fn validate_repo_trust_v2(
+    rules_path: &Path,
+    trust_path: &Path,
+    command_rules: &RepoTrustCommandRules,
+) -> Result<()> {
+    if command_rules.created_by.as_deref() != Some("tfy custom") {
+        bail!("repo-local command rules v2 trust must be created_by=tfy custom");
+    }
+    let validated_at = command_rules.validated_at.as_deref().unwrap_or("");
+    if validated_at.is_empty() {
+        bail!("repo-local command rules v2 trust is missing validated_at");
+    }
+    for required in ["validate", "preview", "compare-built-in"] {
+        if !command_rules
+            .validated_with
+            .iter()
+            .any(|item| item == required)
+        {
+            bail!("repo-local command rules v2 trust is missing validation evidence {required}");
+        }
+    }
+    let Some(agent) = &command_rules.agent else {
+        bail!("repo-local command rules v2 trust is missing agent provenance");
+    };
+    if agent.kind.is_empty() {
+        bail!("repo-local command rules v2 trust is missing agent kind");
+    }
+    if !agent.bounded_workspace {
+        bail!("repo-local command rules v2 trust requires bounded_workspace=true");
+    }
+    if command_rules.fixtures.is_empty() {
+        bail!("repo-local command rules v2 trust requires at least one fixture");
+    }
+    let tfy_dir = rules_path.parent().unwrap_or_else(|| Path::new("."));
+    reject_symlink_path(tfy_dir)?;
+    let repo = tfy_dir.parent().unwrap_or(tfy_dir).canonicalize()?;
+    let fixture_root_uncanonical = repo.join(".tfy").join("rule-fixtures");
+    reject_symlink_path(&fixture_root_uncanonical)?;
+    let fixture_root = fixture_root_uncanonical.canonicalize()?;
+    for fixture in &command_rules.fixtures {
+        if fixture.name.is_empty() || fixture.fixture_sha256.is_empty() || fixture.cmd.is_empty() {
+            bail!("repo-local command rules v2 trust has incomplete fixture metadata");
+        }
+        let relative = fixture
+            .path
+            .clone()
+            .unwrap_or_else(|| format!(".tfy/rule-fixtures/{}.txt", fixture.name));
+        let fixture_path = repo.join(relative);
+        let metadata = fs::symlink_metadata(&fixture_path)?;
+        if metadata.file_type().is_symlink() {
+            bail!("repo-local command rules v2 fixture path is a symlink");
+        }
+        let fixture_path = fixture_path.canonicalize()?;
+        if !fixture_path.starts_with(&fixture_root) {
+            bail!("repo-local command rules v2 fixture path escapes .tfy/rule-fixtures");
+        }
+        let actual = sha256_hex(&fs::read(&fixture_path)?);
+        if actual != fixture.fixture_sha256 {
+            bail!("repo-local command rules fixture {} changed after trust; expected sha256 {}, got {actual}", fixture.name, fixture.fixture_sha256);
+        }
+    }
+    let rules = CommandRuleSet::load_strict(rules_path, "repo")?;
+    if rules.has_builtin_overrides() {
+        let has_active = command_rules
+            .override_evidence
+            .iter()
+            .any(|e| e.override_active && !e.rule_id.is_empty() && !e.family.is_empty());
+        if !has_active {
+            bail!("repo-local command rules v2 trust is missing active override evidence");
+        }
+    }
+    let metadata = fs::symlink_metadata(trust_path)?;
+    if metadata.file_type().is_symlink() {
+        bail!("repo-local command rules v2 trust path is a symlink");
+    }
+    Ok(())
+}
+
+fn reject_symlink_path(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "repo-local command rules trust refuses symlink path: {}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn parse_command_rules_strict(

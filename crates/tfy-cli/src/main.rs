@@ -1,5 +1,6 @@
 mod adapter;
 mod agent;
+mod custom;
 mod display;
 mod gateways;
 mod hook;
@@ -14,6 +15,7 @@ use adapter::{execute_adapter, AdapterCmd};
 use agent::{execute_agent, AgentCmd};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use custom::{execute_custom, CustomCmd};
 use display::{
     execute_restore_display, execute_restore_file, execute_restore_patch, RestoreDisplayCmd,
     RestoreFileCmd, RestorePatchCmd,
@@ -264,6 +266,11 @@ enum Cmd {
     StateProject {
         #[arg(long, default_value = ".tfy/state/ledger.jsonl")]
         ledger: PathBuf,
+    },
+    /// Official TFY-managed custom command summary authoring harness.
+    Custom {
+        #[command(subcommand)]
+        cmd: CustomCmd,
     },
     /// Validate, preview, trust, and scaffold custom command summary rules.
     Rules {
@@ -581,6 +588,7 @@ fn main() -> Result<()> {
             parent_event_id,
         )?,
         Cmd::Workspace { cmd } => execute_workspace(cmd)?,
+        Cmd::Custom { cmd } => execute_custom(cmd)?,
         Cmd::StateAppend { ledger, payload } => {
             let text = read_payload(payload)?;
             let event: RuntimeEnvelope<GatewayEvent> = serde_json::from_str(&text)?;
