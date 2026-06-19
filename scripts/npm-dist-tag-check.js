@@ -12,8 +12,8 @@ function parseArgs(argv) {
     const token = argv[i];
     if (!token.startsWith('--')) throw new Error(`unexpected argument: ${token}`);
     const key = token.slice(2).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
-    if (key === 'json') {
-      args.json = true;
+    if (key === 'json' || key === 'allowPrestablePreviewLatest') {
+      args[key] = true;
       continue;
     }
     const value = argv[i + 1];
@@ -52,7 +52,7 @@ function validateDistTags(options) {
     if (distTags.preview !== version) {
       errors.push(`preview dist-tag must point at ${version}, got ${distTags.preview || '(missing)'}`);
     }
-    if (distTags.latest && /-preview\./.test(cleanVersion(distTags.latest))) {
+    if (distTags.latest && /-preview\./.test(cleanVersion(distTags.latest)) && !options.allowPrestablePreviewLatest) {
       errors.push(`latest dist-tag must not point at preview version ${distTags.latest}`);
     }
   }
@@ -68,6 +68,7 @@ function validateDistTags(options) {
     channel,
     version,
     dist_tags: distTags,
+    allow_prestable_preview_latest: Boolean(options.allowPrestablePreviewLatest),
     status: errors.length ? 'fail' : 'pass',
     errors
   };
@@ -80,7 +81,8 @@ function main() {
     packageName: args.packageName || NPM_PACKAGE_NAME,
     version: args.version,
     channel: args.channel,
-    distTags
+    distTags,
+    allowPrestablePreviewLatest: Boolean(args.allowPrestablePreviewLatest)
   });
   if (args.json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

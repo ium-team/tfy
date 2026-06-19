@@ -82,6 +82,7 @@ assert(previewPublish.warnings.some(warning => warning.includes('npm dist-tag ch
 assert(previewPublish.verify_commands.some(command => command[0] === 'node' && command[1] === 'scripts/npm-dist-tag-check.js'));
 assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1-preview.0', distTags: { preview: '0.1.1-preview.0' } }).status, 'pass');
 assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1-preview.0', distTags: { preview: '0.1.1-preview.0', latest: '0.1.1-preview.0' } }).status, 'fail');
+assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1-preview.0', distTags: { preview: '0.1.1-preview.0', latest: '0.1.0-preview.0' }, allowPrestablePreviewLatest: true }).status, 'pass');
 assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1-preview.0', distTags: { preview: '0.1.1-preview.0', latest: '0.1.0' } }).status, 'pass');
 assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1', distTags: { preview: '0.1.1' } }).status, 'fail');
 const previewDistTagCli = spawnSync(process.execPath, [path.resolve(__dirname, '..', '..', '..', 'scripts', 'npm-dist-tag-check.js'), '--version', '0.1.1-preview.0', '--channel', 'preview', '--dist-tags-json', '{"preview":"0.1.1-preview.0"}', '--json'], { encoding: 'utf8' });
@@ -90,6 +91,9 @@ assert.strictEqual(JSON.parse(previewDistTagCli.stdout).status, 'pass');
 const previewLatestCli = spawnSync(process.execPath, [path.resolve(__dirname, '..', '..', '..', 'scripts', 'npm-dist-tag-check.js'), '--version', '0.1.1-preview.0', '--channel', 'preview', '--dist-tags-json', '{"preview":"0.1.1-preview.0","latest":"0.1.1-preview.0"}', '--json'], { encoding: 'utf8' });
 assert.strictEqual(previewLatestCli.status, 1);
 assert.strictEqual(JSON.parse(previewLatestCli.stdout).status, 'fail');
+const previewAllowedLatestCli = spawnSync(process.execPath, [path.resolve(__dirname, '..', '..', '..', 'scripts', 'npm-dist-tag-check.js'), '--version', '0.1.1-preview.0', '--channel', 'preview', '--dist-tags-json', '{"preview":"0.1.1-preview.0","latest":"0.1.0-preview.0"}', '--allow-prestable-preview-latest', '--json'], { encoding: 'utf8' });
+assert.strictEqual(previewAllowedLatestCli.status, 0, previewAllowedLatestCli.stderr);
+assert.strictEqual(JSON.parse(previewAllowedLatestCli.stdout).allow_prestable_preview_latest, true);
 
 const stablePublish = npmPublishPlan({
   channel: 'stable',

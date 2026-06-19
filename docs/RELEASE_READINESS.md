@@ -60,7 +60,7 @@ node scripts/npm-publish-plan.js --version 0.1.1-preview.0 --channel preview --s
 node scripts/npm-publish-plan.js --version 0.1.1 --channel stable --source-ref main
 ```
 
-After an npm publish, the workflow runs the dist-tag guard printed by the publish plan. For preview releases it verifies that `preview` points at the release version and that `latest` does not point at any preview version; for stable releases it verifies that `latest` points at the stable release version. Maintainers can also run the same guard locally:
+After an npm publish, the workflow runs the dist-tag guard printed by the publish plan. For preview releases it verifies that `preview` points at the release version; until the first stable release exists, the workflow explicitly tolerates the historical npm registry state where npm refused to delete a preview `latest` tag. Stable releases must move `latest` to the stable release version. Maintainers can also run the strict guard locally:
 
 ```sh
 node scripts/npm-dist-tag-check.js --version 0.1.1-preview.0 --channel preview
@@ -70,7 +70,7 @@ node scripts/npm-dist-tag-check.js --version 0.1.1 --channel stable
 External setup required before automated npm publishing can pass:
 
 1. In npm, configure Trusted Publishing for package `@ium/tfy-cli` to trust GitHub organization/user `ium-team`, repository `tfy`, workflow filename `release.yml`, and the `npm publish` action.
-2. Inspect `npm dist-tag ls @ium/tfy-cli`; if `latest` points at a preview version, remove it once with `npm dist-tag rm @ium/tfy-cli latest`. The workflow guard will fail until `latest` no longer points at a preview version.
+2. Inspect `npm dist-tag ls @ium/tfy-cli`; if `latest` points at a preview version and npm allows removal, remove it once with `npm dist-tag rm @ium/tfy-cli latest`. If npm refuses to delete `latest`, keep documenting preview installs explicitly and let the first real stable release move `latest` to stable.
 3. Do not add a long-lived npm publish token unless Trusted Publishing is unavailable and the repository explicitly accepts that operational risk.
 
 
