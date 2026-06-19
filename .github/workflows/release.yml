@@ -331,3 +331,47 @@ jobs:
             args+=(--prerelease --latest=false)
           fi
           gh release create "${args[@]}"
+
+  npm_publish:
+    name: Publish npm package
+    runs-on: ubuntu-latest
+    needs: [preflight, verify, release]
+    if: ${{ !inputs.dry_run }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.target_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Verify npm Trusted Publishing runtime
+        run: |
+          set -euo pipefail
+          node -e 'const [major] = process.versions.node.split(".").map(Number); if (major < 24) throw new Error(`Node ${process.versions.node} is too old for npm Trusted Publishing`); console.log(`node ${process.versions.node}`);'
+          NPM_VERSION="$(npm --version)"
+          export NPM_VERSION
+          node -e 'const version = process.env.NPM_VERSION.split(".").map(Number); const min = [11, 5, 1]; for (let i = 0; i < min.length; i += 1) { if (version[i] > min[i]) break; if (version[i] < min[i]) throw new Error(`npm ${process.env.NPM_VERSION} is too old for npm Trusted Publishing`); } console.log(`npm ${process.env.NPM_VERSION}`);'
+      - name: Print npm publish plan
+        run: |
+          set -euo pipefail
+          node scripts/npm-publish-plan.js \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --channel "${{ inputs.channel }}" \
+            --source-ref "${{ needs.preflight.outputs.source_ref }}"
+      - name: Publish to npm
+        run: |
+          set -euo pipefail
+          npm publish ./npm/tfy-cli \
+            --tag "${{ needs.preflight.outputs.npm_dist_tag }}" \
+            --access public
+      - name: Verify npm dist-tags
+        run: |
+          set -euo pipefail
+          node scripts/npm-dist-tag-check.js \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --channel "${{ inputs.channel }}"

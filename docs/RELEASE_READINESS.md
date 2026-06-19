@@ -60,19 +60,25 @@ node scripts/npm-publish-plan.js --version 0.1.1-preview.0 --channel preview --s
 node scripts/npm-publish-plan.js --version 0.1.1 --channel stable --source-ref main
 ```
 
-After an npm publish, run the dist-tag guard printed by the publish plan. For preview releases it verifies that `preview` points at the release version and that `latest` does not point at any preview version; for stable releases it verifies that `latest` points at the stable release version:
+After an npm publish, the workflow runs the dist-tag guard printed by the publish plan. For preview releases it verifies that `preview` points at the release version and that `latest` does not point at any preview version; for stable releases it verifies that `latest` points at the stable release version. Maintainers can also run the same guard locally:
 
 ```sh
 node scripts/npm-dist-tag-check.js --version 0.1.1-preview.0 --channel preview
 node scripts/npm-dist-tag-check.js --version 0.1.1 --channel stable
 ```
 
+External setup required before automated npm publishing can pass:
+
+1. In npm, configure Trusted Publishing for package `@ium/tfy-cli` to trust GitHub organization/user `ium-team`, repository `tfy`, workflow filename `release.yml`, and the `npm publish` action.
+2. Inspect `npm dist-tag ls @ium/tfy-cli`; if `latest` points at a preview version, remove it once with `npm dist-tag rm @ium/tfy-cli latest`. The workflow guard will fail until `latest` no longer points at a preview version.
+3. Do not add a long-lived npm publish token unless Trusted Publishing is unavailable and the repository explicitly accepts that operational risk.
+
 
 See [TFY Release Versioning Guide](releases/VERSIONING.md) for the plain-language rules for choosing `N.N.N` vs `N.N.N-preview.N`, when to bump patch/minor/major, and which files must agree before release.
 
 ## Manual GitHub Release workflow
 
-A human-controlled GitHub Release workflow lives at `.github/workflows/release.yml`. It is intentionally manual-only (`workflow_dispatch`) and does not publish npm. Its `npm_dist_tag` metadata is an instruction for the later npm publish step, not evidence that npm was published. The workflow must exist on the repository default branch before it appears in the GitHub Actions manual-run UI; choose the release source with the `source_ref` input.
+A human-controlled GitHub Release workflow lives at `.github/workflows/release.yml`. It is intentionally manual-only (`workflow_dispatch`) and, when `dry_run=false`, creates the GitHub Release first and then publishes the npm installer with the channel-derived dist-tag. `preview` publishes use `--tag preview`; stable publishes use `--tag latest`. The npm publish job uses npm Trusted Publishing / GitHub OIDC (`id-token: write`) and therefore requires the npm package to trust this repository workflow before the job can succeed. The workflow must exist on the repository default branch before it appears in the GitHub Actions manual-run UI; choose the release source with the `source_ref` input.
 
 Inputs:
 
