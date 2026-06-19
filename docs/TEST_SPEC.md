@@ -210,13 +210,14 @@ Additional MCP hardening tests verify:
 
 ## Human `start --human` auto-intercept regression
 
-- On supported Linux bash, interactive project-only `tfy start --human` creates/refreshes trusted repo future-shell auto-activation state and enters a TFY-managed project-scoped PATH-shim shell without requiring a second `tfy human shell` command; non-interactive plain invocations record lifecycle intent, do not create auto-activation state, and do not hang.
+- On supported Linux bash, interactive project-only `tfy start --human` creates/refreshes trusted current-directory future-shell auto-activation state and enters a TFY-managed current-directory-scoped PATH-shim shell without requiring a second `tfy human shell` command; non-interactive plain invocations record lifecycle intent, do not create auto-activation state, and do not hang.
 - `tfy human install --dry-run|--output <path>` emits or writes a TFY-owned bash script with ownership markers; uninstall refuses to remove non-TFY scripts.
 - PATH-resolved ordinary external commands known to the generated `.tfy/human/bin` shim are routed once through TFY run, store combined raw command output first, and summarize only when smaller than redacted raw output.
 - The shim refresh refuses non-TFY-owned pre-existing shim entries, rewrites marker-bearing shims from the deterministic template, records prompt status without clobbering refresh status, and treats newly created PATH executables as raw/not-claimed until prompt-time refresh discovers them.
 - Direct paths, explicit `tfy-human-bypass`, TFY gateway, shell builtins/keywords, aliases/functions, outside-scope commands, and nested child-shell internals run raw and must not claim wrapped-command raw output or no-negative-savings; automatic stateful/TUI subcommand classification is not claimed in v1.
 - Ordinary terminals outside the managed session remain `ordinary_terminal_interception=false`.
 - Interactive project-only `tfy start --human` and explicit automation `tfy start --human --auto-activate` create/refresh `.tfy/human/auto-activate.json` and deterministic `.tfy/human/auto-activate.bash`; non-interactive plain `tfy start --human` and plain `tfy start both` do not create future-shell auto-activation state.
+- Future-shell auto-activation is current-directory-only: a valid parent `../.tfy/human/auto-activate.json` must not activate a child working directory.
 - `tfy human auto-activate install --shell bash --rcfile <path> --apply` writes only a TFY-owned marker-bounded rc hook; uninstall removes only that block; status reports normalized `repo_marker`, `selected_rcfile`, `active_shell`, and `support_status` groups.
-- Startup validation and generated shims use the pinned absolute TFY executable, never PATH-resolved `tfy`; fake repo-local/PATH-earlier `tfy` binaries must not run during startup validation or routed command execution.
+- Startup validation and generated shims use the pinned absolute TFY executable, never PATH-resolved `tfy`; fake current-directory-local/PATH-earlier `tfy` binaries must not run during startup validation or routed command execution.
 - Auto-activation rejects symlinked `.tfy`, malformed/disabled/wrong-root markers, unsafe permissions, and self-certifying script markers/hashes; validation byte-compares deterministic expected content or regenerates it before sourcing.

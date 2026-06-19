@@ -842,9 +842,8 @@ impl CommandRule {
 }
 
 fn find_repo_rules(cwd: &Path) -> Option<PathBuf> {
-    cwd.ancestors()
-        .map(|dir| dir.join(".tfy").join("commands.toml"))
-        .find(|path| path.exists())
+    let path = cwd.join(".tfy").join("commands.toml");
+    path.exists().then_some(path)
 }
 
 fn global_custom_rules_path() -> Option<PathBuf> {

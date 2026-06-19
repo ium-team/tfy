@@ -2401,6 +2401,64 @@ keep_lines_matching = ["KEEP"]
 }
 
 #[test]
+fn repo_rules_v2_trust_ignores_parent_directory_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    let fixtures = tfy.join("rule-fixtures");
+    std::fs::create_dir_all(&fixtures).unwrap();
+    let rules_text = r#"
+schema_version = 3
+
+[[command]]
+id = "parent_runtime"
+match.argv_prefix = ["parent-runtime"]
+keep_lines_matching = ["KEEP"]
+"#;
+    let fixture_bytes = b"noise\nKEEP\n".repeat(80);
+    std::fs::write(tfy.join("commands.toml"), rules_text).unwrap();
+    std::fs::write(fixtures.join("runtime.txt"), &fixture_bytes).unwrap();
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 2,
+            "command_rules": {
+                "trusted": true,
+                "rules_sha256": format!("{:x}", Sha256::digest(rules_text.as_bytes())),
+                "created_by": "tfy custom",
+                "validated_at": "unix:1",
+                "validated_with": ["validate", "preview", "compare-built-in"],
+                "fixtures": [{
+                    "name": "runtime",
+                    "fixture_sha256": format!("{:x}", Sha256::digest(&fixture_bytes)),
+                    "path": ".tfy/rule-fixtures/runtime.txt",
+                    "cmd": ["parent-runtime"]
+                }],
+                "agent": {"kind": "codex", "bounded_workspace": true},
+                "override_evidence": []
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let child = dir.path().join("child");
+    std::fs::create_dir_all(&child).unwrap();
+    let rules = CommandRuleSet::load_standard(&child);
+    let argv = vec!["parent-runtime".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "parent-runtime",
+        &argv,
+        &String::from_utf8_lossy(&fixture_bytes),
+        0,
+        &child,
+        Some(&rules),
+    )
+    .unwrap();
+    assert_ne!(summary.strategy_kind, "user_toml");
+    assert_ne!(summary.rule_id.as_deref(), Some("parent_runtime"));
+}
+
+#[test]
 fn repo_rules_v2_trust_rejects_stale_fixture_and_v1_trust() {
     let dir = tempfile::tempdir().unwrap();
     let tfy = dir.path().join(".tfy");

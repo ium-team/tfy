@@ -3993,7 +3993,7 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
     assert_eq!(human["managed_session_entrypoint"][2], "--human");
     assert_eq!(
         human["managed_session_scope"],
-        "project_scoped_tfy_managed_session"
+        "current_directory_scoped_tfy_managed_session"
     );
     assert_eq!(human["shells_supported"][0], "linux-bash");
     assert_eq!(human["ordinary_terminal_interception"], false);
