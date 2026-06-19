@@ -55,6 +55,32 @@ pub(crate) struct HumanAutoActivateUninstallCmd {
     apply: bool,
 }
 
+pub(crate) fn execute_human_auto_activate_install_setup(
+    shell: &str,
+    rcfile: Option<PathBuf>,
+    dry_run: bool,
+    apply: bool,
+) -> Result<()> {
+    execute_auto_activate_install(HumanAutoActivateInstallCmd {
+        shell: shell.to_string(),
+        rcfile,
+        dry_run,
+        apply,
+    })
+}
+
+pub(crate) fn execute_human_auto_activate_uninstall_setup(
+    shell: &str,
+    rcfile: Option<PathBuf>,
+    apply: bool,
+) -> Result<()> {
+    execute_auto_activate_uninstall(HumanAutoActivateUninstallCmd {
+        shell: shell.to_string(),
+        rcfile,
+        apply,
+    })
+}
+
 #[derive(Args)]
 pub(crate) struct HumanAutoActivateStatusCmd {
     #[arg(long, default_value = "bash")]

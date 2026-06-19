@@ -494,6 +494,95 @@ fn plain_both_start_is_intent_only_without_human_auto_activation_marker() {
     assert!(!dir.path().join(".tfy/human/auto-activate.bash").exists());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_human_dry_run_apply_and_mixed_flags_preserve_explicit_trust_boundary() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let rcfile = dir.path().join("test.bashrc");
+    fs::write(&rcfile, "# user rc\n").unwrap();
+
+    let dry_run = run_tfy(
+        &["setup", "--human", "--rcfile", rcfile.to_str().unwrap()],
+        &dir,
+    );
+    assert!(
+        dry_run.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&dry_run.stdout),
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    let dry_stdout = String::from_utf8_lossy(&dry_run.stdout);
+    assert!(dry_stdout.contains("TFY setup human"), "{dry_stdout}");
+    assert!(
+        dry_stdout.contains("ordinary_terminal_interception=false"),
+        "{dry_stdout}"
+    );
+    assert!(
+        dry_stdout.contains("TFY human auto-activate install dry-run"),
+        "{dry_stdout}"
+    );
+    assert!(dry_stdout.contains("apply=false"), "{dry_stdout}");
+    assert_eq!(fs::read_to_string(&rcfile).unwrap(), "# user rc\n");
+
+    let apply = run_tfy(
+        &[
+            "setup",
+            "--human",
+            "--rcfile",
+            rcfile.to_str().unwrap(),
+            "--apply",
+        ],
+        &dir,
+    );
+    assert!(
+        apply.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&apply.stdout),
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    let rc_text = fs::read_to_string(&rcfile).unwrap();
+    assert!(
+        rc_text.contains("TFY:HUMAN-AUTO-ACTIVATE:START"),
+        "{rc_text}"
+    );
+
+    let mixed = run_tfy(
+        &[
+            "setup",
+            "--human",
+            "--ai",
+            "--rcfile",
+            rcfile.to_str().unwrap(),
+        ],
+        &dir,
+    );
+    assert!(!mixed.status.success());
+    let mixed_stderr = String::from_utf8_lossy(&mixed.stderr);
+    assert!(
+        mixed_stderr.contains("cannot be combined"),
+        "{mixed_stderr}"
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn setup_human_fails_closed_without_stdout_on_non_linux() {
+    let dir = tempfile::tempdir().unwrap();
+    let rcfile = dir.path().join("test.bashrc");
+    std::fs::write(&rcfile, "# user rc\n").unwrap();
+    let output = run_tfy(
+        &["setup", "--human", "--rcfile", rcfile.to_str().unwrap()],
+        &dir,
+    );
+    assert!(!output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Linux bash only in v1"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(&rcfile).unwrap(), "# user rc\n");
+}
+
 #[test]
 fn human_auto_activate_rejects_both_target_before_agent_mutation() {
     let dir = tempfile::tempdir().unwrap();
@@ -535,6 +624,7 @@ fn interactive_plain_human_start_creates_repo_auto_activation_marker_by_default(
         stdout.contains("human_auto_activation repo_marker.enabled=true"),
         "{stdout}"
     );
+    assert!(stdout.contains("tfy setup --human --apply"), "{stdout}");
     assert!(stdout.contains("managed_session_starting"), "{stdout}");
     assert!(dir.path().join(".tfy/human/auto-activate.json").exists());
     assert!(dir.path().join(".tfy/human/auto-activate.bash").exists());
@@ -578,6 +668,7 @@ fn interactive_explicit_auto_activate_creates_marker_without_entering_managed_sh
         stdout.contains("human_auto_activation repo_marker.enabled=true"),
         "{stdout}"
     );
+    assert!(stdout.contains("tfy setup --human --apply"), "{stdout}");
     assert!(
         stdout.contains("managed_session_launch=explicit_auto_activate_only"),
         "{stdout}"

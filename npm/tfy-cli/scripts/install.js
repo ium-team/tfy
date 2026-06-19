@@ -19,6 +19,10 @@ function log(message) {
   process.stderr.write(`[tfy installer] ${message}\n`);
 }
 
+function logHumanOptInGuidance() {
+  log('human auto-activation is opt-in. To enable it once for trusted TFY-marked repos: tfy setup --human --apply');
+}
+
 function fail(message) {
   process.stderr.write(`[tfy installer] error: ${message}\n`);
   process.exit(1);
@@ -50,6 +54,7 @@ function copyLocalBinary(source, destination = manualInstallDestination(source))
   fs.copyFileSync(source, destination);
   ensureExecutable(destination);
   log(`installed local TFY binary from ${source}`);
+  logHumanOptInGuidance();
   return destination;
 }
 
@@ -174,6 +179,7 @@ async function installFromRelease(options = {}) {
   await downloadFile(checksumUrl, checksumPath);
   installVerifiedArchive({ archivePath, checksumPath, asset, platformTarget, vendorDirectory, destinationBinary });
   log(`installed ${destinationBinary}`);
+  logHumanOptInGuidance();
 }
 
 async function main() {
@@ -200,6 +206,7 @@ module.exports = {
   download,
   installFromRelease,
   installLocalBinary,
+  logHumanOptInGuidance,
   manualInstallDestination,
   installVerifiedArchive,
   listArchiveEntries,

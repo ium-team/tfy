@@ -1,4 +1,7 @@
-use crate::human::{enable_human_auto_activate_repo, execute_human_shell};
+use crate::human::{
+    enable_human_auto_activate_repo, execute_human_auto_activate_install_setup,
+    execute_human_auto_activate_uninstall_setup, execute_human_shell,
+};
 use crate::util::{print_json, stable_id};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
@@ -95,6 +98,9 @@ pub(crate) struct SetupCmd {
     /// Prepare TFY for supported AI-agent host routing. Does not touch ordinary terminals.
     #[arg(long)]
     pub ai: bool,
+    /// Prepare explicit human shell auto-activation for trusted TFY-marked repos. Dry-run by default; writes only with --apply.
+    #[arg(long)]
+    pub human: bool,
     /// Print Codex MCP/instruction setup guidance.
     #[arg(long)]
     pub codex: bool,
@@ -105,7 +111,7 @@ pub(crate) struct SetupCmd {
     pub dry_run: bool,
     #[arg(long)]
     pub apply: bool,
-    /// Remove TFY-owned host config where safe reversible uninstall is implemented.
+    /// Remove TFY-owned host config or the explicit human rc hook where safe reversible uninstall is implemented.
     #[arg(long)]
     pub uninstall: bool,
     /// Use project-local host config when supported.
@@ -114,6 +120,12 @@ pub(crate) struct SetupCmd {
     /// Use user-global host config when supported.
     #[arg(long)]
     pub global: bool,
+    /// Shell for explicit human setup. Linux bash only in v1.
+    #[arg(long, default_value = "bash")]
+    pub shell: String,
+    /// Explicit rcfile for human setup. Defaults to ~/.bashrc.
+    #[arg(long)]
+    pub rcfile: Option<PathBuf>,
     #[arg(long, default_value = "local-session")]
     pub session: String,
 }
@@ -1820,7 +1832,7 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
     if targets.contains(&LifecycleTarget::Human) {
         if let Some(root) = &human_auto_activation_root {
             println!("human_auto_activation repo_marker.enabled=true repo_marker.valid=true repo_marker.root={} selected_rcfile.hook_installed=unknown support_status=auto_activation_marker_enabled_hook_required", root.display());
-            println!("future-shell auto-activation requires one explicit user rc hook install: tfy human auto-activate install --shell bash --rcfile ~/.bashrc --apply");
+            println!("future-shell auto-activation requires one explicit user rc hook install: tfy setup --human --apply");
         }
         if human_managed_session_available() {
             if project_human_only && interactive_terminal && !cmd.auto_activate {
@@ -2303,8 +2315,36 @@ pub(crate) fn execute_smoke(cmd: SmokeCmd) -> Result<()> {
 }
 
 pub(crate) fn execute_setup(cmd: SetupCmd) -> Result<()> {
-    if !(cmd.ai || cmd.codex || !cmd.host.is_empty()) {
-        bail!("setup requires --ai, --codex, and/or --host <host>; use `tfy setup --ai --host codex --dry-run`");
+    if !(cmd.human || cmd.ai || cmd.codex || !cmd.host.is_empty()) {
+        bail!("setup requires --human, --ai, --codex, and/or --host <host>; use `tfy setup --human --apply` for explicit human shell setup or `tfy setup --ai --host codex --dry-run` for AI-host routing");
+    }
+    if cmd.human {
+        if cmd.ai || cmd.codex || !cmd.host.is_empty() {
+            bail!("tfy setup --human cannot be combined with AI-host setup flags (--ai, --codex, --host); run human and AI setup as separate explicit commands");
+        }
+        if cmd.project || cmd.global {
+            bail!("tfy setup --human does not support --project/--global scope flags in v1; it only configures one explicit user rcfile for trusted marked repos");
+        }
+        if cmd.apply && cmd.dry_run {
+            bail!("--apply and --dry-run cannot be combined");
+        }
+        if cmd.uninstall {
+            execute_human_auto_activate_uninstall_setup(&cmd.shell, cmd.rcfile.clone(), cmd.apply)?;
+        } else {
+            execute_human_auto_activate_install_setup(
+                &cmd.shell,
+                cmd.rcfile.clone(),
+                cmd.dry_run || !cmd.apply,
+                cmd.apply,
+            )?;
+        }
+        println!(
+            "TFY setup human: explicit_rc_hook=true ordinary_terminal_interception=false universal_interception=false dry_run={} apply={}",
+            !cmd.apply,
+            cmd.apply
+        );
+        println!("Human auto-activation applies only in trusted repos with a TFY repo marker created by `tfy start --human`; npm install and setup dry-runs do not mutate shell rcfiles.");
+        return Ok(());
     }
     if cmd.ai {
         println!("TFY setup ai: supported_host_routing=true ordinary_terminal_interception=false provider_gateway=false editor_integration=false");

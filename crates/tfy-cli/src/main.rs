@@ -86,7 +86,7 @@ enum Cmd {
     Smoke(SmokeCmd),
     /// Report measured TFY savings from adapter/MCP ledgers.
     Gain(GainCmd),
-    /// Easy setup for supported AI-agent host routing; never intercepts ordinary terminals.
+    /// Easy setup for AI-agent host routing or explicit human shell auto-activation.
     Setup(SetupCmd),
     /// Show which TFY routing/apply/restore surfaces are active, configured, or out of scope.
     Status(StatusCmd),
