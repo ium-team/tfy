@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::process::Command;
 
 struct IsolatedToolPaths {
@@ -330,4 +331,175 @@ fn tool_gateway_json_includes_command_family_for_p0_wrapped_command() {
         .as_str()
         .unwrap()
         .contains("family=cargo_test"));
+}
+
+#[test]
+fn tool_gateway_uses_user_global_toml_rule_for_custom_command() {
+    let paths = isolated_tool_paths();
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join(".config/tfy");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("commands.toml"),
+        r#"
+[[command]]
+id = "custom_shell"
+match.argv_prefix = ["sh", "-c"]
+preserve_lines_matching = ["(?i)(error|warning)"]
+strip_lines_matching = ["(?i)^noise"]
+head_lines = 4
+tail_lines = 2
+max_lines = 8
+truncate_lines_at = 160
+human_auto_safe = true
+agent_safe = true
+interactive_risk = "none"
+"#,
+    )
+    .unwrap();
+    let script =
+        "for i in $(seq 1 120); do echo noise-$i; done; echo 'ERROR token=super-secret-value'";
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "tool-gateway",
+            "--json",
+            "--raw-dir",
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
+            "--",
+            "sh",
+            "-c",
+            script,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["payload"]["strategy_kind"], "user_toml");
+    assert_eq!(json["payload"]["rule_id"], "custom_shell");
+    assert_eq!(json["payload"]["strategy_source_kind"], "user");
+    assert_eq!(json["payload"]["rendering_kind"], "summary");
+    let model_text = json["payload"]["model_text"].as_str().unwrap();
+    assert!(model_text.contains("strategy=user_toml"), "{model_text}");
+    assert!(!model_text.contains("super-secret-value"), "{model_text}");
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args([
+            "adapter",
+            "report",
+            "--session",
+            "local-session",
+            "--ledger",
+            paths.ledger.as_str(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(report.status.success());
+    let report_json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(report_json["strategy_counts"]["user_toml"], 1);
+    assert_eq!(report_json["rule_counts"]["custom_shell"], 1);
+    assert_eq!(report_json["strategy_source_counts"]["user"], 1);
+}
+
+#[test]
+fn tool_gateway_skips_untrusted_repo_local_toml_rule() {
+    let paths = isolated_tool_paths();
+    let work = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(work.path().join(".tfy")).unwrap();
+    std::fs::write(
+        work.path().join(".tfy/commands.toml"),
+        r#"
+[[command]]
+id = "repo_rule"
+match.argv_prefix = ["sh", "-c"]
+preserve_lines_matching = ["ERROR"]
+max_lines = 8
+"#,
+    )
+    .unwrap();
+    let nested = work.path().join("nested/child");
+    std::fs::create_dir_all(&nested).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(&nested)
+        .env("HOME", work.path().join("empty-home"))
+        .args([
+            "tool-gateway",
+            "--json",
+            "--raw-dir",
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
+            "--",
+            "sh",
+            "-c",
+            "printf 'ERROR should not use repo rule\\n'",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("repo_rules_untrusted"), "{stderr}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_ne!(json["payload"]["strategy_kind"], "user_toml");
+    assert_eq!(
+        json["payload"]["command_rule_diagnostics"][0]["code"],
+        "repo_rules_untrusted"
+    );
+}
+
+#[test]
+fn tool_gateway_applies_hash_trusted_repo_local_toml_rule() {
+    let paths = isolated_tool_paths();
+    let work = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(work.path().join(".tfy")).unwrap();
+    let rules_path = work.path().join(".tfy/commands.toml");
+    let rules = r#"
+[[command]]
+id = "repo_rule"
+match.argv_prefix = ["sh", "-c"]
+preserve_lines_matching = ["ERROR"]
+strip_lines_matching = ["noise"]
+max_lines = 8
+"#;
+    std::fs::write(&rules_path, rules).unwrap();
+    let hash = format!("{:x}", Sha256::digest(rules.as_bytes()));
+    std::fs::write(
+        work.path().join(".tfy/trust.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "command_rules": {"trusted": true, "rules_sha256": hash}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let nested = work.path().join("nested/child");
+    std::fs::create_dir_all(&nested).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(&nested)
+        .env("HOME", work.path().join("empty-home"))
+        .args([
+            "tool-gateway",
+            "--json",
+            "--raw-dir",
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
+            "--",
+            "sh",
+            "-c",
+            "for i in $(seq 1 100); do echo noise; done; echo ERROR trusted",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["payload"]["strategy_kind"], "user_toml");
+    assert_eq!(json["payload"]["rule_id"], "repo_rule");
+    assert_eq!(json["payload"]["strategy_source_kind"], "repo");
 }

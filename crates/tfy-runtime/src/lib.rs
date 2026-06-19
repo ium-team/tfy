@@ -608,6 +608,12 @@ pub enum GatewayResponse {
         agent_safe: bool,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         interactive_risk: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule_id: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        strategy_source_kind: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        command_rule_diagnostics: Vec<CommandRuleDiagnostic>,
         summary: String,
         model_text: String,
         rendering_kind: String,
@@ -652,6 +658,7 @@ fn default_agent_safe() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GatewayEvent {
     ToolCommandCompleted {
@@ -668,6 +675,12 @@ pub enum GatewayEvent {
         agent_safe: bool,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         interactive_risk: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule_id: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        strategy_source_kind: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        command_rule_diagnostics: Vec<CommandRuleDiagnostic>,
         raw_ref: String,
         #[serde(default)]
         raw_bytes: usize,
@@ -713,6 +726,18 @@ pub enum GatewayEvent {
     Error {
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandRuleDiagnostic {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

@@ -256,6 +256,9 @@ pub(crate) struct AdapterReport {
     rendering_counts: BTreeMap<String, usize>,
     family_counts: BTreeMap<String, usize>,
     strategy_counts: BTreeMap<String, usize>,
+    rule_counts: BTreeMap<String, usize>,
+    strategy_source_counts: BTreeMap<String, usize>,
+    command_rule_diagnostic_counts: BTreeMap<String, usize>,
     families_by_saved_tokens: Vec<FamilySavings>,
     raw_refs: Vec<String>,
 }
@@ -272,6 +275,9 @@ pub(crate) fn build_adapter_report(ledger: PathBuf, session: &str) -> Result<Ada
             exit_code,
             command_family,
             strategy_kind,
+            rule_id,
+            strategy_source_kind,
+            command_rule_diagnostics,
             raw_ref,
             raw_bytes,
             model_bytes,
@@ -322,6 +328,24 @@ pub(crate) fn build_adapter_report(ledger: PathBuf, session: &str) -> Result<Ada
                 strategy_kind.clone()
             };
             *report.strategy_counts.entry(strategy).or_insert(0) += 1;
+            if let Some(rule_id) = rule_id {
+                *report.rule_counts.entry(rule_id.clone()).or_insert(0) += 1;
+            }
+            let strategy_source = if strategy_source_kind.is_empty() {
+                "legacy_unknown".to_string()
+            } else {
+                strategy_source_kind.clone()
+            };
+            *report
+                .strategy_source_counts
+                .entry(strategy_source)
+                .or_insert(0) += 1;
+            for diagnostic in command_rule_diagnostics {
+                *report
+                    .command_rule_diagnostic_counts
+                    .entry(diagnostic.code.clone())
+                    .or_insert(0) += 1;
+            }
             report.raw_refs.push(raw_ref.clone());
         }
     }
@@ -429,6 +453,12 @@ pub(crate) fn execute_adapter_report(ledger: PathBuf, session: &str, json: bool)
         );
         println!("family_counts={:?}", report.family_counts);
         println!("strategy_counts={:?}", report.strategy_counts);
+        println!("rule_counts={:?}", report.rule_counts);
+        println!("strategy_source_counts={:?}", report.strategy_source_counts);
+        println!(
+            "command_rule_diagnostic_counts={:?}",
+            report.command_rule_diagnostic_counts
+        );
         println!(
             "families_by_saved_tokens={}",
             serde_json::to_string(&report.families_by_saved_tokens)?

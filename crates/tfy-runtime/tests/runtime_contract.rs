@@ -24,6 +24,44 @@ fn runtime_envelope_round_trips_with_required_fields() {
 }
 
 #[test]
+fn legacy_tool_command_event_deserializes_without_rule_metadata() {
+    let json = serde_json::json!({
+        "kind": "tool_command_completed",
+        "command": "printf ok",
+        "exit_code": 0,
+        "risk": "success",
+        "command_family": "generic",
+        "strategy_kind": "generic",
+        "human_auto_safe": false,
+        "agent_safe": true,
+        "interactive_risk": "unknown",
+        "raw_ref": "cmdout_deadbeef0000_0000000000000000",
+        "raw_bytes": 2,
+        "model_bytes": 2,
+        "raw_chars": 2,
+        "summary_chars": 2,
+        "model_chars": 2,
+        "savings_pct": 0.0,
+        "negative_savings_avoided": false,
+        "rendering_kind": "pass_through",
+        "output_sha256": "sha"
+    });
+    let event: GatewayEvent = serde_json::from_value(json).unwrap();
+    let GatewayEvent::ToolCommandCompleted {
+        rule_id,
+        strategy_source_kind,
+        command_rule_diagnostics,
+        ..
+    } = event
+    else {
+        panic!("expected tool command event");
+    };
+    assert_eq!(rule_id, None);
+    assert!(strategy_source_kind.is_empty());
+    assert!(command_rule_diagnostics.is_empty());
+}
+
+#[test]
 fn negotiation_degrades_on_boundary_mismatches() {
     let caps = AdapterCapabilities::cli_default();
     let bad_version = NegotiationRequest {
@@ -65,6 +103,9 @@ fn state_projection_with_valid_lineage_is_authoritative() {
             human_auto_safe: false,
             agent_safe: true,
             interactive_risk: "none".into(),
+            rule_id: None,
+            strategy_source_kind: "built_in".into(),
+            command_rule_diagnostics: Vec::new(),
             raw_ref: "cmdout_deadbeef0000_0000000000000000".into(),
             raw_bytes: 100,
             model_bytes: 42,
@@ -107,6 +148,9 @@ fn state_projection_without_lineage_is_non_authoritative() {
             human_auto_safe: false,
             agent_safe: true,
             interactive_risk: "none".into(),
+            rule_id: None,
+            strategy_source_kind: "built_in".into(),
+            command_rule_diagnostics: Vec::new(),
             raw_ref: "cmdout_deadbeef0000_0000000000000000".into(),
             raw_bytes: 100,
             model_bytes: 42,
@@ -145,6 +189,9 @@ fn state_projection_with_mixed_validity_is_non_authoritative() {
             human_auto_safe: false,
             agent_safe: true,
             interactive_risk: "none".into(),
+            rule_id: None,
+            strategy_source_kind: "built_in".into(),
+            command_rule_diagnostics: Vec::new(),
             raw_ref: "cmdout_deadbeef0000_0000000000000000".into(),
             raw_bytes: 100,
             model_bytes: 42,
@@ -192,4 +239,14 @@ fn state_projection_with_mixed_validity_is_non_authoritative() {
         projection.fallback_reason,
         Some(FallbackReason::MissingProvenance)
     );
+}
+
+#[test]
+fn command_rule_diagnostic_deserializes_from_partial_object() {
+    let diagnostic: tfy_runtime::CommandRuleDiagnostic =
+        serde_json::from_str(r#"{"code":"repo_rules_untrusted"}"#).unwrap();
+    assert_eq!(diagnostic.code, "repo_rules_untrusted");
+    assert!(diagnostic.source_kind.is_empty());
+    assert!(diagnostic.path.is_empty());
+    assert!(diagnostic.message.is_empty());
 }
