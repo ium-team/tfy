@@ -72,6 +72,8 @@ struct CommandStrategySpec {
     claim_status: &'static str,
 }
 
+const USER_RULE_PUBLIC_SCAN_LINE_CHARS: usize = 1_000;
+
 const RUST_STRATEGY_FAMILIES: &[&str] = &[
     "git_status",
     "git_diff",
@@ -205,7 +207,78 @@ struct CommandRule {
     source_kind: String,
     argv_prefix: Vec<String>,
     command_regex: Option<Regex>,
+    safety: RuleSafetyMetadata,
+    operations: Vec<RuleOperation>,
+}
+
+#[derive(Debug, Clone)]
+struct RuleSafetyMetadata {
+    human_auto_safe: bool,
+    agent_safe: bool,
+    interactive_risk: String,
+}
+
+#[derive(Debug, Clone)]
+enum RuleOperation {
+    LineFilter(RuntimeFilter),
+    Section(SectionSpec),
+    Counter(CounterSpec),
+    Capture(CaptureSpec),
+    Severity(SeveritySpec),
+}
+
+#[derive(Debug, Clone)]
+struct SectionSpec {
+    title: String,
     filter: RuntimeFilter,
+    empty: SectionEmpty,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SectionEmpty {
+    Omit,
+    Show,
+}
+
+#[derive(Debug, Clone)]
+struct CounterSpec {
+    name: String,
+    pattern: Regex,
+    max_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CaptureSpec {
+    name: String,
+    pattern: Regex,
+    field: String,
+    dedupe: bool,
+    max_items: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SeveritySpec {
+    level: SeverityLevel,
+    pattern: Regex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SeverityLevel {
+    Info,
+    Warning,
+    Error,
+    Critical,
+}
+
+impl SeverityLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            SeverityLevel::Info => "info",
+            SeverityLevel::Warning => "warning",
+            SeverityLevel::Error => "error",
+            SeverityLevel::Critical => "critical",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -219,14 +292,13 @@ struct RuntimeFilter {
     tail_lines: usize,
     max_lines: usize,
     on_empty: String,
-    human_auto_safe: bool,
-    agent_safe: bool,
-    interactive_risk: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandRulesFile {
+    #[serde(default)]
+    schema_version: Option<u16>,
     #[serde(default)]
     command: Vec<CommandRuleToml>,
 }
@@ -258,6 +330,14 @@ struct CommandRuleToml {
     #[serde(default)]
     on_empty: String,
     #[serde(default)]
+    section: Vec<CommandRuleSectionToml>,
+    #[serde(default)]
+    counter: Vec<CommandRuleCounterToml>,
+    #[serde(default)]
+    capture: Vec<CommandRuleCaptureToml>,
+    #[serde(default)]
+    severity: Vec<CommandRuleSeverityToml>,
+    #[serde(default)]
     human_auto_safe: bool,
     #[serde(default = "default_true")]
     agent_safe: bool,
@@ -272,6 +352,60 @@ struct CommandRuleMatchToml {
     argv_prefix: Vec<String>,
     #[serde(default)]
     command_regex: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleSectionToml {
+    name: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    preserve_lines_matching: Vec<String>,
+    #[serde(default)]
+    strip_lines_matching: Vec<String>,
+    #[serde(default)]
+    keep_lines_matching: Vec<String>,
+    #[serde(default = "default_truncate_lines_at")]
+    truncate_lines_at: usize,
+    #[serde(default = "default_head_lines")]
+    head_lines: usize,
+    #[serde(default = "default_tail_lines")]
+    tail_lines: usize,
+    #[serde(default = "default_max_lines")]
+    max_lines: usize,
+    #[serde(default = "default_section_empty")]
+    empty: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleCounterToml {
+    name: String,
+    #[serde(rename = "match")]
+    match_pattern: String,
+    #[serde(default = "default_counter_max_count")]
+    max_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleCaptureToml {
+    name: String,
+    pattern: String,
+    field: String,
+    #[serde(default = "default_true")]
+    dedupe: bool,
+    #[serde(default = "default_capture_max_items")]
+    max_items: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleSeverityToml {
+    level: String,
+    #[serde(rename = "match")]
+    match_pattern: String,
 }
 
 fn default_true() -> bool {
@@ -296,6 +430,18 @@ fn default_max_lines() -> usize {
 
 fn default_interactive_risk() -> String {
     "none".into()
+}
+
+fn default_section_empty() -> String {
+    "omit".into()
+}
+
+fn default_counter_max_count() -> usize {
+    10_000
+}
+
+fn default_capture_max_items() -> usize {
+    25
 }
 
 impl CommandRuleDiagnostic {
@@ -409,36 +555,23 @@ impl CommandRuleSet {
         risk: &str,
     ) -> Option<UserRuleSummaryCandidate> {
         let rule = self.first_match(argv, command_display)?;
-        let filtered = apply_runtime_filter(&rule.filter, raw)?;
-        let mut lines = vec![format!(
-            "TFY command summary: {} strategy=user_toml rule_id={} source={} exit={code} cmd={command_display}",
-            risk.to_uppercase(),
-            rule.id,
-            rule.source_kind
-        )];
-        lines.push(format!(
-            "- selected_lines={} original_lines={}",
-            filtered.selected_lines,
-            raw.lines().count()
-        ));
-        for line in filtered.preserved.iter().take(8) {
-            lines.push(format!("- preserved: {line}"));
-        }
-        for line in filtered.lines.iter().take(rule.filter.max_lines) {
-            lines.push(format!("- {line}"));
-        }
-        if risk != "success" {
-            lines.extend(evidence.iter().take(5).map(|e| format!("- evidence: {e}")));
-        }
-        lines.push(format!("raw_ref={rr}"));
-        lines.push(String::new());
+        let parts = evaluate_rule(rule, raw)?;
+        let context = RuleRenderContext {
+            command_display,
+            code,
+            raw,
+            evidence,
+            rr,
+            risk,
+        };
+        let text = render_rule_summary(rule, &parts, &context);
         Some(UserRuleSummaryCandidate {
-            text: lines.join("\n"),
+            text,
             rule_id: rule.id.clone(),
             strategy_source_kind: rule.source_kind.clone(),
-            human_auto_safe: rule.filter.human_auto_safe,
-            agent_safe: rule.filter.agent_safe,
-            interactive_risk: rule.filter.interactive_risk.clone(),
+            human_auto_safe: rule.safety.human_auto_safe,
+            agent_safe: rule.safety.agent_safe,
+            interactive_risk: rule.safety.interactive_risk.clone(),
         })
     }
 }
@@ -503,11 +636,12 @@ fn parse_command_rules_strict(
 ) -> Result<Vec<CommandRule>> {
     let parsed: CommandRulesFile =
         toml::from_str(text).map_err(|err| anyhow::anyhow!("invalid TOML: {err}"))?;
+    let schema_version = validate_schema_version(parsed.schema_version)?;
     let mut ids = std::collections::BTreeSet::new();
     parsed
         .command
         .into_iter()
-        .map(|rule| build_command_rule(rule, source_kind, &mut ids))
+        .map(|rule| build_command_rule(rule, source_kind, schema_version, &mut ids))
         .collect::<Result<Vec<_>>>()
         .map_err(|err| anyhow::anyhow!("{}: {err}", path.display()))
 }
@@ -534,7 +668,10 @@ fn parse_command_rules_non_strict(
 
     let mut diagnostics = Vec::new();
     if let Some(table) = parsed.as_table() {
-        for key in table.keys().filter(|key| key.as_str() != "command") {
+        for key in table
+            .keys()
+            .filter(|key| !matches!(key.as_str(), "command" | "schema_version"))
+        {
             diagnostics.push(CommandRuleDiagnostic::new(
                 source_kind,
                 path,
@@ -543,6 +680,35 @@ fn parse_command_rules_non_strict(
             ));
         }
     }
+    let schema_version = match parsed.get("schema_version") {
+        Some(value) => match value
+            .as_integer()
+            .and_then(|version| u16::try_from(version).ok())
+        {
+            Some(version) => match validate_schema_version(Some(version)) {
+                Ok(version) => version,
+                Err(err) => {
+                    diagnostics.push(CommandRuleDiagnostic::new(
+                        source_kind,
+                        path,
+                        "user_rules_unsupported_schema_version",
+                        err.to_string(),
+                    ));
+                    return (Vec::new(), diagnostics);
+                }
+            },
+            None => {
+                diagnostics.push(CommandRuleDiagnostic::new(
+                    source_kind,
+                    path,
+                    "user_rules_unsupported_schema_version",
+                    "schema_version must be integer 1 or 2",
+                ));
+                return (Vec::new(), diagnostics);
+            }
+        },
+        None => 1,
+    };
     let Some(commands) = parsed.get("command") else {
         return (Vec::new(), diagnostics);
     };
@@ -573,7 +739,7 @@ fn parse_command_rules_non_strict(
                 continue;
             }
         };
-        match build_command_rule(raw_rule, source_kind, &mut ids) {
+        match build_command_rule(raw_rule, source_kind, schema_version, &mut ids) {
             Ok(rule) => rules.push(rule),
             Err(err) => diagnostics.push(CommandRuleDiagnostic::new(
                 source_kind,
@@ -589,11 +755,13 @@ fn parse_command_rules_non_strict(
 fn build_command_rule(
     rule: CommandRuleToml,
     source_kind: &str,
+    schema_version: u16,
     ids: &mut std::collections::BTreeSet<String>,
 ) -> Result<CommandRule> {
     if rule.id.trim().is_empty() {
         bail!("command rule id must not be empty");
     }
+    validate_safe_name(&rule.id, "command rule id")?;
     if !ids.insert(rule.id.clone()) {
         bail!("duplicate command rule id: {}", rule.id);
     }
@@ -618,6 +786,17 @@ fn build_command_rule(
     validate_pattern_list(&rule.preserve_lines_matching, "preserve_lines_matching")?;
     validate_pattern_list(&rule.strip_lines_matching, "strip_lines_matching")?;
     validate_pattern_list(&rule.keep_lines_matching, "keep_lines_matching")?;
+    if schema_version < 2
+        && (!rule.section.is_empty()
+            || !rule.counter.is_empty()
+            || !rule.capture.is_empty()
+            || !rule.severity.is_empty())
+    {
+        bail!(
+            "command rule {} uses v2 operations without schema_version = 2",
+            rule.id
+        );
+    }
     if !matches!(
         rule.interactive_risk.as_str(),
         "none" | "possible" | "unknown"
@@ -635,30 +814,355 @@ fn build_command_rule(
         .filter(|pattern| !pattern.is_empty())
         .map(|pattern| compile_user_regex(pattern, "command_regex"))
         .transpose()?;
+    let mut operations = Vec::new();
+    operations.push(RuleOperation::LineFilter(RuntimeFilter {
+        strip_ansi: rule.strip_ansi,
+        strip_lines_matching: compile_user_regexes(&rule.strip_lines_matching)?,
+        keep_lines_matching: compile_user_regexes(&rule.keep_lines_matching)?,
+        preserve_lines_matching: compile_user_regexes(&rule.preserve_lines_matching)?,
+        truncate_lines_at: rule.truncate_lines_at,
+        head_lines: rule.head_lines,
+        tail_lines: rule.tail_lines,
+        max_lines: rule.max_lines,
+        on_empty: if rule.on_empty.is_empty() {
+            format!("{}: no relevant output", rule.id)
+        } else {
+            cap_to_chars(&norm(&redact_public(&rule.on_empty)), 512)
+        },
+    }));
+    for section in rule.section {
+        operations.push(RuleOperation::Section(build_section_spec(section)?));
+    }
+    for counter in rule.counter {
+        operations.push(RuleOperation::Counter(build_counter_spec(counter)?));
+    }
+    for capture in rule.capture {
+        operations.push(RuleOperation::Capture(build_capture_spec(capture)?));
+    }
+    for severity in rule.severity {
+        operations.push(RuleOperation::Severity(build_severity_spec(severity)?));
+    }
     Ok(CommandRule {
-        id: rule.id.clone(),
+        id: rule.id,
         source_kind: source_kind.into(),
         argv_prefix: rule.match_config.argv_prefix,
         command_regex,
-        filter: RuntimeFilter {
-            strip_ansi: rule.strip_ansi,
-            strip_lines_matching: compile_user_regexes(&rule.strip_lines_matching)?,
-            keep_lines_matching: compile_user_regexes(&rule.keep_lines_matching)?,
-            preserve_lines_matching: compile_user_regexes(&rule.preserve_lines_matching)?,
-            truncate_lines_at: rule.truncate_lines_at,
-            head_lines: rule.head_lines,
-            tail_lines: rule.tail_lines,
-            max_lines: rule.max_lines,
-            on_empty: if rule.on_empty.is_empty() {
-                format!("{}: no relevant output", rule.id)
-            } else {
-                cap_to_chars(&norm(&redact_public(&rule.on_empty)), 512)
-            },
+        safety: RuleSafetyMetadata {
             human_auto_safe: rule.human_auto_safe,
             agent_safe: rule.agent_safe,
             interactive_risk: rule.interactive_risk,
         },
+        operations,
     })
+}
+
+fn build_section_spec(section: CommandRuleSectionToml) -> Result<SectionSpec> {
+    validate_safe_name(&section.name, "section name")?;
+    validate_limit(section.title.chars().count(), 120, "section title")?;
+    validate_limit(
+        section.truncate_lines_at,
+        10_000,
+        "section.truncate_lines_at",
+    )?;
+    validate_limit(section.head_lines, 1_000, "section.head_lines")?;
+    validate_limit(section.tail_lines, 1_000, "section.tail_lines")?;
+    validate_limit(section.max_lines, 1_000, "section.max_lines")?;
+    validate_pattern_list(
+        &section.preserve_lines_matching,
+        "section.preserve_lines_matching",
+    )?;
+    validate_pattern_list(
+        &section.strip_lines_matching,
+        "section.strip_lines_matching",
+    )?;
+    validate_pattern_list(&section.keep_lines_matching, "section.keep_lines_matching")?;
+    let empty = match section.empty.as_str() {
+        "omit" | "none" => SectionEmpty::Omit,
+        "show" => SectionEmpty::Show,
+        other => bail!("invalid section empty policy {other}"),
+    };
+    Ok(SectionSpec {
+        title: if section.title.is_empty() {
+            section.name.clone()
+        } else {
+            cap_to_chars(&norm(&redact_public(&section.title)), 120)
+        },
+        filter: RuntimeFilter {
+            strip_ansi: true,
+            strip_lines_matching: compile_user_regexes(&section.strip_lines_matching)?,
+            keep_lines_matching: compile_user_regexes(&section.keep_lines_matching)?,
+            preserve_lines_matching: compile_user_regexes(&section.preserve_lines_matching)?,
+            truncate_lines_at: section.truncate_lines_at,
+            head_lines: section.head_lines,
+            tail_lines: section.tail_lines,
+            max_lines: section.max_lines,
+            on_empty: String::new(),
+        },
+        empty,
+    })
+}
+
+fn build_counter_spec(counter: CommandRuleCounterToml) -> Result<CounterSpec> {
+    validate_safe_name(&counter.name, "counter name")?;
+    validate_limit(counter.max_count, 1_000_000, "counter.max_count")?;
+    Ok(CounterSpec {
+        name: counter.name,
+        pattern: compile_user_regex(&counter.match_pattern, "counter.match")?,
+        max_count: counter.max_count,
+    })
+}
+
+fn build_capture_spec(capture: CommandRuleCaptureToml) -> Result<CaptureSpec> {
+    validate_safe_name(&capture.name, "capture name")?;
+    validate_safe_name(&capture.field, "capture field")?;
+    validate_limit(capture.max_items, 1_000, "capture.max_items")?;
+    let pattern = compile_user_regex(&capture.pattern, "capture.pattern")?;
+    if pattern
+        .capture_names()
+        .flatten()
+        .all(|name| name != capture.field)
+    {
+        bail!(
+            "capture {} missing named field {}",
+            capture.name,
+            capture.field
+        );
+    }
+    Ok(CaptureSpec {
+        name: capture.name,
+        pattern,
+        field: capture.field,
+        dedupe: capture.dedupe,
+        max_items: capture.max_items,
+    })
+}
+
+fn build_severity_spec(severity: CommandRuleSeverityToml) -> Result<SeveritySpec> {
+    let level = match severity.level.as_str() {
+        "info" => SeverityLevel::Info,
+        "warning" => SeverityLevel::Warning,
+        "error" => SeverityLevel::Error,
+        "critical" => SeverityLevel::Critical,
+        other => bail!("invalid severity level {other}"),
+    };
+    Ok(SeveritySpec {
+        level,
+        pattern: compile_user_regex(&severity.match_pattern, "severity.match")?,
+    })
+}
+
+#[derive(Default)]
+struct SummaryParts {
+    line_filter: Option<FilteredOutput>,
+    sections: Vec<RenderedSection>,
+    counters: Vec<(String, usize)>,
+    captures: Vec<RenderedCapture>,
+    max_severity: Option<SeverityLevel>,
+}
+
+struct RenderedSection {
+    title: String,
+    lines: Vec<String>,
+    selected_lines: usize,
+}
+
+struct RenderedCapture {
+    name: String,
+    items: Vec<String>,
+}
+
+fn evaluate_rule(rule: &CommandRule, raw: &str) -> Option<SummaryParts> {
+    let mut parts = SummaryParts::default();
+    let public_lines = public_rule_lines(raw);
+    for operation in &rule.operations {
+        match operation {
+            RuleOperation::LineFilter(filter) => {
+                parts.line_filter = apply_runtime_filter(filter, raw);
+            }
+            RuleOperation::Section(section) => {
+                if let Some(filtered) = apply_runtime_filter(&section.filter, raw) {
+                    if !filtered.lines.is_empty() || section.empty == SectionEmpty::Show {
+                        parts.sections.push(RenderedSection {
+                            title: section.title.clone(),
+                            lines: filtered.lines,
+                            selected_lines: filtered.selected_lines,
+                        });
+                    }
+                }
+            }
+            RuleOperation::Counter(counter) => {
+                let mut count = 0usize;
+                for line in &public_lines {
+                    count = count.saturating_add(counter.pattern.find_iter(line).count());
+                    if count >= counter.max_count {
+                        count = counter.max_count;
+                        break;
+                    }
+                }
+                parts.counters.push((counter.name.clone(), count));
+            }
+            RuleOperation::Capture(capture) => {
+                let mut items = Vec::new();
+                let mut seen = std::collections::BTreeSet::new();
+                for line in &public_lines {
+                    for caps in capture.pattern.captures_iter(line) {
+                        let Some(value) = caps.name(&capture.field) else {
+                            continue;
+                        };
+                        let item = cap_to_chars(&norm(&redact_public(value.as_str())), 240);
+                        if item.is_empty() {
+                            continue;
+                        }
+                        if capture.dedupe && !seen.insert(item.clone()) {
+                            continue;
+                        }
+                        items.push(item);
+                        if items.len() >= capture.max_items {
+                            break;
+                        }
+                    }
+                    if items.len() >= capture.max_items {
+                        break;
+                    }
+                }
+                if !items.is_empty() {
+                    parts.captures.push(RenderedCapture {
+                        name: capture.name.clone(),
+                        items,
+                    });
+                }
+            }
+            RuleOperation::Severity(severity) => {
+                if public_lines
+                    .iter()
+                    .any(|line| severity.pattern.is_match(line))
+                {
+                    parts.max_severity =
+                        Some(parts.max_severity.map_or(severity.level, |current| {
+                            std::cmp::max(current, severity.level)
+                        }));
+                }
+            }
+        }
+    }
+    if parts.line_filter.is_none()
+        && parts.sections.is_empty()
+        && parts.counters.is_empty()
+        && parts.captures.is_empty()
+        && parts.max_severity.is_none()
+    {
+        None
+    } else {
+        Some(parts)
+    }
+}
+
+struct RuleRenderContext<'a> {
+    command_display: &'a str,
+    code: i32,
+    raw: &'a str,
+    evidence: &'a [String],
+    rr: &'a str,
+    risk: &'a str,
+}
+
+fn render_rule_summary(
+    rule: &CommandRule,
+    parts: &SummaryParts,
+    context: &RuleRenderContext<'_>,
+) -> String {
+    let display_risk = match parts.max_severity {
+        Some(SeverityLevel::Critical) => "CRITICAL".to_string(),
+        Some(SeverityLevel::Error) if context.risk == "success" => "ERROR".to_string(),
+        Some(SeverityLevel::Warning) if context.risk == "success" => "WARNING".to_string(),
+        _ => context.risk.to_uppercase(),
+    };
+    let mut lines = vec![format!(
+        "TFY command summary: {display_risk} strategy=user_toml rule_id={} source={} exit={} cmd={}",
+        rule.id, rule.source_kind, context.code, context.command_display
+    )];
+    lines.push(format!("- original_lines={}", context.raw.lines().count()));
+    if let Some(level) = parts.max_severity {
+        lines.push(format!("- custom_severity={}", level.as_str()));
+    }
+    for (name, count) in &parts.counters {
+        lines.push(format!("- counter.{name}={count}"));
+    }
+    if let Some(filtered) = &parts.line_filter {
+        lines.push(format!("- selected_lines={}", filtered.selected_lines));
+        for line in filtered.preserved.iter().take(8) {
+            lines.push(format!("- preserved: {line}"));
+        }
+        if !filtered.lines.is_empty() {
+            lines.push("Output:".into());
+            for line in &filtered.lines {
+                lines.push(format!("- {line}"));
+            }
+        }
+    }
+    for section in &parts.sections {
+        lines.push(format!("{}:", section.title));
+        lines.push(format!("- selected_lines={}", section.selected_lines));
+        for line in &section.lines {
+            lines.push(format!("- {line}"));
+        }
+    }
+    for capture in &parts.captures {
+        lines.push(format!("{}:", capture.name));
+        for item in &capture.items {
+            lines.push(format!("- {item}"));
+        }
+    }
+    if context.risk != "success" {
+        lines.extend(
+            context
+                .evidence
+                .iter()
+                .take(5)
+                .map(|e| format!("- evidence: {e}")),
+        );
+    }
+    lines.push(format!("raw_ref={}", context.rr));
+    lines.push(String::new());
+    lines
+        .into_iter()
+        .map(|line| cap_to_chars(&norm(&redact_public(&line)), 1_000))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn public_rule_lines(raw: &str) -> Vec<String> {
+    strip_ansi_sequences(raw)
+        .lines()
+        .map(|line| {
+            cap_to_chars(
+                &norm(&redact_public(line)),
+                USER_RULE_PUBLIC_SCAN_LINE_CHARS,
+            )
+        })
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn validate_schema_version(version: Option<u16>) -> Result<u16> {
+    match version.unwrap_or(1) {
+        version @ (1 | 2) => Ok(version),
+        other => bail!("unsupported command rules schema_version {other}"),
+    }
+}
+
+fn validate_safe_name(value: &str, label: &str) -> Result<()> {
+    let len = value.chars().count();
+    if len == 0 || len > 64 {
+        bail!("{label} must be 1..64 characters");
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        bail!("{label} must contain only ASCII letters, digits, '_' or '-'");
+    }
+    Ok(())
 }
 
 fn validate_limit(value: usize, max: usize, name: &str) -> Result<()> {
@@ -703,6 +1207,18 @@ fn diagnostic_code_from_message(message: &str) -> &'static str {
         "user_rules_invalid_regex"
     } else if message.contains("duplicate") {
         "user_rules_duplicate_id"
+    } else if message.contains("unsupported command rules schema_version")
+        || message.contains("schema_version")
+    {
+        "user_rules_unsupported_schema_version"
+    } else if message.contains("section") {
+        "user_rules_invalid_section"
+    } else if message.contains("counter") {
+        "user_rules_invalid_counter"
+    } else if message.contains("capture") {
+        "user_rules_invalid_capture"
+    } else if message.contains("severity") {
+        "user_rules_invalid_severity"
     } else if message.contains("exceeds") || message.contains("too many patterns") {
         "user_rules_unsafe_limit"
     } else {

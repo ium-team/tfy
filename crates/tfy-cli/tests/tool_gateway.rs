@@ -503,3 +503,79 @@ max_lines = 8
     assert_eq!(json["payload"]["rule_id"], "repo_rule");
     assert_eq!(json["payload"]["strategy_source_kind"], "repo");
 }
+
+#[test]
+fn tool_gateway_uses_user_global_v2_rule_sections_and_captures() {
+    let paths = isolated_tool_paths();
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join(".config/tfy");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("commands.toml"),
+        r#"
+schema_version = 2
+
+[[command]]
+id = "custom_v2"
+match.argv_prefix = ["sh", "-c"]
+strip_lines_matching = ["(?i)^noise"]
+head_lines = 4
+tail_lines = 2
+max_lines = 8
+
+[[command.section]]
+name = "errors"
+title = "Errors"
+keep_lines_matching = ["(?i)(error|fatal)"]
+max_lines = 8
+
+[[command.counter]]
+name = "errors"
+match = "(?i)(error|fatal)"
+
+[[command.capture]]
+name = "files"
+pattern = "(?m)^(?<file>[^:\\s][^:]+):(?<line>\\d+):"
+field = "file"
+max_items = 4
+
+[[command.severity]]
+level = "critical"
+match = "(?i)fatal"
+"#,
+    )
+    .unwrap();
+    let script = "for i in $(seq 1 120); do echo noise-$i; done; echo 'src/app.ts:10: ERROR token=super-secret-value'; echo 'src/lib.ts:22: fatal broken'";
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("HOME", home.path())
+        .args([
+            "tool-gateway",
+            "--json",
+            "--raw-dir",
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
+            "--",
+            "sh",
+            "-c",
+            script,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["payload"]["strategy_kind"], "user_toml");
+    assert_eq!(json["payload"]["rule_id"], "custom_v2");
+    assert_eq!(json["payload"]["strategy_source_kind"], "user");
+    let model_text = json["payload"]["model_text"].as_str().unwrap();
+    assert!(model_text.contains("Errors:"), "{model_text}");
+    assert!(model_text.contains("counter.errors="), "{model_text}");
+    assert!(model_text.contains("files:"), "{model_text}");
+    assert!(model_text.contains("src/app.ts"), "{model_text}");
+    assert!(!model_text.contains("super-secret-value"), "{model_text}");
+    assert!(model_text.contains("[REDACTED]"), "{model_text}");
+}

@@ -1720,3 +1720,292 @@ fn command_rule_diagnostic_deserializes_from_partial_object() {
     assert!(diagnostic.path.is_empty());
     assert!(diagnostic.message.is_empty());
 }
+
+#[test]
+fn user_toml_v2_sections_counters_captures_and_severity_share_safety_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+schema_version = 2
+
+[[command]]
+id = "project_build"
+match.argv_prefix = ["project-build"]
+strip_lines_matching = ["(?i)^progress"]
+head_lines = 4
+tail_lines = 2
+max_lines = 8
+truncate_lines_at = 180
+
+[[command.section]]
+name = "errors"
+title = "Errors"
+keep_lines_matching = ["(?i)(error|failed|fatal)"]
+max_lines = 10
+truncate_lines_at = 180
+
+[[command.counter]]
+name = "errors"
+match = "(?i)(error|failed|fatal)"
+
+[[command.capture]]
+name = "files"
+pattern = "(?m)^(?<file>[^:\\s][^:]+):(?<line>\\d+):"
+field = "file"
+dedupe = true
+max_items = 5
+
+[[command.severity]]
+level = "critical"
+match = "(?i)fatal|panic|failed"
+"#,
+        "user",
+    )
+    .unwrap();
+    let raw = format!(
+        "{}src/app.ts:10: ERROR failed NPM_TOKEN=super-secret-value\nsrc/app.ts:11: warning ignored\nsrc/lib.ts:22: fatal https://user:password@example.com\n",
+        "progress compiling\n".repeat(160)
+    );
+    let argv = vec!["project-build".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "project-build",
+        &argv,
+        &raw,
+        1,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rule_id.as_deref(), Some("project_build"));
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(summary.model_text.contains("custom_severity=critical"));
+    assert!(summary.model_text.contains("counter.errors="));
+    assert!(summary.model_text.contains("Errors:"));
+    assert!(summary.model_text.contains("files:"));
+    assert!(summary.model_text.contains("src/app.ts"));
+    assert!(summary.model_text.contains("src/lib.ts"));
+    assert!(!summary.model_text.contains("super-secret-value"));
+    assert!(!summary.model_text.contains("user:password"));
+    assert!(summary.model_text.contains("[REDACTED]"));
+    assert!(summary.model_text.contains("raw_ref="));
+}
+
+#[test]
+fn user_toml_v2_tiny_output_still_uses_no_negative_passthrough() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+schema_version = 2
+
+[[command]]
+id = "tiny_v2"
+match.argv_prefix = ["tiny-v2"]
+
+[[command.counter]]
+name = "ok"
+match = "ok"
+"#,
+        "user",
+    )
+    .unwrap();
+    let argv = vec!["tiny-v2".to_string()];
+    let summary =
+        summarize_command_output_with_rules("tiny-v2", &argv, "ok", 0, dir.path(), Some(&rules))
+            .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rendering_kind, "pass_through");
+    assert_eq!(summary.model_text, "ok");
+    assert_eq!(summary.savings_pct, 0.0);
+}
+
+#[test]
+fn user_toml_v2_rejects_invalid_capture_and_schema_version() {
+    let bad_capture = r#"
+schema_version = 2
+
+[[command]]
+id = "bad_capture"
+match.argv_prefix = ["bad"]
+
+[[command.capture]]
+name = "files"
+pattern = "(?<other>.+)"
+field = "file"
+"#;
+    assert!(CommandRuleSet::from_toml_str_strict(bad_capture, "user").is_err());
+    let bad_version = r#"
+schema_version = 999
+
+[[command]]
+id = "bad_version"
+match.argv_prefix = ["bad"]
+"#;
+    assert!(CommandRuleSet::from_toml_str_strict(bad_version, "user").is_err());
+}
+
+#[test]
+fn user_toml_v2_operations_require_schema_version_two() {
+    let missing_version = r#"
+[[command]]
+id = "missing_v2"
+match.argv_prefix = ["missing-v2"]
+
+[[command.section]]
+name = "errors"
+keep_lines_matching = ["ERROR"]
+"#;
+    assert!(CommandRuleSet::from_toml_str_strict(missing_version, "user").is_err());
+
+    let explicit_v1 = r#"
+schema_version = 1
+
+[[command]]
+id = "explicit_v1"
+match.argv_prefix = ["explicit-v1"]
+
+[[command.counter]]
+name = "errors"
+match = "ERROR"
+"#;
+    assert!(CommandRuleSet::from_toml_str_strict(explicit_v1, "user").is_err());
+}
+
+#[test]
+fn user_toml_non_strict_rejects_invalid_schema_type_and_v1_v2_mixture() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    std::fs::create_dir_all(&tfy).unwrap();
+    let invalid_schema_type = r#"
+schema_version = "2"
+
+[[command]]
+id = "bad_schema_type"
+match.argv_prefix = ["bad-schema-type"]
+"#;
+    std::fs::write(tfy.join("commands.toml"), invalid_schema_type).unwrap();
+    let hash = format!("{:x}", Sha256::digest(invalid_schema_type.as_bytes()));
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "command_rules": {"trusted": true, "rules_sha256": hash}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let rules = CommandRuleSet::load_standard(dir.path());
+    assert!(rules
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "user_rules_unsupported_schema_version"));
+    let argv = vec!["bad-schema-type".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "bad-schema-type",
+        &argv,
+        &("noise\n".repeat(120) + "ERROR kept\n"),
+        1,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_ne!(summary.strategy_kind, "user_toml");
+
+    let mixed_v1 = r#"
+[[command]]
+id = "valid_v1"
+match.argv_prefix = ["valid-v1"]
+keep_lines_matching = ["KEEP"]
+
+[[command]]
+id = "bad_v2_without_version"
+match.argv_prefix = ["bad-v2-without-version"]
+
+[[command.severity]]
+level = "error"
+match = "ERROR"
+"#;
+    std::fs::write(tfy.join("commands.toml"), mixed_v1).unwrap();
+    let hash = format!("{:x}", Sha256::digest(mixed_v1.as_bytes()));
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "command_rules": {"trusted": true, "rules_sha256": hash}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let rules = CommandRuleSet::load_standard(dir.path());
+    assert!(rules
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "user_rules_unsupported_schema_version"));
+    let argv = vec!["valid-v1".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "valid-v1",
+        &argv,
+        &("noise\n".repeat(120) + "KEEP this line\n"),
+        0,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rule_id.as_deref(), Some("valid_v1"));
+}
+
+#[test]
+fn user_toml_v2_non_strict_reports_invalid_operation_and_keeps_valid_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    std::fs::create_dir_all(&tfy).unwrap();
+    let rules = r#"
+schema_version = 2
+
+[[command]]
+id = "valid_v2"
+match.argv_prefix = ["valid-v2"]
+
+[[command.counter]]
+name = "errors"
+match = "ERROR"
+
+[[command]]
+id = "bad_v2"
+match.argv_prefix = ["bad-v2"]
+
+[[command.capture]]
+name = "files"
+pattern = "(?<other>.+)"
+field = "file"
+"#;
+    std::fs::write(tfy.join("commands.toml"), rules).unwrap();
+    let hash = format!("{:x}", Sha256::digest(rules.as_bytes()));
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "command_rules": {"trusted": true, "rules_sha256": hash}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let rules = CommandRuleSet::load_standard(dir.path());
+    assert!(rules
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "user_rules_invalid_capture"));
+    let argv = vec!["valid-v2".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "valid-v2",
+        &argv,
+        &("noise\n".repeat(120) + "ERROR kept\n"),
+        1,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rule_id.as_deref(), Some("valid_v2"));
+}

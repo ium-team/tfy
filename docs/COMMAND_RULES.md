@@ -14,7 +14,7 @@ They never bypass TFY's core invariants:
 4. plain text remains the default model-visible output;
 5. repo-local rules require an explicit trust record.
 
-In v1, user TOML rules are **additive-only**. Existing TFY built-in Rust strategies and built-in DSL filters keep precedence. If a user rule also matches a built-in family, the built-in result is used and TFY records a `user_rule_shadowed_by_builtin` diagnostic.
+User TOML rules are **additive-only**. Existing TFY built-in Rust strategies and built-in DSL filters keep precedence. If a user rule also matches a built-in family, the built-in result is used and TFY records a `user_rule_shadowed_by_builtin` diagnostic.
 
 ## Rule locations
 
@@ -44,7 +44,27 @@ If `.tfy/commands.toml` changes after trust, TFY skips repo-local rules and emit
 
 This trust authorizes only declarative summarization. It does not authorize code execution, workspace apply, shell mutation, or official support claims.
 
+## Safety pipeline
+
+All rule versions compile into an internal normalized rule model before evaluation. User TOML does not directly write `model_text`.
+
+```text
+TOML schema
+→ strict/non-strict parser
+→ normalized command rule
+→ rule evaluator
+→ summary parts
+→ shared plain-text renderer
+→ public redaction/capping
+→ raw_ref append
+→ no-negative selector
+```
+
+This means sections, counters, captures, severity buckets, and v1 line filters all share the same terminal redaction and no-negative gate.
+
 ## TOML v1 schema
+
+Files without `schema_version` use v1-compatible semantics. `command.id` must be a safe identifier: ASCII letters, digits, `_`, or `-`, with length 1..64. TFY renders this id in summaries and diagnostics, so paths, spaces, and secrets are intentionally rejected.
 
 ```toml
 [[command]]
@@ -68,20 +88,109 @@ agent_safe = true
 interactive_risk = "none"
 ```
 
+## TOML v2 core schema
+
+Use `schema_version = 2` for richer declarative summaries.
+
+```toml
+schema_version = 2
+
+[[command]]
+id = "project_build"
+description = "Summarize project build diagnostics"
+match.argv_prefix = ["pnpm", "build"]
+strip_lines_matching = ["(?i)^(progress|cache|download)"]
+head_lines = 8
+tail_lines = 8
+max_lines = 20
+truncate_lines_at = 220
+
+[[command.section]]
+name = "errors"
+title = "Errors"
+keep_lines_matching = ["(?i)(error|failed|fatal)"]
+max_lines = 20
+truncate_lines_at = 220
+
+[[command.section]]
+name = "warnings"
+title = "Warnings"
+keep_lines_matching = ["(?i)(warning|deprecated)"]
+max_lines = 10
+
+[[command.counter]]
+name = "errors"
+match = "(?i)(error|failed|fatal)"
+max_count = 10000
+
+[[command.capture]]
+name = "files"
+pattern = '^(?<file>[^:\\s][^:]+):(?<line>\\d+):'
+field = "file"
+dedupe = true
+max_items = 25
+
+[[command.severity]]
+level = "critical"
+match = "(?i)(panic|fatal|segmentation fault)"
+```
+
 ### Matching
 
 - `match.argv_prefix` compares against the original argv vector and is preferred.
 - `match.command_regex` is an optional fallback against the display command string.
 - At least one matcher is required.
 
-### Filtering
+### v1 line filtering
 
 - `preserve_lines_matching` copies important diagnostic lines into the summary.
 - `strip_lines_matching` drops noise lines before selection.
 - `keep_lines_matching` restricts output to matching lines unless a line is preserved.
 - `head_lines`, `tail_lines`, `max_lines`, and `truncate_lines_at` bound visible output.
-- All visible lines are redacted before output.
 - `on_empty` is optional, capped, redacted, and defaults to `<rule_id>: no relevant output` so local paths are not exposed.
+
+### v2 sections
+
+`[[command.section]]` creates named plain-text sections from filtered output. Section fields intentionally mirror the v1 filter fields: `keep_lines_matching`, `preserve_lines_matching`, `strip_lines_matching`, `head_lines`, `tail_lines`, `max_lines`, and `truncate_lines_at`.
+
+- Section `name` must be a safe identifier.
+- `title` is optional and redacted/capped.
+- Empty sections are omitted by default.
+- Section lines are redacted and capped before model visibility.
+
+### v2 scan budget
+
+Counters, captures, and severity rules scan normalized public lines, not private raw bytes. Each scanned line is redacted and capped to 1,000 characters before regex evaluation. This keeps custom rules bounded and prevents model-visible or rule-derived metadata from depending on unbounded long single-line output; exact raw evidence remains recoverable through `raw_ref`.
+
+### v2 counters
+
+`[[command.counter]]` counts regex matches over normalized public lines within the v2 scan budget.
+
+- Counter names must be safe identifiers.
+- `max_count` caps runaway counts.
+- Counters can add caution/evidence but cannot fabricate success.
+
+### v2 captures
+
+`[[command.capture]]` extracts a named regex group from normalized public lines within the v2 scan budget and renders capped/deduped values.
+
+- `pattern` must contain the named group referenced by `field`.
+- Captured values are redacted before output.
+- `dedupe = true` preserves deterministic first-seen order.
+- Captures never become command input or execution authority.
+
+### v2 severity
+
+`[[command.severity]]` can annotate output with custom severity by scanning normalized public lines within the v2 scan budget.
+
+Allowed levels:
+
+- `info`
+- `warning`
+- `error`
+- `critical`
+
+Custom severity may make a summary more cautious, but it cannot downgrade nonzero exits, built-in hard-failure evidence, or TFY risk decisions.
 
 ### Safety metadata
 
@@ -93,9 +202,9 @@ Allowed `interactive_risk` values are `none`, `possible`, and `unknown`.
 
 Runtime surfaces are non-strict by default: invalid user rule entries are skipped when possible, diagnostics are emitted, and valid entries from the same file can still apply. Whole-file TOML syntax errors skip that file and command execution continues through built-in/generic behavior.
 
-Strict parser/test APIs fail on invalid TOML, invalid regex, duplicate ids, unsupported fields, or unsafe limits.
+Strict parser/test APIs fail on invalid TOML, invalid regex, duplicate ids, unsupported fields, unsafe limits, invalid sections, invalid counters, invalid captures, invalid severity, or unsupported schema versions.
 
-V1 diagnostic codes:
+Diagnostic codes include:
 
 - `repo_rules_untrusted`
 - `repo_rules_hash_mismatch`
@@ -104,9 +213,27 @@ V1 diagnostic codes:
 - `user_rules_duplicate_id`
 - `user_rules_unsafe_limit`
 - `user_rules_unsupported_field`
+- `user_rules_unsupported_schema_version`
+- `user_rules_invalid_section`
+- `user_rules_invalid_counter`
+- `user_rules_invalid_capture`
+- `user_rules_invalid_severity`
 - `user_rule_shadowed_by_builtin`
 
 Gateway and ledger metadata include `rule_id`, `strategy_source_kind`, and `command_rule_diagnostics` when applicable. Adapter/MCP reports aggregate `rule_counts`, `strategy_source_counts`, and `command_rule_diagnostic_counts`.
+
+## Authoring rules with an agent
+
+Humans should not need to hand-write complex rules. Use the authoring workflow in `docs/CUSTOM_COMMAND_RULE_AUTHORING.md` or the project skill `.codex/skills/tfy-command-rule-author/SKILL.md`.
+
+Authoring must be validation-gated:
+
+1. capture or inspect representative raw evidence;
+2. draft conservative declarative TOML;
+3. run strict validation / parser tests;
+4. preview through a TFY gateway;
+5. verify redaction, no-negative behavior, diagnostics, and raw ref recovery;
+6. update repo trust only after reviewing the final rule bytes.
 
 ## Human mode note
 
