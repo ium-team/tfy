@@ -13,6 +13,7 @@ An authoring agent may:
 - inspect a supplied raw output sample or raw ref;
 - draft `.tfy/commands.toml` or `~/.config/tfy/commands.toml` rules;
 - add v2 sections, counters, captures, and severity buckets;
+- add v3 bounded structured extracts, metrics, and groups when fixture evidence proves they are useful;
 - validate strict parsing and preview model-visible output;
 - update `.tfy/trust.json` only after the final rule bytes are reviewed.
 
@@ -22,7 +23,7 @@ An authoring agent must not:
 
 - add script execution, shell hooks, subprocesses, or plugin code to TOML rules;
 - claim a custom rule is official TFY support or RTK parity evidence;
-- override built-in TFY strategies;
+- override built-in TFY strategies or imply `schema_version = 3` changes precedence;
 - mark a command `human_auto_safe = true` unless it is clearly noninteractive and low risk;
 - hide failures by stripping all error evidence;
 - skip validation because a TOML rule “looks right.”
@@ -42,12 +43,14 @@ An authoring agent must not:
    - Use a safe `command.id`: ASCII letters, digits, `_`, or `-`, length 1..64.
    - Prefer `match.argv_prefix` over `match.command_regex`.
    - Use `schema_version = 2` for sections/counters/captures/severity.
+   - Use `schema_version = 3` for bounded JSON/NDJSON/KV/table extracts, metrics, or groups.
    - Keep `max_lines`, `truncate_lines_at`, and `max_items` low enough for token savings.
    - Use captures only for display values, never execution input.
 
-4. **Validate**
-   - Strict parser must accept the rule.
-   - Gateway preview must show redacted model-visible output.
+4. **Validate with the harness**
+   - `tfy rules validate --file .tfy/commands.toml` must accept the rule.
+   - `tfy rules preview --file .tfy/commands.toml --cmd "<cmd>" --arg <argv0> --arg <argv1> --fixture .tfy/rule-fixtures/<name>.txt` must show redacted model-visible output.
+   - `tfy rules compare-built-in ... --json` should be used when a built-in family might already match; custom rules remain additive.
    - Tiny outputs must still pass through under no-negative behavior.
    - Raw refs must remain recoverable.
 
@@ -65,7 +68,7 @@ An authoring agent must not:
 ## Example
 
 ```toml
-schema_version = 2
+schema_version = 3
 
 [[command]]
 id = "project_build"
@@ -101,9 +104,11 @@ max_items = 25
 ## Suggested validation commands
 
 ```bash
+cargo run -q -p tfy-cli -- rules agent-workspace --repo .
+cargo run -q -p tfy-cli -- rules validate --file .tfy/commands.toml
+cargo run -q -p tfy-cli -- rules preview --file .tfy/commands.toml --cmd "<command display>" --arg <command> --arg <arg> --fixture .tfy/rule-fixtures/<fixture>.txt
+cargo run -q -p tfy-cli -- rules compare-built-in --file .tfy/commands.toml --cmd "<command display>" --arg <command> --arg <arg> --fixture .tfy/rule-fixtures/<fixture>.txt --json
 cargo test -p tfy-core user_toml
-cargo run -q -p tfy-cli -- tool-gateway -- <command> <args>
-cargo run -q -p tfy-cli -- adapter report --session <session> --ledger <ledger> --json
 ```
 
-For repo-local trust, compute the SHA-256 of `.tfy/commands.toml` and write it to `.tfy/trust.json` using the format in `docs/COMMAND_RULES.md`.
+For repo-local trust, prefer `cargo run -q -p tfy-cli -- rules trust --file .tfy/commands.toml --repo .` after reviewing the final rule bytes.

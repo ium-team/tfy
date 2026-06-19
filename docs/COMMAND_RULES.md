@@ -60,7 +60,7 @@ TOML schema
 → no-negative selector
 ```
 
-This means sections, counters, captures, severity buckets, and v1 line filters all share the same terminal redaction and no-negative gate.
+This means sections, counters, captures, severity buckets, structured extracts, metrics, groups, and v1 line filters all share the same terminal redaction and no-negative gate.
 
 ## TOML v1 schema
 
@@ -192,6 +192,81 @@ Allowed levels:
 
 Custom severity may make a summary more cautious, but it cannot downgrade nonzero exits, built-in hard-failure evidence, or TFY risk decisions.
 
+
+## TOML v3 parity-oriented schema
+
+Use `schema_version = 3` when a custom rule needs structured extraction or aggregate views closer to built-in summaries. v3 is still declarative and additive-only: it does **not** enable built-in override, shell execution, arbitrary scripts, or official-support claims. Built-ins still win on family conflicts and emit `user_rule_shadowed_by_builtin`.
+
+```toml
+schema_version = 3
+
+[[command]]
+id = "quality_report"
+match.argv_prefix = ["quality-report"]
+strip_lines_matching = ["(?i)^progress"]
+max_lines = 12
+truncate_lines_at = 180
+
+[[command.parse_ndjson]]
+name = "files"
+path = "errors[*].file"
+max_items = 10
+
+[[command.parse_kv]]
+name = "duration"
+key = "duration_ms"
+separators = ["="]
+max_items = 2
+
+[[command.parse_table]]
+name = "failures"
+columns = ["file", "status"]
+delimiter = "whitespace"
+max_rows = 10
+
+[[command.metric]]
+name = "error_mentions"
+op = "count"
+match = "(?i)error|failed|fatal"
+max_count = 10000
+
+[[command.group]]
+name = "by_file"
+pattern = 'file=(?<file>[^\s]+)'
+field = "file"
+top_k = 10
+```
+
+### v3 structured extracts
+
+Structured extracts render as capture blocks and are still redacted/capped before model visibility. JSON/NDJSON parsing is bounded to 1 MB of raw text and at most 100 extracted values per operation. KV and table extraction read normalized public lines, so they inherit the v2 public-line scan budget.
+
+- `[[command.parse_json]]` parses the whole raw output as JSON.
+- `[[command.parse_ndjson]]` parses each valid JSON line independently.
+- `path` supports simple dotted fields plus array selectors such as `errors[*].file` or `items[0].name`.
+- `[[command.parse_kv]]` extracts values from `key=value` or configured one-character separators.
+- `[[command.parse_table]]` finds a header row containing requested columns, then renders bounded `column=value` rows. Delimiters are `whitespace` or `comma`.
+
+### v3 metrics and groups
+
+`[[command.metric]]` supports `op = "count"` and `op = "unique_count"` over normalized public lines. `max_count` bounds runaway outputs.
+
+`[[command.group]]` counts a named regex capture and renders top values as a deterministic `group.<name>` section. `top_k` is capped at 100. Groups are useful for top failing files, tests, packages, shards, hosts, or error classes.
+
+### v3 harness commands
+
+Agents should use the CLI harness instead of hand-editing without proof:
+
+```bash
+tfy rules agent-workspace --repo .
+tfy rules validate --file .tfy/commands.toml
+tfy rules preview --file .tfy/commands.toml --cmd "quality-report" --arg quality-report --fixture .tfy/rule-fixtures/quality-report.txt
+tfy rules compare-built-in --file .tfy/commands.toml --cmd "quality-report" --arg quality-report --fixture .tfy/rule-fixtures/quality-report.txt --json
+tfy rules trust --file .tfy/commands.toml --repo .
+```
+
+`agent-workspace` creates the bounded authoring area. `validate` is strict and never trusts the file. `preview` runs the shared raw-first/no-negative summarizer against a fixture; use repeated `--arg` values when real argv contains spaces or quoting. `compare-built-in` shows custom-vs-default output but does not enable override. `trust` records the reviewed `.tfy/commands.toml` sha256 in `.tfy/trust.json`.
+
 ### Safety metadata
 
 `human_auto_safe`, `agent_safe`, and `interactive_risk` are metadata. They do not make a command officially supported and do not override built-in safety decisions.
@@ -218,13 +293,16 @@ Diagnostic codes include:
 - `user_rules_invalid_counter`
 - `user_rules_invalid_capture`
 - `user_rules_invalid_severity`
+- `user_rules_invalid_extract`
+- `user_rules_invalid_metric`
+- `user_rules_invalid_group`
 - `user_rule_shadowed_by_builtin`
 
 Gateway and ledger metadata include `rule_id`, `strategy_source_kind`, and `command_rule_diagnostics` when applicable. Adapter/MCP reports aggregate `rule_counts`, `strategy_source_counts`, and `command_rule_diagnostic_counts`.
 
 ## Authoring rules with an agent
 
-Humans should not need to hand-write complex rules. Use the authoring workflow in `docs/CUSTOM_COMMAND_RULE_AUTHORING.md` or the project skill `.codex/skills/tfy-command-rule-author/SKILL.md`.
+Humans should not need to hand-write complex rules. Use the authoring workflow in `docs/CUSTOM_COMMAND_RULE_AUTHORING.md`, the `tfy rules ...` harness, or the project skill `.codex/skills/tfy-command-rule-author/SKILL.md`.
 
 Authoring must be validation-gated:
 

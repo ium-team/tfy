@@ -2009,3 +2009,293 @@ field = "file"
     assert_eq!(summary.strategy_kind, "user_toml");
     assert_eq!(summary.rule_id.as_deref(), Some("valid_v2"));
 }
+
+#[test]
+fn user_toml_v3_structured_metrics_and_groups_share_safety_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+schema_version = 3
+
+[[command]]
+id = "quality_report"
+match.argv_prefix = ["quality-report"]
+strip_lines_matching = ["^progress"]
+max_lines = 12
+truncate_lines_at = 180
+
+[[command.parse_ndjson]]
+name = "json_files"
+path = "errors[*].file"
+max_items = 4
+
+[[command.parse_ndjson]]
+name = "ndjson_levels"
+path = "level"
+max_items = 3
+
+[[command.parse_kv]]
+name = "duration"
+key = "duration_ms"
+separators = ["="]
+max_items = 2
+
+[[command.parse_table]]
+name = "table_failures"
+columns = ["file", "status"]
+delimiter = "whitespace"
+max_rows = 3
+
+[[command.metric]]
+name = "error_mentions"
+op = "count"
+match = "ERROR"
+max_count = 99
+
+[[command.group]]
+name = "by_file"
+pattern = "file=(?<file>[^\\s]+)"
+field = "file"
+top_k = 3
+
+[[command.severity]]
+level = "critical"
+match = "ERROR|failed"
+"#,
+        "user",
+    )
+    .unwrap();
+    let raw = format!(
+        "{}\n{}\n{}\n{}{}",
+        r#"{"errors":[{"file":"src/app.ts","token":"NPM_TOKEN=super-secret-value"},{"file":"src/lib.ts"}]}"#,
+        r#"{"level":"ERROR","message":"failed","secret":"ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        "duration_ms=1234",
+        "file status\nsrc/app.ts failed\nsrc/lib.ts ok\n",
+        "file=src/app.ts ERROR\nfile=src/app.ts ERROR\nfile=src/lib.ts ERROR\n",
+    );
+    let argv = vec!["quality-report".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "quality-report",
+        &argv,
+        &raw.repeat(40),
+        1,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rule_id.as_deref(), Some("quality_report"));
+    assert_eq!(summary.rendering_kind, "summary");
+    assert!(summary.model_text.contains("custom_severity=critical"));
+    assert!(summary.model_text.contains("counter.error_mentions="));
+    assert!(summary.model_text.contains("json_files:"));
+    assert!(summary.model_text.contains("src/app.ts"));
+    assert!(summary.model_text.contains("ndjson_levels:"));
+    assert!(summary.model_text.contains("duration:"));
+    assert!(summary.model_text.contains("table_failures:"));
+    assert!(summary.model_text.contains("file=src/app.ts status=failed"));
+    assert!(summary.model_text.contains("group.by_file:"));
+    assert!(!summary.model_text.contains("super-secret-value"));
+    assert!(!summary.model_text.contains("ghp_aaaaaaaa"));
+    assert!(summary.model_text.contains("[REDACTED]"));
+    assert!(summary.model_text.contains("raw_ref="));
+}
+
+#[test]
+fn user_toml_v3_operations_require_schema_version_three() {
+    let missing_version = r#"
+[[command]]
+id = "missing_v3"
+match.argv_prefix = ["missing-v3"]
+
+[[command.parse_json]]
+name = "files"
+path = "files[*]"
+"#;
+    assert!(CommandRuleSet::from_toml_str_strict(missing_version, "user").is_err());
+
+    let explicit_v2 = r#"
+schema_version = 2
+
+[[command]]
+id = "explicit_v2"
+match.argv_prefix = ["explicit-v2"]
+
+[[command.metric]]
+name = "errors"
+op = "count"
+match = "ERROR"
+"#;
+    assert!(CommandRuleSet::from_toml_str_strict(explicit_v2, "user").is_err());
+}
+
+#[test]
+fn user_toml_v3_non_strict_reports_invalid_operation_and_keeps_valid_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let tfy = dir.path().join(".tfy");
+    std::fs::create_dir_all(&tfy).unwrap();
+    let rules = r#"
+schema_version = 3
+
+[[command]]
+id = "valid_v3"
+match.argv_prefix = ["valid-v3"]
+
+[[command.metric]]
+name = "errors"
+op = "count"
+match = "ERROR"
+
+[[command]]
+id = "bad_group"
+match.argv_prefix = ["bad-group"]
+
+[[command.group]]
+name = "by_file"
+pattern = "(?<other>.+)"
+field = "file"
+"#;
+    std::fs::write(tfy.join("commands.toml"), rules).unwrap();
+    let hash = format!("{:x}", Sha256::digest(rules.as_bytes()));
+    std::fs::write(
+        tfy.join("trust.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "command_rules": {"trusted": true, "rules_sha256": hash}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let rules = CommandRuleSet::load_standard(dir.path());
+    assert!(rules
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "user_rules_invalid_group"));
+    let argv = vec!["valid-v3".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "valid-v3",
+        &argv,
+        &("noise\n".repeat(120) + "ERROR kept\n"),
+        1,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert_eq!(summary.rule_id.as_deref(), Some("valid_v3"));
+}
+
+#[test]
+fn user_toml_v3_still_cannot_shadow_built_in_without_override_control_plane() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+schema_version = 3
+
+[[command]]
+id = "shadow_df_v3"
+match.argv_prefix = ["df"]
+
+[[command.metric]]
+name = "filesystems"
+op = "count"
+match = "Filesystem"
+"#,
+        "user",
+    )
+    .unwrap();
+    let raw = "Filesystem      Size  Used Avail Use% Mounted on\n/dev/disk1s1    100G   95G    5G  95% /\n".repeat(40);
+    let argv = vec!["df".to_string()];
+    let summary =
+        summarize_command_output_with_rules("df", &argv, &raw, 0, dir.path(), Some(&rules))
+            .unwrap();
+    assert_eq!(summary.command_family, "df");
+    assert_eq!(summary.strategy_kind, "dsl");
+    assert_eq!(summary.rule_id, None);
+    assert!(summary
+        .command_rule_diagnostics
+        .iter()
+        .any(|d| d.code == "user_rule_shadowed_by_builtin"));
+}
+
+#[test]
+fn user_toml_v3_group_distinct_values_are_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+schema_version = 3
+
+[[command]]
+id = "many_groups"
+match.argv_prefix = ["many-groups"]
+keep_lines_matching = ["NEVER_MATCHES"]
+
+[[command.group]]
+name = "by_id"
+pattern = 'id=(?<id>[^\s]+)'
+field = "id"
+top_k = 10
+"#,
+        "user",
+    )
+    .unwrap();
+    let raw = (0..150)
+        .map(|idx| format!("id=item-{idx}\n"))
+        .collect::<String>();
+    let argv = vec!["many-groups".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "many-groups",
+        &argv,
+        &raw,
+        0,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert!(summary.model_text.contains("group.by_id:"));
+    assert!(summary
+        .model_text
+        .contains("[truncated distinct groups at 100]"));
+    assert!(!summary.model_text.contains("item-149"));
+}
+
+#[test]
+fn user_toml_v3_table_requires_all_requested_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = CommandRuleSet::from_toml_str_strict(
+        r#"
+schema_version = 3
+
+[[command]]
+id = "partial_table"
+match.argv_prefix = ["partial-table"]
+max_lines = 8
+
+[[command.parse_table]]
+name = "table"
+columns = ["file", "status"]
+delimiter = "whitespace"
+max_rows = 5
+"#,
+        "user",
+    )
+    .unwrap();
+    let raw = "file owner\nsrc/app.ts alice\n".repeat(40);
+    let argv = vec!["partial-table".to_string()];
+    let summary = summarize_command_output_with_rules(
+        "partial-table",
+        &argv,
+        &raw,
+        0,
+        dir.path(),
+        Some(&rules),
+    )
+    .unwrap();
+    assert_eq!(summary.strategy_kind, "user_toml");
+    assert!(
+        !summary.model_text.contains("table:"),
+        "{}",
+        summary.model_text
+    );
+}
