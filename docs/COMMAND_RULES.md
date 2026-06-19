@@ -12,37 +12,46 @@ They never bypass TFY's core invariants:
 2. public/model-visible lines are redacted;
 3. summaries are shown only when smaller than redacted public raw output;
 4. plain text remains the default model-visible output;
-5. repo-local rules require an explicit trust record.
+5. repo-local and global custom rules require an explicit trust record.
 
-User TOML rules are **additive-only**. Existing TFY built-in Rust strategies and built-in DSL filters keep precedence. If a user rule also matches a built-in family, the built-in result is used and TFY records a `user_rule_shadowed_by_builtin` diagnostic.
+User TOML rules are additive by default. Existing TFY built-in Rust strategies and built-in DSL filters keep precedence unless a v3 rule explicitly opts in to a family-bound built-in override. If a user rule also matches a built-in family without a valid override, the built-in result is used and TFY records a `user_rule_shadowed_by_builtin` or `user_rule_override_family_mismatch` diagnostic.
 
 ## Rule locations
 
-TFY loads rules in this order after built-in strategies do not produce a candidate:
+TFY loads rules in this order for custom candidates. Built-ins normally win; only trusted v3 rules with `[command.override] built_in = true` and an exact `family` match can replace a built-in candidate:
 
 1. trusted repo-local `.tfy/commands.toml` discovered from the current directory or nearest ancestor;
-2. user-global `~/.config/tfy/commands.toml`;
-3. generic fallback / unsupported passthrough.
+2. trusted global custom `~/.config/tfy/custom/commands.toml`;
+3. legacy/manual user-global `~/.config/tfy/commands.toml` compatibility rules;
+4. generic fallback / unsupported passthrough.
 
-User-global rules are user-owned and load by default when present. Repo-local rules are ignored until trusted.
+`tfy custom` is the recommended authoring path. Running bare `tfy custom` opens a scope wizard: choose the current repo to initialize `.tfy/`, or choose global to initialize the provenance-backed global custom store at `~/.config/tfy/custom/`. Repo-local trusted rules are loaded before global trusted rules. Legacy `~/.config/tfy/commands.toml` still loads for compatibility, but it is separate from trusted global custom rules, emits `user_global_rules_legacy_manual`, and is never auto-promoted or overwritten by `tfy custom`. `tfy custom verify` refuses to proceed by default when the legacy global file exists; use `--allow-legacy-global-rules` only when intentionally recording that external/manual influence.
 
-## Repo-local trust
+## Repo-local and global custom trust
 
-Repo-local `.tfy/commands.toml` is trusted only when `.tfy/trust.json` exists and its hash matches the current rule file bytes:
+Repo-local `.tfy/commands.toml` and global custom `~/.config/tfy/custom/commands.toml` are trusted only when their matching `trust.json` files have schema v2 provenance and their rule/fixture evidence matches the current bytes. Schema v1 hash-only repo trust is no longer accepted; re-run `tfy custom verify --scope repo` and `tfy custom trust --scope repo` to migrate an old repo-local trust file.
+
+`tfy custom trust` writes provenance-backed v2 trust:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command_rules": {
     "trusted": true,
-    "rules_sha256": "<sha256 of .tfy/commands.toml>"
+    "rules_sha256": "<sha256 of .tfy/commands.toml>",
+    "created_by": "tfy custom",
+    "validated_at": "unix:<seconds>",
+    "validated_with": ["validate", "preview", "compare-built-in"],
+    "fixtures": [{"name": "quality", "fixture_sha256": "<sha256>", "path": ".tfy/rule-fixtures/quality.txt", "cmd": ["pnpm", "test"]}],
+    "agent": {"kind": "user", "bounded_workspace": true},
+    "override_evidence": []
   }
 }
 ```
 
-If `.tfy/commands.toml` changes after trust, TFY skips repo-local rules and emits `repo_rules_hash_mismatch`. Missing trust emits `repo_rules_untrusted`.
+If `.tfy/commands.toml` or a trusted fixture changes after trust, TFY skips repo-local rules and emits `repo_rules_hash_mismatch`. Missing or schema v1 repo trust emits `repo_rules_untrusted`. If `~/.config/tfy/custom/commands.toml` or a trusted global fixture changes after trust, TFY skips global custom rules and emits `global_custom_rules_hash_mismatch`, `global_custom_rules_invalid_trust`, `global_custom_rules_symlink_refused`, or `global_custom_rules_untrusted` as appropriate. `tfy custom status --json` reports `repo_local`, `global_custom`, and `user_global_legacy`; repo/global custom states are `trusted_v2`, `stale`, `invalid`, `untrusted`, or `missing`.
 
-This trust authorizes only declarative summarization. It does not authorize code execution, workspace apply, shell mutation, or official support claims.
+This trust authorizes only declarative summarization. It does not authorize code execution, workspace apply, shell mutation, OS-level sandboxing, or official support claims.
 
 ## Safety pipeline
 
@@ -195,7 +204,7 @@ Custom severity may make a summary more cautious, but it cannot downgrade nonzer
 
 ## TOML v3 parity-oriented schema
 
-Use `schema_version = 3` when a custom rule needs structured extraction or aggregate views closer to built-in summaries. v3 is still declarative and additive-only: it does **not** enable built-in override, shell execution, arbitrary scripts, or official-support claims. Built-ins still win on family conflicts and emit `user_rule_shadowed_by_builtin`.
+Use `schema_version = 3` when a custom rule needs structured extraction or aggregate views closer to built-in summaries. v3 is still declarative: it does **not** enable shell execution, arbitrary scripts, or official-support claims. Built-ins still win on family conflicts by default and emit `user_rule_shadowed_by_builtin`.
 
 ```toml
 schema_version = 3
@@ -253,19 +262,64 @@ Structured extracts render as capture blocks and are still redacted/capped befor
 
 `[[command.group]]` counts a named regex capture and renders top values as a deterministic `group.<name>` section. `top_k` is capped at 100. Groups are useful for top failing files, tests, packages, shards, hosts, or error classes.
 
-### v3 harness commands
+### v3 built-in override control plane
 
-Agents should use the CLI harness instead of hand-editing without proof:
+A v3 rule can intentionally replace a built-in summary only with explicit, family-bound metadata:
 
-```bash
-tfy rules agent-workspace --repo .
-tfy rules validate --file .tfy/commands.toml
-tfy rules preview --file .tfy/commands.toml --cmd "quality-report" --arg quality-report --fixture .tfy/rule-fixtures/quality-report.txt
-tfy rules compare-built-in --file .tfy/commands.toml --cmd "quality-report" --arg quality-report --fixture .tfy/rule-fixtures/quality-report.txt --json
-tfy rules trust --file .tfy/commands.toml --repo .
+```toml
+schema_version = 3
+
+[[command]]
+id = "project_df"
+match.argv_prefix = ["df"]
+keep_lines_matching = ["Filesystem|Use%|/dev/"]
+max_lines = 12
+
+[command.override]
+built_in = true
+family = "df"
+reason = "prefer project disk pressure view"
 ```
 
-`agent-workspace` creates the bounded authoring area. `validate` is strict and never trusts the file. `preview` runs the shared raw-first/no-negative summarizer against a fixture; use repeated `--arg` values when real argv contains spaces or quoting. `compare-built-in` shows custom-vs-default output but does not enable override. `trust` records the reviewed `.tfy/commands.toml` sha256 in `.tfy/trust.json`.
+Override rules are still custom/local support. The control plane is deliberately narrow:
+
+- `schema_version = 3` alone never changes precedence.
+- `[command.override] built_in = true` requires `family`, and `family` must exactly match TFY's classified command family such as `df`.
+- If the family is wrong, TFY keeps the built-in candidate and emits `user_rule_override_family_mismatch`.
+- If the override is valid, TFY uses the custom candidate, marks `strategy_kind = "user_toml"`, records `rule_id`, and emits `user_rule_overrode_builtin`.
+- Raw-first storage, redaction, capping, and the no-negative selector still run after the custom render. If the custom text is not smaller than redacted public raw output, model-visible output passes through instead of showing a larger summary.
+- Repo-local override rules require `.tfy/trust.json`; global custom override rules require schema v2 trust under `~/.config/tfy/custom/trust.json`. Legacy/manual `~/.config/tfy/commands.toml` remains compatibility-only and is not a trusted custom override harness.
+- If no built-in candidate exists for the matched command, the same rule behaves like a normal custom rule; `override.family` only controls replacement of an existing built-in candidate.
+- Rule order is significant: TFY uses the first matching custom rule, so place a more specific override rule before broader custom rules for the same command.
+
+Use `tfy rules compare-built-in ... --json` after adding override metadata to compare effective custom-rule behavior against TFY built-in/default behavior for representative fixtures. The JSON includes `comparison.override_active`, both strategy kinds, and model-visible character counts so an authoring agent can flag overrides that are less useful than the built-in/default result.
+
+### Custom harness commands
+
+Agents should use the official `tfy custom` harness instead of hand-editing without proof:
+
+```bash
+tfy custom
+tfy custom init --repo .
+tfy custom capture --repo . --name quality-report -- quality-report --json
+tfy custom prompt --repo . --agent codex --name quality-report
+tfy custom verify --repo . --name quality-report --json
+tfy custom trust --repo . --name quality-report --json
+```
+
+For cross-repo trusted custom rules, choose global in the wizard or pass `--scope global` explicitly:
+
+```bash
+tfy custom init --scope global --repo .
+tfy custom capture --scope global --repo . --name quality-report -- quality-report --json
+tfy custom prompt --scope global --repo . --agent codex --name quality-report
+tfy custom verify --scope global --repo . --name quality-report --json
+tfy custom trust --scope global --repo . --name quality-report --json
+```
+
+For a pre-existing sample, use `tfy custom import-fixture --repo . --name quality-report --file sample.txt` or add `--scope global` for the global store. `tfy custom capture` runs the command from `--repo` and stores a merged stdout+stderr fixture view; in global scope, `--repo` is only the execution cwd while trusted assets live under `~/.config/tfy/custom/`. Use `import-fixture` when stream separation or secret-bearing argv would matter. `tfy custom verify` runs strict validation, preview, and custom-vs-built-in comparison evidence, and it fails unless the fixture actually exercises a `user_toml` rule with a concrete `rule_id`. It fails by default when `~/.config/tfy/commands.toml` exists; pass `--allow-legacy-global-rules` only to explicitly record that legacy/manual influence. If a built-in override is intentionally larger than the built-in/default result, `--accept-larger-than-built-in` must be passed to `verify` and is recorded in trust metadata.
+
+Low-level `tfy rules validate`, `tfy rules preview`, and `tfy rules compare-built-in` remain expert primitives. `tfy rules trust` is deprecated and fails closed because repo-local trust now requires schema v2 fixture/provenance evidence; use `tfy custom verify --scope repo` and `tfy custom trust --scope repo` for trusted repo-local rules.
 
 ### Safety metadata
 
@@ -296,7 +350,12 @@ Diagnostic codes include:
 - `user_rules_invalid_extract`
 - `user_rules_invalid_metric`
 - `user_rules_invalid_group`
+- `user_rules_invalid_override`
 - `user_rule_shadowed_by_builtin`
+- `user_rule_override_family_mismatch`
+- `user_rule_overrode_builtin`
+
+Agent routes store weak/generic summary custom-rule candidates in `.tfy/agent/custom-guidance.jsonl`; `tfy agent report --session <id>` reports them to the user after the agent task without polluting model-visible command output.
 
 Gateway and ledger metadata include `rule_id`, `strategy_source_kind`, and `command_rule_diagnostics` when applicable. Adapter/MCP reports aggregate `rule_counts`, `strategy_source_counts`, and `command_rule_diagnostic_counts`.
 
@@ -315,4 +374,4 @@ Authoring must be validation-gated:
 
 ## Human mode note
 
-This feature does not by itself make `tfy start --human` intercept every command. Current managed human shell interception is still limited by the shell integration's wrapper behavior. User TOML rules work through TFY gateway paths such as `tfy tool-gateway`, `tfy shell`, and `tfy human run` when those paths receive the command argv.
+`tfy start --human` on supported Linux bash enters a project-scoped managed session whose default route uses a generated `.tfy/human/bin` PATH shim for PATH-resolved ordinary external commands known to that shim. User TOML rules apply when a command reaches TFY through the managed human route, configured agent route, `tfy tool-gateway`, `tfy shell --`, or `tfy human run`. Direct paths, shell builtins/keywords, aliases/functions, explicit bypass, outside-scope commands, and nested child-shell internals are not claimed unless separately routed.

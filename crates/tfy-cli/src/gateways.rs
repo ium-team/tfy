@@ -1,3 +1,6 @@
+use crate::custom_guidance::{
+    custom_guidance_for, print_human_custom_guidance, record_custom_guidance, GuidanceMode,
+};
 use crate::util::{print_json, read_payload, stable_id};
 use anyhow::{bail, Result};
 use std::collections::BTreeMap;
@@ -74,6 +77,7 @@ pub(crate) fn execute_structured_tool_gateway_with_origin(
     origin: Origin,
     route: RouteEvidence,
 ) -> Result<()> {
+    let original_command = command.clone();
     let (mut event, mut response, exit_code) = tool_gateway_envelopes(
         command,
         raw_dir,
@@ -87,8 +91,14 @@ pub(crate) fn execute_structured_tool_gateway_with_origin(
         route,
     )?;
     apply_repeated_output_elision(&ledger, &mut event, &mut response);
-    if let Err(err) = append_event(ledger, &event) {
+    let guidance = custom_guidance_for(&event, &response, &original_command);
+    if let Err(err) = append_event(&ledger, &event) {
         eprintln!("tfy adapter warning: could not append ledger event: {err}");
+    }
+    if let Some(guidance) = &guidance {
+        if let Err(err) = record_custom_guidance(guidance) {
+            eprintln!("tfy adapter warning: could not append custom guidance: {err}");
+        }
     }
     if jsonl {
         println!("{}", serde_json::to_string(&event)?);
@@ -98,6 +108,11 @@ pub(crate) fn execute_structured_tool_gateway_with_origin(
     } else {
         if let GatewayResponse::ToolCommand { model_text, .. } = &response.payload {
             print!("{}", model_text);
+            if let Some(guidance) = &guidance {
+                if matches!(guidance.mode, GuidanceMode::Human) {
+                    print_human_custom_guidance(guidance);
+                }
+            }
         }
     }
     io::stdout().flush()?;

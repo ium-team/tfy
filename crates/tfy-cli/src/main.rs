@@ -1,5 +1,7 @@
 mod adapter;
 mod agent;
+mod custom;
+mod custom_guidance;
 mod display;
 mod gateways;
 mod hook;
@@ -14,6 +16,7 @@ use adapter::{execute_adapter, AdapterCmd};
 use agent::{execute_agent, AgentCmd};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use custom::{execute_custom, CustomCmd};
 use display::{
     execute_restore_display, execute_restore_file, execute_restore_patch, RestoreDisplayCmd,
     RestoreFileCmd, RestorePatchCmd,
@@ -83,7 +86,7 @@ enum Cmd {
     Smoke(SmokeCmd),
     /// Report measured TFY savings from adapter/MCP ledgers.
     Gain(GainCmd),
-    /// Easy setup for supported AI-agent host routing; never intercepts ordinary terminals.
+    /// Easy setup for AI-agent host routing or explicit human shell auto-activation.
     Setup(SetupCmd),
     /// Show which TFY routing/apply/restore surfaces are active, configured, or out of scope.
     Status(StatusCmd),
@@ -264,6 +267,11 @@ enum Cmd {
     StateProject {
         #[arg(long, default_value = ".tfy/state/ledger.jsonl")]
         ledger: PathBuf,
+    },
+    /// Open the custom-rule scope wizard, or run expert custom authoring subcommands.
+    Custom {
+        #[command(subcommand)]
+        cmd: Option<CustomCmd>,
     },
     /// Validate, preview, trust, and scaffold custom command summary rules.
     Rules {
@@ -581,6 +589,7 @@ fn main() -> Result<()> {
             parent_event_id,
         )?,
         Cmd::Workspace { cmd } => execute_workspace(cmd)?,
+        Cmd::Custom { cmd } => execute_custom(cmd)?,
         Cmd::StateAppend { ledger, payload } => {
             let text = read_payload(payload)?;
             let event: RuntimeEnvelope<GatewayEvent> = serde_json::from_str(&text)?;

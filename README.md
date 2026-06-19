@@ -117,6 +117,10 @@ The source build remains the authority path, but the preview distribution is des
 npm install -g @ium/tfy-cli@preview
 tfy start --agent --host codex
 tfy start --human
+# one-time future-shell hook bootstrap for repos marked by interactive start:
+tfy human auto-activate install --shell bash --rcfile ~/.bashrc --apply
+# automation/non-interactive marker creation when not entering the managed shell:
+tfy start --human --auto-activate
 tfy status --json
 ```
 
@@ -165,7 +169,7 @@ node scripts/npm-publish-plan.js --version 0.1.1 --channel stable --source-ref m
 
 The npm package defaults its `publishConfig.tag` to `preview` as a safety rail; stable publishes must explicitly use the generated `--tag latest` command. The publish helper also prints the required `scripts/npm-dist-tag-check.js` guard; the canonical dist-tag cleanup checklist lives in `docs/RELEASE_READINESS.md`.
 
-For AI-agent use, `tfy start --agent --host codex` writes project MCP configuration, but that only proves configuration. Launch support still requires real host invocation plus TFY raw/ledger/no-negative/positive-savings evidence. For human use on supported Linux bash, `tfy start --human` records lifecycle intent and, when run as the only project target from an interactive terminal, enters a TFY-managed project-scoped shell session where allowlisted command names are wrapped by TFY and summarized only after raw evidence is stored and only when beneficial. Outside that managed session, `tfy shell <command>` is raw passthrough convenience and `tfy shell -- <command>` is the TFY summarizing wrapper. TFY does not claim universal or global terminal interception.
+For AI-agent use, `tfy start --agent --host codex` writes project MCP configuration, but that only proves configuration. Launch support still requires real host invocation plus TFY raw/ledger/no-negative/positive-savings evidence. For human use on supported Linux bash, interactive project-only `tfy start --human` records lifecycle intent, creates/refreshes the trusted repo-local future-shell marker/script as persistent repo state, and enters a TFY-managed project-scoped shell session where allowlisted command names are wrapped by TFY and summarized only after raw evidence is stored and only when beneficial. Non-interactive plain `tfy start --human` remains lifecycle intent-only; automation that wants marker creation without entering a shell must use `tfy start --human --auto-activate`. `tfy setup --human --apply` is the short one-time command that installs the user-selected bash rc hook; the longer `tfy human auto-activate install --shell bash --rcfile ~/.bashrc --apply` remains supported for explicit rcfile control. New interactive non-login bash shells that read that hook auto-activate only inside marked repos; TFY pins the absolute executable and validates deterministic activation content before sourcing. Outside managed/marked sessions, `tfy shell <command>` is raw passthrough convenience and `tfy shell -- <command>` is the TFY summarizing wrapper. TFY does not claim universal or global terminal interception.
 
 ## Implementation status
 
@@ -193,6 +197,8 @@ cargo run -p tfy-cli -- adapter run --session smoke -- sh -c 'printf ok'
 cargo run -p tfy-cli -- adapter report --session smoke
 cargo run -p tfy-cli -- agent capabilities
 cargo run -p tfy-cli -- agent install --dry-run
+cargo run -p tfy-cli -- setup --human          # dry-run explicit human rc hook setup
+cargo run -p tfy-cli -- setup --human --apply  # one-time opt-in hook for trusted TFY-marked repos
 cargo run -p tfy-cli -- setup --ai --codex --dry-run
 cargo run -p tfy-cli -- setup --ai --host claude-code --dry-run
 cargo run -p tfy-cli -- setup --ai --host cursor --dry-run
@@ -245,7 +251,9 @@ Product-facing lifecycle path:
 ```bash
 tfy start                 # interactive TUI wizard for agent/human/both when attached to a TTY
 tfy start --agent         # project AI-agent lifecycle + safe default Codex MCP route configuration
-tfy start --human         # enter supported Linux bash project-scoped human auto-intercept session
+tfy start --human         # enter supported Linux bash project-scoped human auto-intercept session and mark repo
+tfy human auto-activate install --shell bash --rcfile ~/.bashrc --apply  # install one explicit user rc hook
+tfy start --human --auto-activate  # non-interactive/automation marker creation without entering a shell
 tfy start ai              # positional alias for --agent; also safe-configures Codex by default
 tfy start both            # records agent+human intent; run `tfy start --human` alone to enter the human session
 tfy start --agent --no-apply # lifecycle intent only; no host config writes
@@ -260,13 +268,14 @@ tfy use always --agent    # convenience alias for user-global default-on intent
 tfy use cancel --agent    # convenience alias for user-global default-off intent
 ```
 
-Lifecycle commands write project state to `.tfy/lifecycle.json` and global state under `$TFY_HOME`, `$XDG_CONFIG_HOME/tfy`, or `~/.tfy`; global host options record default guidance only and do not mutate per-project host config; `start` prepares raw and ledger directories (`.tfy/raw`, `.tfy/state`, `.tfy/adapter`, `.tfy/agent`, `.tfy/mcp`) before later command/context evidence is recorded. Bare interactive `start`, `stop`, and `fuckyou` open an arrow-key TUI; piped stdin choices remain supported for scripts, and missing non-TTY choices fail closed. They do not prove host invocation or token savings by themselves: agent mode auto-configures only supported safe project routes, defaulting to Codex first, and still requires the host to reload/use the TFY route, while human mode does not globally intercept ordinary terminal commands. On supported Linux bash, `tfy start --human` records lifecycle intent and, from an interactive project-only terminal run, enters a TFY-managed project-scoped shell session; allowlisted commands route through raw-first command-output capture before summary selection; the current ledger stores a combined raw output ref. Shell-local functions, aliases, builtins, direct paths, explicit `tfy-human-bypass`, TFY gateway, and outside-scope commands run raw without a summary claim; automatic interactive/TUI/stateful subcommand classification is not claimed in v1. `tfy human shell --no-auto-intercept` keeps only the managed shell environment without allowlisted wrappers, and `tfy human install --dry-run|--output <path>` generates the sourceable script. `tfy start --agent` records lifecycle desire and, unless `--no-apply` is passed, writes the Codex project MCP route as `configured_unverified`; it still keeps `active=false` until lifecycle desire is on and route-bound raw/ledger/no-negative/positive-savings evidence exists. `tfy status` reports a user-facing lifecycle summary plus effective project-over-global desired/configured/active state and next action guidance. Outside a TFY-managed human session, `tfy shell <command>` runs raw without TFY savings/artifacts; use `tfy shell -- <command>` for the explicit TFY wrapper. Raw evidence remains managed through `tfy raw`; `fuckyou` preserves `.tfy/raw` and shared ledgers by default.
+Lifecycle commands write project state to `.tfy/lifecycle.json` and global state under `$TFY_HOME`, `$XDG_CONFIG_HOME/tfy`, or `~/.tfy`; global host options record default guidance only and do not mutate per-project host config; `start` prepares raw and ledger directories (`.tfy/raw`, `.tfy/state`, `.tfy/adapter`, `.tfy/agent`, `.tfy/mcp`) before later command/context evidence is recorded. Bare interactive `start`, `stop`, and `fuckyou` open an arrow-key TUI; piped stdin choices remain supported for scripts, and missing non-TTY choices fail closed. They do not prove host invocation or token savings by themselves: agent mode auto-configures only supported safe project routes, defaulting to Codex first, and still requires the host to reload/use the TFY route, while human mode does not globally intercept ordinary terminal commands. On supported Linux bash, `tfy start --human` records lifecycle intent and, from an interactive project-only terminal run, creates/refreshes `.tfy/human/auto-activate.json` plus deterministic `.tfy/human/auto-activate.bash` before entering a TFY-managed project-scoped shell session; non-interactive plain start remains lifecycle intent-only, while `tfy start --human --auto-activate` is the explicit automation path for marker creation without entering a shell. Only an explicit one-time user rc hook makes new interactive non-login bash shells auto-activate in trusted marked repos: use `tfy setup --human` to dry-run and `tfy setup --human --apply` to install; the longer `tfy human auto-activate install --shell bash --rcfile <path> --apply` remains supported for power users. npm install prints this opt-in guidance but never mutates shell rcfiles. The hook uses a pinned absolute TFY executable, validates/regenerates deterministic repo activation content, and never trusts PATH-resolved `tfy`. Allowlisted commands route through raw-first command-output capture before summary selection; the current ledger stores a combined raw output ref. Shell-local functions, aliases, builtins, direct paths, explicit `tfy-human-bypass`, TFY gateway, and outside-scope commands run raw without a summary claim; automatic interactive/TUI/stateful subcommand classification is not claimed in v1. `tfy human shell --no-auto-intercept` keeps only the managed shell environment without allowlisted wrappers, and `tfy human install --dry-run|--output <path>` generates the sourceable script. `tfy start --agent` records lifecycle desire and, unless `--no-apply` is passed, writes the Codex project MCP route as `configured_unverified`; it still keeps `active=false` until lifecycle desire is on and route-bound raw/ledger/no-negative/positive-savings evidence exists. `tfy status` reports a user-facing lifecycle summary plus effective project-over-global desired/configured/active state and next action guidance. Outside a TFY-managed human session, `tfy shell <command>` runs raw without TFY savings/artifacts; use `tfy shell -- <command>` for the explicit TFY wrapper. Raw evidence remains managed through `tfy raw`; `fuckyou` preserves `.tfy/raw` and shared ledgers by default.
 
 Product-facing happy path:
 
 ```bash
 tfy init --codex --dry-run
 tfy init --codex --project --apply
+tfy setup --human --apply # opt-in human auto-activation hook for trusted marked repos
 tfy setup --ai --host codex --apply --project
 tfy setup --ai --host claude-code --apply --project
 tfy setup --ai --host cursor --apply --project

@@ -211,6 +211,7 @@ struct CommandRule {
     argv_prefix: Vec<String>,
     command_regex: Option<Regex>,
     safety: RuleSafetyMetadata,
+    override_policy: RuleOverridePolicy,
     operations: Vec<RuleOperation>,
 }
 
@@ -219,6 +220,19 @@ struct RuleSafetyMetadata {
     human_auto_safe: bool,
     agent_safe: bool,
     interactive_risk: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuleOverridePolicy {
+    built_in: bool,
+    family: Option<String>,
+    reason: Option<String>,
+}
+
+impl RuleOverridePolicy {
+    fn allows_family(&self, family: &str) -> bool {
+        self.built_in && self.family.as_deref() == Some(family)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -420,6 +434,19 @@ struct CommandRuleToml {
     agent_safe: bool,
     #[serde(default = "default_interactive_risk")]
     interactive_risk: String,
+    #[serde(default, rename = "override")]
+    override_config: Option<CommandRuleOverrideToml>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRuleOverrideToml {
+    #[serde(default)]
+    built_in: bool,
+    #[serde(default)]
+    family: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -605,26 +632,53 @@ impl CommandRuleSet {
         &self.diagnostics
     }
 
+    pub fn has_builtin_overrides(&self) -> bool {
+        self.rules.iter().any(|rule| rule.override_policy.built_in)
+    }
+
     pub fn load_standard(cwd: impl AsRef<Path>) -> Self {
         let cwd = cwd.as_ref();
         let mut set = Self::default();
-        let repo_rules = find_repo_rules(cwd);
-        if let Some(repo_rules) = repo_rules {
-            let trust = repo_rules.parent().unwrap_or(cwd).join("trust.json");
-            match repo_rules_trusted(&repo_rules, &trust) {
-                Ok(true) => set.load_file_non_strict(&repo_rules, "repo"),
-                Ok(false) => set.diagnostics.push(CommandRuleDiagnostic::new(
-                    "repo",
-                    &repo_rules,
-                    "repo_rules_untrusted",
-                    "repo-local command rules are not trusted; run tfy trust command-rules after reviewing them",
-                )),
-                Err(message) => set.diagnostics.push(CommandRuleDiagnostic::new(
-                    "repo",
-                    &repo_rules,
-                    "repo_rules_hash_mismatch",
-                    message.to_string(),
-                )),
+        if let Some(repo_rules) = find_repo_rules(cwd) {
+            let tfy_dir = repo_rules.parent().unwrap_or(cwd).to_path_buf();
+            let trust = tfy_dir.join("trust.json");
+            let repo_root = tfy_dir.parent().unwrap_or(&tfy_dir).to_path_buf();
+            let fixture_root = repo_root.join(".tfy").join("rule-fixtures");
+            set.load_trusted_custom_source(TrustedSourceConfig {
+                source_kind: "repo",
+                label: "repo-local",
+                rules_path: repo_rules,
+                trust_path: trust,
+                path_base: repo_root,
+                fixture_root,
+                untrusted_code: "repo_rules_untrusted",
+                hash_code: "repo_rules_hash_mismatch",
+                invalid_code: "repo_rules_hash_mismatch",
+                symlink_code: "repo_rules_hash_mismatch",
+                untrusted_message: "repo-local command rules are not trusted; run tfy custom verify and tfy custom trust after reviewing them",
+            });
+        }
+        if let Some(global_rules) = global_custom_rules_path() {
+            if global_rules.exists() {
+                let global_root = global_rules
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf();
+                let trust = global_root.join("trust.json");
+                let fixture_root = global_root.join("rule-fixtures");
+                set.load_trusted_custom_source(TrustedSourceConfig {
+                    source_kind: "global_custom",
+                    label: "global custom",
+                    rules_path: global_rules,
+                    trust_path: trust,
+                    path_base: global_root.clone(),
+                    fixture_root,
+                    untrusted_code: "global_custom_rules_untrusted",
+                    hash_code: "global_custom_rules_hash_mismatch",
+                    invalid_code: "global_custom_rules_invalid_trust",
+                    symlink_code: "global_custom_rules_symlink_refused",
+                    untrusted_message: "global custom command rules are not trusted; run tfy custom verify --scope global and tfy custom trust --scope global after reviewing them",
+                });
             }
         }
         if let Some(home) = std::env::var_os("HOME") {
@@ -633,10 +687,46 @@ impl CommandRuleSet {
                 .join("tfy")
                 .join("commands.toml");
             if user_rules.exists() {
+                set.diagnostics.push(CommandRuleDiagnostic::new(
+                    "user",
+                    &user_rules,
+                    "user_global_rules_legacy_manual",
+                    "user-global command rules loaded as legacy/manual compatibility; tfy custom trusted global rules use ~/.config/tfy/custom/",
+                ));
                 set.load_file_non_strict(&user_rules, "user");
             }
         }
         set
+    }
+
+    fn load_trusted_custom_source(&mut self, config: TrustedSourceConfig) {
+        match rules_trust_status(&config) {
+            Ok(RuleTrustStatus::Trusted) => {
+                self.load_file_non_strict(&config.rules_path, config.source_kind);
+            }
+            Ok(RuleTrustStatus::Untrusted) => self.diagnostics.push(CommandRuleDiagnostic::new(
+                config.source_kind,
+                &config.rules_path,
+                config.untrusted_code,
+                config.untrusted_message,
+            )),
+            Err(message) => {
+                let message = message.to_string();
+                let code = if message.contains("changed after trust") {
+                    config.hash_code
+                } else if message.contains("symlink") {
+                    config.symlink_code
+                } else {
+                    config.invalid_code
+                };
+                self.diagnostics.push(CommandRuleDiagnostic::new(
+                    config.source_kind,
+                    &config.rules_path,
+                    code,
+                    message,
+                ));
+            }
+        }
     }
 
     pub fn load_strict(path: impl AsRef<Path>, source_kind: &str) -> Result<Self> {
@@ -655,6 +745,13 @@ impl CommandRuleSet {
             rules: parse_command_rules_strict(text, source_kind, Path::new("<memory>"))?,
             diagnostics: Vec::new(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_toml_str_non_strict_for_tests(text: &str, source_kind: &str) -> Self {
+        let (rules, diagnostics) =
+            parse_command_rules_non_strict(text, source_kind, Path::new("<memory>"));
+        Self { rules, diagnostics }
     }
 
     fn load_file_non_strict(&mut self, path: &Path, source_kind: &str) {
@@ -713,6 +810,7 @@ impl CommandRuleSet {
             human_auto_safe: rule.safety.human_auto_safe,
             agent_safe: rule.safety.agent_safe,
             interactive_risk: rule.safety.interactive_risk.clone(),
+            override_policy: rule.override_policy.clone(),
         })
     }
 }
@@ -724,6 +822,7 @@ struct UserRuleSummaryCandidate {
     human_auto_safe: bool,
     agent_safe: bool,
     interactive_risk: String,
+    override_policy: RuleOverridePolicy,
 }
 
 impl CommandRule {
@@ -748,26 +847,246 @@ fn find_repo_rules(cwd: &Path) -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
-fn repo_rules_trusted(rules_path: &Path, trust_path: &Path) -> Result<bool> {
-    if !trust_path.exists() {
-        return Ok(false);
+fn global_custom_rules_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| {
+        PathBuf::from(home)
+            .join(".config")
+            .join("tfy")
+            .join("custom")
+            .join("commands.toml")
+    })
+}
+
+struct TrustedSourceConfig {
+    source_kind: &'static str,
+    label: &'static str,
+    rules_path: PathBuf,
+    trust_path: PathBuf,
+    path_base: PathBuf,
+    fixture_root: PathBuf,
+    untrusted_code: &'static str,
+    hash_code: &'static str,
+    invalid_code: &'static str,
+    symlink_code: &'static str,
+    untrusted_message: &'static str,
+}
+
+enum RuleTrustStatus {
+    Trusted,
+    Untrusted,
+}
+
+#[derive(Deserialize)]
+struct RepoTrustFile {
+    schema_version: u64,
+    command_rules: RepoTrustCommandRules,
+}
+
+#[derive(Deserialize)]
+struct RepoTrustCommandRules {
+    trusted: bool,
+    rules_sha256: Option<String>,
+    #[serde(default)]
+    created_by: Option<String>,
+    #[serde(default)]
+    validated_at: Option<String>,
+    #[serde(default)]
+    validated_with: Vec<String>,
+    #[serde(default)]
+    fixtures: Vec<RepoTrustFixture>,
+    #[serde(default)]
+    agent: Option<RepoTrustAgent>,
+    #[serde(default)]
+    override_evidence: Vec<RepoTrustOverrideEvidence>,
+}
+
+#[derive(Deserialize)]
+struct RepoTrustFixture {
+    name: String,
+    fixture_sha256: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    cmd: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RepoTrustAgent {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    bounded_workspace: bool,
+}
+
+#[derive(Deserialize)]
+struct RepoTrustOverrideEvidence {
+    #[serde(default)]
+    rule_id: String,
+    #[serde(default)]
+    family: String,
+    #[serde(default)]
+    override_active: bool,
+}
+
+fn rules_trust_status(config: &TrustedSourceConfig) -> Result<RuleTrustStatus> {
+    if !config.trust_path.exists() {
+        return Ok(RuleTrustStatus::Untrusted);
     }
-    let trust_text = fs::read_to_string(trust_path)?;
-    let trust: serde_json::Value = serde_json::from_str(&trust_text)?;
-    if trust["schema_version"].as_u64() != Some(1)
-        || trust["command_rules"]["trusted"].as_bool() != Some(true)
-    {
-        return Ok(false);
+    reject_symlink_path(&config.rules_path)?;
+    if let Some(root) = config.rules_path.parent() {
+        reject_symlink_path(root)?;
     }
-    let Some(expected) = trust["command_rules"]["rules_sha256"].as_str() else {
-        return Ok(false);
+    reject_symlink_path(&config.trust_path)?;
+    let trust_text = fs::read_to_string(&config.trust_path)?;
+    let trust: RepoTrustFile = serde_json::from_str(&trust_text)?;
+    if !trust.command_rules.trusted {
+        return Ok(RuleTrustStatus::Untrusted);
+    }
+    match trust.schema_version {
+        1 => Ok(RuleTrustStatus::Untrusted),
+        2 => {
+            let Some(expected) = trust.command_rules.rules_sha256.as_deref() else {
+                return Ok(RuleTrustStatus::Untrusted);
+            };
+            let actual = sha256_hex(&fs::read(&config.rules_path)?);
+            if expected != actual {
+                bail!(
+                    "{} command rules changed after trust; expected sha256 {expected}, got {actual}",
+                    config.label
+                );
+            }
+            validate_trust_v2(config, &trust.command_rules)?;
+            Ok(RuleTrustStatus::Trusted)
+        }
+        _ => Ok(RuleTrustStatus::Untrusted),
+    }
+}
+
+fn validate_trust_v2(
+    config: &TrustedSourceConfig,
+    command_rules: &RepoTrustCommandRules,
+) -> Result<()> {
+    if command_rules.created_by.as_deref() != Some("tfy custom") {
+        bail!(
+            "{} command rules v2 trust must be created_by=tfy custom",
+            config.label
+        );
+    }
+    let validated_at = command_rules.validated_at.as_deref().unwrap_or("");
+    if validated_at.is_empty() {
+        bail!(
+            "{} command rules v2 trust is missing validated_at",
+            config.label
+        );
+    }
+    for required in ["validate", "preview", "compare-built-in"] {
+        if !command_rules
+            .validated_with
+            .iter()
+            .any(|item| item == required)
+        {
+            bail!(
+                "{} command rules v2 trust is missing validation evidence {required}",
+                config.label
+            );
+        }
+    }
+    let Some(agent) = &command_rules.agent else {
+        bail!(
+            "{} command rules v2 trust is missing agent provenance",
+            config.label
+        );
     };
-    let actual = sha256_hex(&fs::read(rules_path)?);
-    if expected == actual {
-        Ok(true)
-    } else {
-        bail!("repo-local command rules changed after trust; expected sha256 {expected}, got {actual}")
+    if agent.kind.is_empty() {
+        bail!(
+            "{} command rules v2 trust is missing agent kind",
+            config.label
+        );
     }
+    if !agent.bounded_workspace {
+        bail!(
+            "{} command rules v2 trust requires bounded_workspace=true",
+            config.label
+        );
+    }
+    if command_rules.fixtures.is_empty() {
+        bail!(
+            "{} command rules v2 trust requires at least one fixture",
+            config.label
+        );
+    }
+    reject_symlink_path(&config.fixture_root)?;
+    let fixture_root = config.fixture_root.canonicalize()?;
+    for fixture in &command_rules.fixtures {
+        if fixture.name.is_empty() || fixture.fixture_sha256.is_empty() || fixture.cmd.is_empty() {
+            bail!(
+                "{} command rules v2 trust has incomplete fixture metadata",
+                config.label
+            );
+        }
+        let relative = fixture
+            .path
+            .clone()
+            .unwrap_or_else(|| format!("rule-fixtures/{}.txt", fixture.name));
+        let raw_fixture_path = PathBuf::from(relative);
+        let fixture_path = if raw_fixture_path.is_absolute() {
+            raw_fixture_path
+        } else {
+            config.path_base.join(raw_fixture_path)
+        };
+        let metadata = fs::symlink_metadata(&fixture_path)?;
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "{} command rules v2 fixture path is a symlink",
+                config.label
+            );
+        }
+        let fixture_path = fixture_path.canonicalize()?;
+        if !fixture_path.starts_with(&fixture_root) {
+            bail!(
+                "{} command rules v2 fixture path escapes fixture root",
+                config.label
+            );
+        }
+        let actual = sha256_hex(&fs::read(&fixture_path)?);
+        if actual != fixture.fixture_sha256 {
+            bail!(
+                "{} command rules fixture {} changed after trust; expected sha256 {}, got {actual}",
+                config.label,
+                fixture.name,
+                fixture.fixture_sha256
+            );
+        }
+    }
+    let rules = CommandRuleSet::load_strict(&config.rules_path, config.source_kind)?;
+    if rules.has_builtin_overrides() {
+        let has_active = command_rules
+            .override_evidence
+            .iter()
+            .any(|e| e.override_active && !e.rule_id.is_empty() && !e.family.is_empty());
+        if !has_active {
+            bail!(
+                "{} command rules v2 trust is missing active override evidence",
+                config.label
+            );
+        }
+    }
+    let metadata = fs::symlink_metadata(&config.trust_path)?;
+    if metadata.file_type().is_symlink() {
+        bail!("{} command rules v2 trust path is a symlink", config.label);
+    }
+    Ok(())
+}
+
+fn reject_symlink_path(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "command rules trust refuses symlink path: {}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn parse_command_rules_strict(
@@ -961,6 +1280,7 @@ fn build_command_rule(
             rule.interactive_risk
         );
     }
+    let override_policy = build_override_policy(&rule, schema_version)?;
     let command_regex = rule
         .match_config
         .command_regex
@@ -1032,7 +1352,50 @@ fn build_command_rule(
             agent_safe: rule.agent_safe,
             interactive_risk: rule.interactive_risk,
         },
+        override_policy,
         operations,
+    })
+}
+
+fn build_override_policy(
+    rule: &CommandRuleToml,
+    schema_version: u16,
+) -> Result<RuleOverridePolicy> {
+    let Some(override_config) = &rule.override_config else {
+        return Ok(RuleOverridePolicy::default());
+    };
+    if schema_version < 3 {
+        bail!(
+            "command rule {} uses override without schema_version = 3",
+            rule.id
+        );
+    }
+    if !override_config.built_in {
+        return Ok(RuleOverridePolicy::default());
+    }
+    let Some(family) = override_config.family.as_deref() else {
+        bail!(
+            "command rule {} override.built_in requires override.family",
+            rule.id
+        );
+    };
+    validate_safe_name(family, "override.family")?;
+    let reason = match override_config.reason.as_deref() {
+        Some(reason) => {
+            validate_limit(reason.chars().count(), 240, "override.reason")?;
+            let reason = cap_to_chars(&norm(&redact_public(reason)), 240);
+            if reason.is_empty() {
+                None
+            } else {
+                Some(reason)
+            }
+        }
+        None => None,
+    };
+    Ok(RuleOverridePolicy {
+        built_in: true,
+        family: Some(family.to_string()),
+        reason,
     })
 }
 
@@ -1816,6 +2179,8 @@ fn diagnostic_code_from_message(message: &str) -> &'static str {
         "user_rules_invalid_capture"
     } else if message.contains("severity") {
         "user_rules_invalid_severity"
+    } else if message.contains("override") {
+        "user_rules_invalid_override"
     } else if message.contains("parse_") || message.contains("extract") {
         "user_rules_invalid_extract"
     } else if message.contains("metric") {
@@ -2205,45 +2570,106 @@ fn compress_with_raw_ref(
         rr: &raw_ref,
         risk: &risk,
     });
-    if built_in_candidate.is_some() {
-        if let Some(rule_set) = rules {
-            if let Some(rule) = rule_set.first_match(argv, &display_command) {
-                command_rule_diagnostics.push(CommandRuleDiagnostic {
-                    source_kind: rule.source_kind.clone(),
-                    path: String::new(),
-                    code: "user_rule_shadowed_by_builtin".into(),
-                    message: format!(
-                        "user command rule {} matched but built-in strategy {strategy_kind} kept precedence",
-                        rule.id
-                    ),
-                });
-            }
+    let user_candidate = rules.and_then(|rules| {
+        rules.summary_candidate(
+            argv,
+            &display_command,
+            exit_code,
+            raw,
+            &evidence,
+            &raw_ref,
+            &risk,
+        )
+    });
+    let use_user_candidate = match (&built_in_candidate, &user_candidate) {
+        (Some(_), Some(user_candidate))
+            if user_candidate
+                .override_policy
+                .allows_family(&command_family) =>
+        {
+            let reason = user_candidate
+                .override_policy
+                .reason
+                .as_deref()
+                .map(|reason| format!("; reason={reason}"))
+                .unwrap_or_default();
+            command_rule_diagnostics.push(CommandRuleDiagnostic {
+                source_kind: user_candidate.strategy_source_kind.clone(),
+                path: String::new(),
+                code: "user_rule_overrode_builtin".into(),
+                message: format!(
+                    "user command rule {} explicitly overrode built-in family {command_family}{reason}",
+                    user_candidate.rule_id
+                ),
+            });
+            true
         }
-    }
-    let summary_candidate = built_in_candidate
-        .or_else(|| {
-            let user_candidate = rules?.summary_candidate(
-                argv,
-                &display_command,
-                exit_code,
-                raw,
-                &evidence,
-                &raw_ref,
-                &risk,
-            )?;
-            strategy_kind = "user_toml".into();
-            human_auto_safe = user_candidate.human_auto_safe;
-            agent_safe = user_candidate.agent_safe;
-            interactive_risk = user_candidate.interactive_risk;
-            rule_id = Some(user_candidate.rule_id);
-            strategy_source_kind = user_candidate.strategy_source_kind;
-            Some(user_candidate.text)
-        })
-        .unwrap_or_else(|| match risk.as_str() {
+        (Some(_), Some(user_candidate)) if user_candidate.override_policy.built_in => {
+            let requested = user_candidate
+                .override_policy
+                .family
+                .as_deref()
+                .unwrap_or("<missing>");
+            command_rule_diagnostics.push(CommandRuleDiagnostic {
+                source_kind: user_candidate.strategy_source_kind.clone(),
+                path: String::new(),
+                code: "user_rule_override_family_mismatch".into(),
+                message: format!(
+                    "user command rule {} requested built-in override family {requested}, but command classified as {command_family}; built-in strategy {strategy_kind} kept precedence",
+                    user_candidate.rule_id
+                ),
+            });
+            false
+        }
+        (Some(_), Some(user_candidate)) => {
+            command_rule_diagnostics.push(CommandRuleDiagnostic {
+                source_kind: user_candidate.strategy_source_kind.clone(),
+                path: String::new(),
+                code: "user_rule_shadowed_by_builtin".into(),
+                message: format!(
+                    "user command rule {} matched but built-in strategy {strategy_kind} kept precedence",
+                    user_candidate.rule_id
+                ),
+            });
+            false
+        }
+        (Some(_), None) => {
+            if let Some(rule_set) = rules {
+                if let Some(rule) = rule_set.first_match(argv, &display_command) {
+                    command_rule_diagnostics.push(CommandRuleDiagnostic {
+                        source_kind: rule.source_kind.clone(),
+                        path: String::new(),
+                        code: "user_rule_shadowed_by_builtin".into(),
+                        message: format!(
+                            "user command rule {} matched but produced no summary candidate; built-in strategy {strategy_kind} kept precedence",
+                            rule.id
+                        ),
+                    });
+                }
+            }
+            false
+        }
+        (None, Some(_)) => true,
+        (None, None) => false,
+    };
+    let summary_candidate = if use_user_candidate {
+        let user_candidate = user_candidate.expect("user candidate exists when selected");
+        strategy_kind = "user_toml".into();
+        human_auto_safe = user_candidate.human_auto_safe;
+        agent_safe = user_candidate.agent_safe;
+        interactive_risk = user_candidate.interactive_risk;
+        rule_id = Some(user_candidate.rule_id);
+        strategy_source_kind = user_candidate.strategy_source_kind;
+        user_candidate.text
+    } else if let Some(built_in_candidate) = built_in_candidate {
+        built_in_candidate
+    } else {
+        match risk.as_str() {
             "critical" => critical(&display_command, exit_code, &evidence, &raw_ref),
             "success" => success(&display_command, exit_code, raw, &raw_ref),
             _ => unknown(&display_command, exit_code, raw, &evidence, &raw_ref),
-        });
+        }
+    };
     let summary_candidate =
         cap_summary_preserving_raw_ref(summary_candidate, &raw_ref, max_summary_bytes);
     let public_raw = public_raw_candidate(raw, &raw_ref);

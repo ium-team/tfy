@@ -1,7 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tfy_core::{summarize_command_output_bytes_with_rules, CommandRuleSet};
@@ -46,7 +45,7 @@ pub(crate) enum RulesCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Trust a reviewed repo-local .tfy/commands.toml by recording its sha256 in .tfy/trust.json.
+    /// Deprecated: repo-local trust now requires `tfy custom verify` plus `tfy custom trust`.
     Trust {
         #[arg(long, default_value = ".tfy/commands.toml")]
         file: PathBuf,
@@ -57,7 +56,7 @@ pub(crate) enum RulesCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Compare preview output with and without the supplied custom rules. Does not override built-ins.
+    /// Compare effective output with and without supplied custom rules, including explicit v3 overrides.
     CompareBuiltIn {
         #[arg(long)]
         file: PathBuf,
@@ -101,14 +100,6 @@ struct WorkspacePayload {
     created_paths: Vec<String>,
     rule_file: String,
     trust_file: String,
-}
-
-#[derive(Serialize)]
-struct TrustPayload {
-    file: String,
-    trust_file: String,
-    rules_sha256: String,
-    dry_run: bool,
 }
 
 struct RulePreviewRequest {
@@ -238,10 +229,29 @@ fn execute_compare(request: RulePreviewRequest) -> Result<()> {
         request.raw_dir.join("without-rules"),
         None,
     )?;
+    let custom_summary_chars = with_rules.summary_chars;
+    let built_in_summary_chars = without_rules.summary_chars;
+    let custom_saved_chars = built_in_summary_chars.saturating_sub(custom_summary_chars);
+    let custom_larger_chars = custom_summary_chars.saturating_sub(built_in_summary_chars);
+    let override_active = with_rules
+        .command_rule_diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "user_rule_overrode_builtin");
+    let comparison = serde_json::json!({
+        "override_active": override_active,
+        "with_rules_strategy_kind": with_rules.strategy_kind,
+        "without_rules_strategy_kind": without_rules.strategy_kind,
+        "with_rules_summary_chars": custom_summary_chars,
+        "without_rules_summary_chars": built_in_summary_chars,
+        "with_rules_smaller_than_without_rules": custom_summary_chars < built_in_summary_chars,
+        "with_rules_saved_chars_vs_without_rules": custom_saved_chars,
+        "with_rules_larger_chars_vs_without_rules": custom_larger_chars,
+    });
     let value = serde_json::json!({
         "ok": true,
         "command": "compare-built-in",
-        "note": "custom rules are compared additively; built-in override is not enabled",
+        "note": "with_rules shows effective custom-rule behavior, including explicit v3 built-in overrides when configured; without_rules shows TFY built-in/default behavior",
+        "comparison": comparison,
         "with_rules": with_rules,
         "without_rules": without_rules,
     });
@@ -303,7 +313,7 @@ fn execute_agent_workspace(repo: PathBuf, json: bool) -> Result<()> {
     }
 }
 
-fn execute_trust(file: PathBuf, repo: PathBuf, dry_run: bool, json: bool) -> Result<()> {
+fn execute_trust(file: PathBuf, repo: PathBuf, dry_run: bool, _json: bool) -> Result<()> {
     let repo = canonicalize_existing_dir(&repo)?;
     let file = if file.is_relative() {
         repo.join(file)
@@ -324,40 +334,14 @@ fn execute_trust(file: PathBuf, repo: PathBuf, dry_run: bool, json: bool) -> Res
         );
     }
     CommandRuleSet::load_strict(&file, "repo")?;
-    let bytes = fs::read(&file)?;
-    let hash = format!("{:x}", Sha256::digest(&bytes));
     let trust_file = tfy_dir.join("trust.json");
     reject_existing_symlink(&trust_file)?;
-    if !dry_run {
-        fs::write(
-            &trust_file,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "schema_version": 1,
-                "command_rules": {"trusted": true, "rules_sha256": hash}
-            }))?,
-        )?;
-    }
-    let payload = RuleHarnessResponse {
-        ok: true,
-        command: "trust",
-        payload: TrustPayload {
-            file: display_repo_path(&repo, &file),
-            trust_file: display_repo_path(&repo, &trust_file),
-            rules_sha256: hash,
-            dry_run,
-        },
-    };
-    if json {
-        print_json(&payload)
-    } else {
-        println!(
-            "tfy rules trust: ok file={} trust_file={} dry_run={}",
-            display_repo_path(&repo, &file),
-            display_repo_path(&repo, &trust_file),
-            dry_run
-        );
-        Ok(())
-    }
+    bail!(
+        "tfy rules trust is deprecated because repo-local trust requires schema v2 provenance; run tfy custom verify --scope repo --repo {} and tfy custom trust --scope repo --repo {} instead{}",
+        repo.display(),
+        repo.display(),
+        if dry_run { " (dry-run writes nothing)" } else { "" }
+    )
 }
 
 fn preview_argv(cmd: &str, argv: Vec<String>) -> Vec<String> {

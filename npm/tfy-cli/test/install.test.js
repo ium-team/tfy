@@ -12,6 +12,7 @@ const {
   installFromRelease,
   manualInstallDestination,
   installVerifiedArchive,
+  logHumanOptInGuidance,
   releaseUrls,
   defaultReleaseVersion,
   sha256,
@@ -66,12 +67,58 @@ assert.deepStrictEqual(releaseUrls('0.1.0-preview.0', target), {
   checksumUrl: 'https://github.com/ium-team/tfy/releases/download/v0.1.0-preview.0/tfy-0.1.0-linux-x86_64.tar.gz.sha256'
 });
 
+const rcHome = path.join(tmp, 'home');
+fs.mkdirSync(path.join(rcHome, '.config', 'fish'), { recursive: true });
+const rcFiles = [
+  path.join(rcHome, '.bashrc'),
+  path.join(rcHome, '.bash_profile'),
+  path.join(rcHome, '.zshrc'),
+  path.join(rcHome, '.config', 'fish', 'config.fish')
+];
+for (const rcFile of rcFiles) fs.writeFileSync(rcFile, `# user rc ${path.basename(rcFile)}\n`);
+const rcBefore = new Map(rcFiles.map(rcFile => [rcFile, fs.readFileSync(rcFile, 'utf8')]));
+const originalHome = process.env.HOME;
+const originalUserProfile = process.env.USERPROFILE;
+process.env.HOME = rcHome;
+process.env.USERPROFILE = rcHome;
+process.on('exit', () => {
+  if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
+  if (originalUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = originalUserProfile;
+});
+
 const localBinary = path.join(tmp, 'local-tfy');
 const copiedBinary = path.join(tmp, 'copied-local-tfy');
 fs.writeFileSync(localBinary, '#!/usr/bin/env sh\necho local\n');
-copyLocalBinary(localBinary, copiedBinary);
+let copiedStderr = '';
+const originalStderrWrite = process.stderr.write;
+process.stderr.write = function(chunk, encoding, callback) {
+  copiedStderr += String(chunk);
+  if (typeof callback === 'function') callback();
+  return true;
+};
+try {
+  copyLocalBinary(localBinary, copiedBinary);
+} finally {
+  process.stderr.write = originalStderrWrite;
+}
 assert.strictEqual(fs.readFileSync(copiedBinary, 'utf8'), fs.readFileSync(localBinary, 'utf8'));
+assert.match(copiedStderr, /human auto-activation is opt-in/);
+assert.match(copiedStderr, /tfy setup --human --apply/);
 assert.match(manualInstallDestination(localBinary), /vendor[\\/]manual[\\/]local-tfy$/);
+for (const rcFile of rcFiles) assert.strictEqual(fs.readFileSync(rcFile, 'utf8'), rcBefore.get(rcFile));
+
+let guidanceOnly = '';
+process.stderr.write = function(chunk, encoding, callback) {
+  guidanceOnly += String(chunk);
+  if (typeof callback === 'function') callback();
+  return true;
+};
+try {
+  logHumanOptInGuidance();
+} finally {
+  process.stderr.write = originalStderrWrite;
+}
+assert.match(guidanceOnly, /trusted TFY-marked repos: tfy setup --human --apply/);
 
 
 async function exerciseReleaseFlow() {
@@ -90,7 +137,14 @@ async function exerciseReleaseFlow() {
 
   const expected = releaseUrls('0.1.0-preview.0', target);
   const seen = [];
-  await installFromRelease({
+  let releaseStderr = '';
+  process.stderr.write = function(chunk, encoding, callback) {
+    releaseStderr += String(chunk);
+    if (typeof callback === 'function') callback();
+    return true;
+  };
+  try {
+    await installFromRelease({
     version: '0.1.0-preview.0',
     platformTarget: target,
     vendorDirectory: releaseVendor,
@@ -101,9 +155,15 @@ async function exerciseReleaseFlow() {
       if (url === expected.checksumUrl) return fs.copyFileSync(releaseChecksum, destination);
       throw new Error(`unexpected release URL ${url}`);
     }
-  });
+    });
+  } finally {
+    process.stderr.write = originalStderrWrite;
+  }
   assert.deepStrictEqual(seen, [expected.archiveUrl, expected.checksumUrl]);
   assert.strictEqual(fs.readFileSync(releaseDestination, 'utf8'), fs.readFileSync(path.join(releaseSrc, target.binName), 'utf8'));
+  assert.match(releaseStderr, /human auto-activation is opt-in/);
+  assert.match(releaseStderr, /tfy setup --human --apply/);
+  for (const rcFile of rcFiles) assert.strictEqual(fs.readFileSync(rcFile, 'utf8'), rcBefore.get(rcFile));
 }
 
 exerciseReleaseFlow().catch(error => {

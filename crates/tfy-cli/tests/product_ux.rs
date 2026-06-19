@@ -4008,6 +4008,8 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
     assert_eq!(human["entrypoint"][0], "tfy");
     assert_eq!(human["entrypoint"][1], "start");
     assert_eq!(human["entrypoint"][2], "--human");
+    assert!(!dir.path().join(".tfy/human/auto-activate.json").exists());
+    assert!(!dir.path().join(".tfy/human/auto-activate.bash").exists());
 }
 
 #[test]
