@@ -99,18 +99,30 @@ fn human_run_summarizes_long_output_and_records_human_route_metadata() {
     assert_eq!(json["route"]["ingress"], "human_managed_session");
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 #[test]
-fn human_install_fails_closed_on_non_linux() {
+fn human_install_generates_owned_zsh_wrapper_on_macos() {
     let dir = tempfile::tempdir().unwrap();
-    let output = run_tfy(&["human", "install", "--dry-run"], &dir);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Linux bash only"));
+    let output = run_tfy(&["human", "install", "--dry-run", "--shell", "zsh"], &dir);
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("shell=zsh"), "{stdout}");
+    assert!(
+        stdout.contains("would_write=.tfy/human/session.zshrc"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("precmd_functions"), "{stdout}");
+    assert!(stdout.contains("TFY_HUMAN_SHIM_DIR"), "{stdout}");
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(target_os = "windows"))]
 #[test]
-fn human_run_fails_closed_on_non_linux() {
+fn human_run_preserves_plain_text_for_small_output_on_supported_unix_backends() {
     let dir = tempfile::tempdir().unwrap();
     let output = run_tfy(
         &[
@@ -127,9 +139,26 @@ fn human_run_fails_closed_on_non_linux() {
         ],
         &dir,
     );
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok");
+    assert!(dir.path().join(".tfy/raw").exists());
+    assert!(dir.path().join(".tfy/human/ledger.jsonl").exists());
+}
+
+#[test]
+fn human_shell_rejects_cmd_backend_explicitly() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = run_tfy(&["human", "install", "--dry-run", "--shell", "cmd"], &dir);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Linux bash only"));
-    assert!(!dir.path().join(".tfy/human/ledger.jsonl").exists());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("does not support cmd.exe"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -467,6 +496,19 @@ printf forged",
 }
 
 #[test]
+fn human_start_rejects_unsupported_shell_before_lifecycle_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = run_tfy(&["start", "--human", "--shell", "cmd", "--no-apply"], &dir);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("does not support cmd.exe"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!dir.path().join(".tfy/lifecycle.json").exists());
+}
+
+#[test]
 fn plain_noninteractive_human_start_is_intent_only_without_auto_activation_marker() {
     let dir = tempfile::tempdir().unwrap();
     let output = run_tfy(&["start", "--human", "--no-apply"], &dir);
@@ -574,21 +616,36 @@ fn setup_human_dry_run_apply_and_mixed_flags_preserve_explicit_trust_boundary() 
     );
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 #[test]
-fn setup_human_fails_closed_without_stdout_on_non_linux() {
+fn setup_human_uses_zsh_hook_on_macos() {
     let dir = tempfile::tempdir().unwrap();
-    let rcfile = dir.path().join("test.bashrc");
+    let rcfile = dir.path().join("test.zshrc");
     std::fs::write(&rcfile, "# user rc\n").unwrap();
     let output = run_tfy(
-        &["setup", "--human", "--rcfile", rcfile.to_str().unwrap()],
+        &[
+            "setup",
+            "--human",
+            "--rcfile",
+            rcfile.to_str().unwrap(),
+            "--apply",
+        ],
         &dir,
     );
-    assert!(!output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Linux bash only in v1"), "{stderr}");
-    assert_eq!(std::fs::read_to_string(&rcfile).unwrap(), "# user rc\n");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("shell=zsh"), "{stdout}");
+    let rc_text = std::fs::read_to_string(&rcfile).unwrap();
+    assert!(
+        rc_text.contains("TFY:HUMAN-AUTO-ACTIVATE:START"),
+        "{rc_text}"
+    );
+    assert!(rc_text.contains("--shell zsh"), "{rc_text}");
 }
 
 #[test]

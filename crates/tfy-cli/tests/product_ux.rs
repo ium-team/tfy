@@ -2534,7 +2534,11 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
         json["project_lifecycle"]["human"]["ordinary_terminal_interception"],
         false
     );
-    let human_support_status = if cfg!(target_os = "linux") {
+    let human_support_status = if cfg!(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    )) {
         "managed_session_available"
     } else {
         "managed_session_unsupported_platform"
@@ -3220,7 +3224,11 @@ fn lifecycle_use_always_alias_controls_global_defaults() {
     assert_eq!(json["global_lifecycle"]["human"]["desired"], true);
     assert_eq!(
         json["lifecycle_summary"]["status"],
-        if cfg!(target_os = "linux") {
+        if cfg!(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )) {
             "configured_unverified"
         } else {
             "intent_recorded"
@@ -3958,7 +3966,11 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
         start_text.contains("ordinary_terminal_interception=false"),
         "{start_text}"
     );
-    if cfg!(target_os = "linux") {
+    if cfg!(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    )) {
         assert!(
             start_text.contains("managed_session_launch=requires_interactive_tty"),
             "{start_text}"
@@ -3979,7 +3991,11 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
     let human = &json["project_lifecycle"]["human"];
     assert_eq!(human["route_state"], "intent_recorded");
     assert_eq!(human["active"], false);
-    let managed_session_available = cfg!(target_os = "linux");
+    let managed_session_available = cfg!(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ));
     assert_eq!(
         human["session_wrapper_available"],
         managed_session_available
@@ -3995,7 +4011,14 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
         human["managed_session_scope"],
         "current_directory_scoped_tfy_managed_session"
     );
-    assert_eq!(human["shells_supported"][0], "linux-bash");
+    let expected_shell = if cfg!(target_os = "macos") {
+        "macos-zsh"
+    } else if cfg!(target_os = "windows") {
+        "windows-powershell"
+    } else {
+        "linux-bash"
+    };
+    assert_eq!(human["shells_supported"][0], expected_shell);
     assert_eq!(human["ordinary_terminal_interception"], false);
     assert_eq!(
         human["support_status"],
@@ -4010,6 +4033,8 @@ fn lifecycle_human_start_records_wrapper_metadata_without_terminal_interception(
     assert_eq!(human["entrypoint"][2], "--human");
     assert!(!dir.path().join(".tfy/human/auto-activate.json").exists());
     assert!(!dir.path().join(".tfy/human/auto-activate.bash").exists());
+    assert!(!dir.path().join(".tfy/human/auto-activate.zsh").exists());
+    assert!(!dir.path().join(".tfy/human/auto-activate.ps1").exists());
 }
 
 #[test]
