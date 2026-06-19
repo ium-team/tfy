@@ -138,6 +138,15 @@ Tested: ./scripts/verify.sh
 Not-tested: Branch protection settings were not changed through GitHub admin APIs.
 ```
 
+
+## CI branch-protection target
+
+The CI workflow uses path-aware heavy-job skipping for docs and inert static assets. If branch protection is enabled, require the stable aggregate `ci-required` check rather than optional `rust` or `npm preview smoke (...)` jobs, because those heavy jobs intentionally skip for docs/static asset-only changes.
+
+Do not require skipped optional heavy jobs directly unless the CI workflow is changed to make them always emit required statuses.
+
+`assets/brand/**` is reserved for decorative brand artwork and other non-runtime identity assets. Do not place packaged runtime assets, test fixtures, release inputs, generated config, or behavior-affecting files there; use the appropriate code/package/test directory so CI routing can require Rust or npm validation.
+
 ## PR requirements
 
 Every PR must include:
