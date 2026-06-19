@@ -160,7 +160,7 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
     );
     let install_stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        install_stdout.contains("scope=project_scoped_tfy_managed_session"),
+        install_stdout.contains("scope=current_directory_scoped_tfy_managed_session"),
         "{install_stdout}"
     );
     let script_text = fs::read_to_string(&script).unwrap();
@@ -222,14 +222,20 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
     let subdir = dir.path().join("subdir");
     fs::create_dir_all(&subdir).unwrap();
     let outside = tempfile::tempdir().unwrap();
+    fs::remove_file(dir.path().join(".tfy/human/ledger.jsonl")).unwrap();
+    let parent_ledger = dir.path().join(".tfy/human/ledger.jsonl");
     let scoped = Command::new("bash")
         .current_dir(dir.path())
         .arg("-c")
         .arg(format!(
-            "source {}; cd {}; sh -c 'printf inside'; cd {}; sh -c 'printf outside'",
+            "source {}; \"$TFY_HUMAN_SHIM_DIR/hello-custom\"; test -f {}; rm {}; cd {}; \"$TFY_HUMAN_SHIM_DIR/hello-custom\"; test ! -f {}; cd {}; \"$TFY_HUMAN_SHIM_DIR/hello-custom\"; test ! -f {}",
             script.display(),
+            parent_ledger.display(),
+            parent_ledger.display(),
             subdir.display(),
-            outside.path().display()
+            parent_ledger.display(),
+            outside.path().display(),
+            parent_ledger.display()
         ))
         .env("PATH", &path)
         .env("TFY_HUMAN_TFY_BIN", &tfy_real)
@@ -240,15 +246,17 @@ fn human_install_generates_owned_bash_wrapper_and_refuses_non_tfy_uninstall() {
         "stderr={}",
         String::from_utf8_lossy(&scoped.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&scoped.stdout), "insideoutside");
+    assert_eq!(String::from_utf8_lossy(&scoped.stdout), "okokok");
+    assert!(
+        !subdir.join(".tfy/human/ledger.jsonl").exists(),
+        "child cwd must not inherit parent TFY human ledger"
+    );
     assert!(
         !outside.path().join(".tfy/human/ledger.jsonl").exists(),
         "outside cwd must not receive TFY human ledger"
     );
     assert!(dir.path().join(".tfy/raw").exists());
-    assert!(dir.path().join(".tfy/human/ledger.jsonl").exists());
 
-    fs::remove_file(dir.path().join(".tfy/human/ledger.jsonl")).unwrap();
     let double_source = Command::new("bash")
         .current_dir(dir.path())
         .arg("-c")
@@ -777,10 +785,7 @@ fn human_auto_activate_enables_fresh_bash_from_trusted_repo_marker() {
         .arg(&rcfile)
         .arg("-i")
         .arg("-c")
-        .arg(format!(
-            "test \"$TFY_HUMAN_ROOT\" = {}; hello-auto",
-            shell_escape_for_test(&dir.path().canonicalize().unwrap().display().to_string())
-        ))
+        .arg("test -z \"${TFY_HUMAN_ACTIVE:-}\"; test -z \"${TFY_HUMAN_ROOT:-}\"; hello-auto")
         .env("PATH", &path)
         .output()
         .unwrap();
@@ -791,6 +796,10 @@ fn human_auto_activate_enables_fresh_bash_from_trusted_repo_marker() {
         String::from_utf8_lossy(&nested.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&nested.stdout), "auto");
+    assert!(
+        !subdir.join(".tfy/human/ledger.jsonl").exists(),
+        "child directories must not inherit parent .tfy auto-activation"
+    );
 
     let outside = tempfile::tempdir().unwrap();
     let outside_output = Command::new("bash")

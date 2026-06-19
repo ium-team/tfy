@@ -423,10 +423,8 @@ max_lines = 8
 "#,
     )
     .unwrap();
-    let nested = work.path().join("nested/child");
-    std::fs::create_dir_all(&nested).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
-        .current_dir(&nested)
+        .current_dir(work.path())
         .env("HOME", work.path().join("empty-home"))
         .args([
             "tool-gateway",
@@ -451,6 +449,74 @@ max_lines = 8
         json["payload"]["command_rule_diagnostics"][0]["code"],
         "repo_rules_untrusted"
     );
+}
+
+#[test]
+fn tool_gateway_ignores_parent_repo_local_toml_rule() {
+    let paths = isolated_tool_paths();
+    let work = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(work.path().join(".tfy/rule-fixtures")).unwrap();
+    let rules = r#"
+[[command]]
+id = "parent_repo_rule"
+match.argv_prefix = ["sh", "-c"]
+preserve_lines_matching = ["ERROR"]
+strip_lines_matching = ["noise"]
+max_lines = 8
+"#;
+    std::fs::write(work.path().join(".tfy/commands.toml"), rules).unwrap();
+    let fixture = "for i in $(seq 1 100); do echo noise; done; echo ERROR parent\n";
+    std::fs::write(
+        work.path().join(".tfy/rule-fixtures/parent-rule.txt"),
+        fixture,
+    )
+    .unwrap();
+    std::fs::write(
+        work.path().join(".tfy/trust.json"),
+        serde_json::json!({
+            "schema_version": 2,
+            "command_rules": {
+                "trusted": true,
+                "rules_sha256": format!("{:x}", Sha256::digest(rules.as_bytes())),
+                "created_by": "tfy custom",
+                "validated_at": "unix:1",
+                "validated_with": ["validate", "preview", "compare-built-in"],
+                "fixtures": [{
+                    "name": "parent-rule",
+                    "fixture_sha256": format!("{:x}", Sha256::digest(fixture.as_bytes())),
+                    "path": ".tfy/rule-fixtures/parent-rule.txt",
+                    "cmd": ["sh", "-c", "for i in $(seq 1 100); do echo noise; done; echo ERROR parent"]
+                }],
+                "agent": {"kind": "codex", "bounded_workspace": true},
+                "override_evidence": []
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let nested = work.path().join("nested/child");
+    std::fs::create_dir_all(&nested).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(&nested)
+        .env("HOME", work.path().join("empty-home"))
+        .args([
+            "tool-gateway",
+            "--json",
+            "--raw-dir",
+            paths.raw_dir.as_str(),
+            "--ledger",
+            paths.ledger.as_str(),
+            "--",
+            "sh",
+            "-c",
+            "for i in $(seq 1 100); do echo noise; done; echo ERROR parent",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_ne!(json["payload"]["strategy_kind"], "user_toml");
+    assert_ne!(json["payload"]["rule_id"], "parent_repo_rule");
 }
 
 #[test]
@@ -498,10 +564,8 @@ max_lines = 8
         .to_string(),
     )
     .unwrap();
-    let nested = work.path().join("nested/child");
-    std::fs::create_dir_all(&nested).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
-        .current_dir(&nested)
+        .current_dir(work.path())
         .env("HOME", work.path().join("empty-home"))
         .args([
             "tool-gateway",
