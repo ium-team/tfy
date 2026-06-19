@@ -372,6 +372,12 @@ jobs:
       - name: Verify npm dist-tags
         run: |
           set -euo pipefail
-          node scripts/npm-dist-tag-check.js \
-            --version "${{ needs.preflight.outputs.version }}" \
+          args=(
+            node scripts/npm-dist-tag-check.js
+            --version "${{ needs.preflight.outputs.version }}"
             --channel "${{ inputs.channel }}"
+          )
+          if [ "${{ inputs.channel }}" = 'preview' ]; then
+            args+=(--allow-prestable-preview-latest)
+          fi
+          "${args[@]}"
