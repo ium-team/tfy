@@ -43,7 +43,7 @@ This is not GA/production-ready. TFY does not claim private Codex hook intercept
 
 The installer downloads from the matching GitHub Release tag and verifies the `.sha256` file before installing. Preview versions keep the full preview tag, for example `v0.1.1-preview.0`, while release asset names use the base version, for example `tfy-0.1.1-linux-x86_64.tar.gz`.
 
-After a successful install, npm prints opt-in human setup guidance only. It does **not** edit `.bashrc`, `.zshrc`, fish config, or any other shell startup file. On supported Linux bash, run `tfy setup --human` to dry-run the one-time hook install, or `tfy setup --human --apply` to enable auto-activation only for trusted repos that have a TFY marker from `tfy start --human`.
+After a successful install, npm prints opt-in human setup guidance only. It does **not** edit `.bashrc`, `.zshrc`, PowerShell profiles, fish config, or any other shell startup file. On supported platform shells (Linux bash, macOS zsh, Windows PowerShell), run `tfy setup --human` to dry-run the one-time hook install, or `tfy setup --human --apply` to enable auto-activation only for trusted repos that have a TFY marker from `tfy start --human`.
 
 
 ## Publishing note

@@ -1,6 +1,8 @@
 use crate::human::{
-    enable_human_auto_activate_repo, execute_human_auto_activate_install_setup,
-    execute_human_auto_activate_uninstall_setup, execute_human_shell,
+    default_human_shell_name, enable_human_auto_activate_repo,
+    execute_human_auto_activate_install_setup, execute_human_auto_activate_uninstall_setup,
+    execute_human_shell, human_auto_script_relative_path,
+    human_managed_session_supported_on_this_platform, human_shells_supported_on_this_platform,
 };
 use crate::util::{print_json, stable_id};
 use anyhow::{anyhow, bail, Context, Result};
@@ -120,10 +122,10 @@ pub(crate) struct SetupCmd {
     /// Use user-global host config when supported.
     #[arg(long)]
     pub global: bool,
-    /// Shell for explicit human setup. Linux bash only in v1.
-    #[arg(long, default_value = "bash")]
+    /// Shell for explicit human setup. Defaults to the supported platform shell.
+    #[arg(long, default_value = "auto")]
     pub shell: String,
-    /// Explicit rcfile for human setup. Defaults to ~/.bashrc.
+    /// Explicit rcfile/profile for human setup. Defaults to the supported platform shell startup file.
     #[arg(long)]
     pub rcfile: Option<PathBuf>,
     #[arg(long, default_value = "local-session")]
@@ -162,9 +164,12 @@ pub(crate) struct StartCmd {
     /// Session id for generated MCP/server configuration.
     #[arg(long, default_value = "local-session")]
     pub session: String,
-    /// Explicitly enable trusted current-directory future-shell human auto-activation marker/script for automation. Interactive current-directory human starts enable this by default. Requires a separately installed user rc hook.
+    /// Explicitly enable trusted current-directory future-shell human auto-activation marker/script for automation. Interactive current-directory human starts enable this by default. Requires a separately installed user rc/profile hook.
     #[arg(long)]
     pub auto_activate: bool,
+    /// Shell for human managed sessions and current-directory auto-activation. Defaults to the supported platform shell.
+    #[arg(long, default_value = "auto")]
+    pub shell: String,
 }
 
 #[derive(Args, Clone)]
@@ -517,11 +522,11 @@ fn default_managed_session_scope() -> String {
 }
 
 fn default_human_shells_supported() -> Vec<String> {
-    vec!["linux-bash".into()]
+    human_shells_supported_on_this_platform()
 }
 
 fn human_managed_session_available() -> bool {
-    cfg!(target_os = "linux")
+    human_managed_session_supported_on_this_platform()
 }
 
 fn human_support_status() -> String {
@@ -1603,6 +1608,22 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
     if cmd.auto_activate && !project_human_only {
         bail!("tfy start --human --auto-activate is project human-only mode");
     }
+    let selected_human_shell = if targets.contains(&LifecycleTarget::Human) {
+        if cmd.shell.trim().eq_ignore_ascii_case("auto")
+            || cmd.shell.trim().eq_ignore_ascii_case("default")
+        {
+            default_human_shell_name().to_string()
+        } else {
+            cmd.shell.clone()
+        }
+    } else {
+        default_human_shell_name().to_string()
+    };
+    let selected_human_auto_script = if targets.contains(&LifecycleTarget::Human) {
+        human_auto_script_relative_path(&selected_human_shell)?
+    } else {
+        String::new()
+    };
     let default_human_auto_activate =
         project_human_only && interactive_terminal && human_managed_session_available();
     let should_enable_human_auto_activation = cmd.auto_activate || default_human_auto_activate;
@@ -1743,13 +1764,13 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
             &cmd.session,
             Path::new(".tfy/raw"),
             Path::new(".tfy/human/ledger.jsonl"),
-            "bash",
+            &selected_human_shell,
             created_by,
         )?;
         if let Some(human) = &mut state.human {
             human.route_state = "auto_activation_marker_enabled".into();
             human.support_status = "auto_activation_marker_enabled_hook_required".into();
-            human.integration_path = Some(".tfy/human/auto-activate.bash".into());
+            human.integration_path = Some(selected_human_auto_script.clone());
         }
         Some(root)
     } else {
@@ -1831,18 +1852,18 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
     }
     if targets.contains(&LifecycleTarget::Human) {
         if let Some(root) = &human_auto_activation_root {
-            println!("human_auto_activation repo_marker.enabled=true repo_marker.valid=true repo_marker.root={} selected_rcfile.hook_installed=unknown support_status=auto_activation_marker_enabled_hook_required", root.display());
-            println!("future-shell auto-activation requires one explicit user rc hook install: tfy setup --human --apply");
+            println!("human_auto_activation repo_marker.enabled=true repo_marker.valid=true repo_marker.root={} shell={} integration_path={} selected_rcfile.hook_installed=unknown support_status=auto_activation_marker_enabled_hook_required", root.display(), selected_human_shell, selected_human_auto_script);
+            println!("future-shell auto-activation requires one explicit user rc/profile hook install: tfy setup --human --apply");
         }
         if human_managed_session_available() {
             if project_human_only && interactive_terminal && !cmd.auto_activate {
                 println!("human route_state=managed_session_starting active=false support_status=managed_session_available ordinary_terminal_interception=false managed_session_interception=true managed_session_available=true managed_session_scope_root={} managed_session_entrypoint=\"tfy start --human\"", std::env::current_dir()?.display());
-                println!("ordinary terminals outside this TFY-managed session are not globally intercepted; supported Linux bash now enters a current-directory-scoped managed human session from `tfy start --human`. Use `tfy human shell --no-auto-intercept` for a managed shell without PATH-shim routing, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` / `tfy tool-gateway -- <command>` for explicit one-off gateway wrapping.");
+                println!("ordinary terminals outside this TFY-managed session are not globally intercepted; the supported platform shell now enters a current-directory-scoped managed human session from `tfy start --human`. Use `tfy human shell --no-auto-intercept` for a managed shell without PATH/proxy routing, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` / `tfy tool-gateway -- <command>` for explicit one-off gateway wrapping.");
                 return execute_human_shell(
                     &cmd.session,
                     Path::new(".tfy/raw"),
                     Path::new(".tfy/human/ledger.jsonl"),
-                    "bash",
+                    &selected_human_shell,
                     true,
                 );
             } else {
@@ -1855,14 +1876,14 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                 };
                 println!("human route_state=intent_recorded active=false support_status=managed_session_available ordinary_terminal_interception=false managed_session_interception=false managed_session_available=true managed_session_launch={launch_reason} managed_session_entrypoint=\"tfy start --human\"");
                 if cmd.auto_activate {
-                    println!("human lifecycle intent and current-directory auto-activation marker recorded by explicit automation request; new interactive non-login bash shells auto-activate only after the explicit TFY rc hook is installed. This is not universal/global terminal interception.");
+                    println!("human lifecycle intent and current-directory auto-activation marker recorded by explicit automation request; new supported-platform shell sessions auto-activate only after the explicit TFY rc/profile hook is installed. This is not universal/global terminal interception.");
                 } else {
                     println!("human lifecycle intent recorded; run `tfy start --human` as the only project target from an interactive terminal to create current-directory future-shell activation and enter the managed session. Non-interactive plain start remains intent-only; use `tfy start --human --auto-activate` for explicit automation persistence. Ordinary terminals outside TFY-managed sessions or trusted marked current directories with the explicit rc hook are not globally intercepted.");
                 }
             }
         } else {
             println!("human route_state=intent_recorded active=false support_status=managed_session_unsupported_platform ordinary_terminal_interception=false managed_session_interception=false managed_session_available=false managed_session_entrypoint=\"tfy start --human\"");
-            println!("ordinary terminal commands are not globally intercepted; TFY-managed human sessions are Linux bash only in v1 on this platform. Use `tfy shell <command>` for raw passthrough or `tfy shell -- <command>` for the TFY gateway wrapper.");
+            println!("ordinary terminal commands are not globally intercepted; TFY-managed human sessions are unavailable for the selected platform shell on this platform. Use `tfy shell <command>` for raw passthrough or `tfy shell -- <command>` for the TFY gateway wrapper.");
         }
     }
     Ok(())
@@ -4009,14 +4030,14 @@ fn build_product_status_report(cmd: &StatusCmd) -> ProductStatusReport {
             SurfaceStatus { name: "workspace_apply".into(), status: "active".into(), message: "Multi-file add/modify/delete/rename/move apply is proof-gated and rollback-journaled.".into() },
             SurfaceStatus { name: "fuzzy_refactor_apply".into(), status: "active".into(), message: "Fuzzy edits require unique anchors, confidence threshold, restored preview hashes, and conflict checks.".into() },
             SurfaceStatus { name: "codex_host_routing".into(), status: "config_snippet_available".into(), message: "TFY can configure supported Codex routing surfaces; launch support still requires host-bound smoke/ledger/raw evidence.".into() },
-            SurfaceStatus { name: "ordinary_human_terminal".into(), status: "not_supported".into(), message: "TFY does not globally intercept regular terminals; supported Linux bash uses `tfy start --human` to enter a current-directory-scoped managed PATH-shim session, while `tfy shell <command>` remains raw passthrough and `tfy shell -- <command>` / `tfy tool-gateway -- <command>` remain explicit one-off gateway wrappers.".into() },
+            SurfaceStatus { name: "ordinary_human_terminal".into(), status: "not_supported".into(), message: "TFY does not globally intercept regular terminals; supported platform shells use `tfy start --human` to enter a current-directory-scoped managed PATH/proxy session, while `tfy shell <command>` remains raw passthrough and `tfy shell -- <command>` / `tfy tool-gateway -- <command>` remain explicit one-off gateway wrappers.".into() },
             SurfaceStatus {
                 name: "human_managed_session".into(),
                 status: if human_managed_session_available() { "available" } else { "unsupported_platform" }.into(),
                 message: if human_managed_session_available() {
-                    "Linux bash v1 can enter a TFY-managed current-directory-scoped PATH-shim auto-intercept session via `tfy start --human`; this is opt-in managed-session scope only and covers PATH-resolved ordinary external commands known to the shim."
+                    "Supported platform shells (Linux bash, macOS zsh, Windows PowerShell) can enter a TFY-managed current-directory-scoped auto-intercept session via `tfy start --human`; this is opt-in managed-session scope only and covers safely resolved ordinary external commands."
                 } else {
-                    "`tfy human shell` is Linux bash only in v1 on this platform; ordinary terminals remain outside TFY unless explicit commands such as `tfy shell <command>` raw passthrough or `tfy shell -- <command>` gateway wrapper are used."
+                    "`tfy human shell` has no supported backend for this selected platform shell; ordinary terminals remain outside TFY unless explicit commands such as `tfy shell <command>` raw passthrough or `tfy shell -- <command>` gateway wrapper are used."
                 }.into()
             },
             SurfaceStatus { name: "provider_api_gateway".into(), status: "not_supported".into(), message: "OpenAI/provider request proxying is outside TFY scope.".into() },
@@ -4272,9 +4293,9 @@ fn effective_human_status(
         } else if !desired {
             "Run `tfy start --human` to opt into explicit human managed-session cleanup.".into()
         } else if !route_configured {
-            "TFY-managed human sessions are Linux bash only in v1 on this platform; ordinary terminals are not globally intercepted. Use `tfy shell <command>` for raw passthrough or `tfy shell -- <command>` for the TFY gateway wrapper.".into()
+            "TFY-managed human sessions are unavailable for the selected platform shell on this platform; ordinary terminals are not globally intercepted. Use `tfy shell <command>` for raw passthrough or `tfy shell -- <command>` for the TFY gateway wrapper.".into()
         } else {
-            "Run `tfy start --human` to enter the supported Linux bash current-directory-scoped managed session; ordinary terminals outside that session are not globally intercepted. Use `tfy human shell --no-auto-intercept` for a managed shell without PATH-shim routing, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` / `tfy tool-gateway -- <command>` for explicit one-off gateway wrapping.".into()
+            "Run `tfy start --human` to enter the supported platform-shell current-directory-scoped managed session; ordinary terminals outside that session are not globally intercepted. Use `tfy human shell --no-auto-intercept` for a managed shell without PATH-shim routing, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` / `tfy tool-gateway -- <command>` for explicit one-off gateway wrapping.".into()
         },
     }
 }
