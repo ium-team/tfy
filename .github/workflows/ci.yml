@@ -6,8 +6,194 @@ on:
     branches: [main, develop, "feature/**", "bugfix/**", "hotfix/**", "release/**", "docs/**", "refactor/**", "test/**", "chore/**"]
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      base: ${{ steps.classify.outputs.base }}
+      head: ${{ steps.classify.outputs.head }}
+      rust_required: ${{ steps.classify.outputs.rust_required }}
+      npm_required: ${{ steps.classify.outputs.npm_required }}
+      workflow_required: ${{ steps.classify.outputs.workflow_required }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Classify changed paths
+        id: classify
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          force_all=false
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            head="$PR_HEAD_SHA"
+            git cat-file -e "$PR_BASE_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+            git cat-file -e "$head^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$head"
+            base="$(git merge-base "$PR_BASE_SHA" "$head")"
+          else
+            base="$PUSH_BEFORE"
+            head="$GITHUB_SHA"
+            if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+              base="${head}^"
+              force_all=true
+            fi
+          fi
+
+          git cat-file -e "$base^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$base"
+          git cat-file -e "$head^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$head"
+
+          changed_files="$(git diff --name-only "$base" "$head")"
+          rust_required="$force_all"
+          npm_required="$force_all"
+          workflow_required=false
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            case "$file" in
+              # Workflow edits get a dedicated syntax check without exercising Rust/npm code.
+              .github/workflows/*)
+                workflow_required=true
+                ;;
+              # Rust workspace changes require the Rust gate.
+              Cargo.toml|Cargo.lock|crates/*|examples/*|corpus/*|oracle/*)
+                rust_required=true
+                ;;
+              # npm package, launcher, and release helper changes require npm smoke.
+              npm/*)
+                npm_required=true
+                ;;
+              scripts/*)
+                rust_required=true
+                npm_required=true
+                ;;
+              # Inert docs and decorative brand assets need only the lightweight gate.
+              # Policy: assets/brand/** must not contain runtime/package/test inputs.
+              assets/brand/*|docs/*|README.md|AGENTS.md)
+                ;;
+              # Other GitHub metadata is validated by the lightweight aggregate gate.
+              .github/*)
+                ;;
+              *)
+                rust_required=true
+                npm_required=true
+                ;;
+            esac
+          done <<< "$changed_files"
+
+          {
+            printf 'base=%s\n' "$base"
+            printf 'head=%s\n' "$head"
+            printf 'rust_required=%s\n' "$rust_required"
+            printf 'npm_required=%s\n' "$npm_required"
+            printf 'workflow_required=%s\n' "$workflow_required"
+          } >> "$GITHUB_OUTPUT"
+
+  docs-check:
+    runs-on: ubuntu-latest
+    needs: changes
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Whitespace for changed files
+        shell: bash
+        env:
+          BASE: ${{ needs.changes.outputs.base }}
+          HEAD: ${{ needs.changes.outputs.head }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE"
+          git cat-file -e "$HEAD^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$HEAD"
+          git diff --check "$BASE" "$HEAD"
+
+  workflow-check:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.workflow_required == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse workflow YAML
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby -e 'require "yaml"; Dir[".github/workflows/*.{yml,yaml}"].each { |path| YAML.load_file(path); puts "parsed #{path}" }'
+      - name: Lint workflow semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          go run github.com/rhysd/actionlint/cmd/actionlint@latest .github/workflows/ci.yml
+      - name: Assert CI routing policy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          classify_paths() {
+            local changed_files="$1"
+            local force_all="$2"
+            local rust_required="$force_all"
+            local npm_required="$force_all"
+            local workflow_required=false
+            while IFS= read -r file; do
+              [ -n "$file" ] || continue
+              case "$file" in
+                assets/brand/*|docs/*|README.md|AGENTS.md)
+                  ;;
+                .github/workflows/*)
+                  workflow_required=true
+                  ;;
+                .github/*)
+                  ;;
+                Cargo.toml|Cargo.lock|crates/*|examples/*|corpus/*|oracle/*)
+                  rust_required=true
+                  ;;
+                npm/*)
+                  npm_required=true
+                  ;;
+                scripts/*)
+                  rust_required=true
+                  npm_required=true
+                  ;;
+                *)
+                  rust_required=true
+                  npm_required=true
+                  ;;
+              esac
+            done <<< "$changed_files"
+            printf 'workflow=%s rust=%s npm=%s' "$workflow_required" "$rust_required" "$npm_required"
+          }
+
+          assert_route() {
+            local name="$1"
+            local files="$2"
+            local force_all="$3"
+            local expected="$4"
+            local actual
+            actual="$(classify_paths "$files" "$force_all")"
+            if [ "$actual" != "$expected" ]; then
+              printf 'routing assertion failed for %s\nexpected: %s\nactual:   %s\nfiles:\n%s\n' "$name" "$expected" "$actual" "$files" >&2
+              exit 1
+            fi
+            printf 'routing assertion passed for %s: %s\n' "$name" "$actual"
+          }
+
+          assert_route 'docs and decorative brand assets' $'assets/brand/mascot.png\ndocs/guide.md\nREADME.md' false 'workflow=false rust=false npm=false'
+          assert_route 'GitHub workflow edits' '.github/workflows/ci.yml' false 'workflow=true rust=false npm=false'
+          assert_route 'GitHub metadata edits' '.github/PULL_REQUEST_TEMPLATE.md' false 'workflow=false rust=false npm=false'
+          assert_route 'Rust workspace edits' 'crates/tfy-cli/src/main.rs' false 'workflow=false rust=true npm=false'
+          assert_route 'npm package edits' 'npm/tfy-cli/README.md' false 'workflow=false rust=false npm=true'
+          assert_route 'script edits' 'scripts/npm-preview-smoke.js' false 'workflow=false rust=true npm=true'
+          assert_route 'unknown root image edits' 'image.svg' false 'workflow=false rust=true npm=true'
+          assert_route 'uncertain new branch push' 'assets/brand/mascot.png' true 'workflow=false rust=true npm=true'
+
   rust:
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.rust_required == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -21,10 +207,11 @@ jobs:
       - name: Whitespace
         run: git diff --check
 
-
   npm-preview-smoke:
     name: npm preview smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    needs: changes
+    if: ${{ needs.changes.outputs.npm_required == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -38,3 +225,65 @@ jobs:
           node-version: '20'
       - name: NPM preview install smoke
         run: node scripts/npm-preview-smoke.js
+
+  # If branch protection is enabled, require this aggregate job instead of
+  # optional heavy jobs that intentionally skip for docs/static asset changes.
+  ci-required:
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs: [changes, docs-check, workflow-check, rust, npm-preview-smoke]
+    steps:
+      - name: Check required CI results
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_CHECK_RESULT: ${{ needs.docs-check.result }}
+          WORKFLOW_RESULT: ${{ needs.workflow-check.result }}
+          RUST_RESULT: ${{ needs.rust.result }}
+          NPM_RESULT: ${{ needs.npm-preview-smoke.result }}
+          WORKFLOW_REQUIRED: ${{ needs.changes.outputs.workflow_required }}
+          RUST_REQUIRED: ${{ needs.changes.outputs.rust_required }}
+          NPM_REQUIRED: ${{ needs.changes.outputs.npm_required }}
+        run: |
+          set -euo pipefail
+
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "changes job did not succeed: $CHANGES_RESULT" >&2
+            exit 1
+          fi
+          if [ "$DOCS_CHECK_RESULT" != "success" ]; then
+            echo "docs-check job did not succeed: $DOCS_CHECK_RESULT" >&2
+            exit 1
+          fi
+
+          if [ "$WORKFLOW_REQUIRED" = "true" ]; then
+            if [ "$WORKFLOW_RESULT" != "success" ]; then
+              echo "workflow-check required but result was $WORKFLOW_RESULT" >&2
+              exit 1
+            fi
+          elif [ "$WORKFLOW_RESULT" != "skipped" ]; then
+            echo "workflow-check should be skipped but result was $WORKFLOW_RESULT" >&2
+            exit 1
+          fi
+
+          if [ "$RUST_REQUIRED" = "true" ]; then
+            if [ "$RUST_RESULT" != "success" ]; then
+              echo "rust job required but result was $RUST_RESULT" >&2
+              exit 1
+            fi
+          elif [ "$RUST_RESULT" != "skipped" ]; then
+            echo "rust job should be skipped but result was $RUST_RESULT" >&2
+            exit 1
+          fi
+
+          if [ "$NPM_REQUIRED" = "true" ]; then
+            if [ "$NPM_RESULT" != "success" ]; then
+              echo "npm preview smoke required but result was $NPM_RESULT" >&2
+              exit 1
+            fi
+          elif [ "$NPM_RESULT" != "skipped" ]; then
+            echo "npm preview smoke should be skipped but result was $NPM_RESULT" >&2
+            exit 1
+          fi
+
+          echo "ci-required passed; workflow_required=$WORKFLOW_REQUIRED rust_required=$RUST_REQUIRED npm_required=$NPM_REQUIRED"
