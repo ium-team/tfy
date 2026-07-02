@@ -54,7 +54,7 @@ Intel Mac (`darwin:x64` / `x86_64-apple-darwin`) is not provided as a prebuilt n
 Required local checks for the npm path:
 
 ```sh
-./scripts/npm-preview-smoke.sh
+node scripts/npm-preview-smoke.js
 ./scripts/release-dry-run.sh
 node scripts/npm-publish-plan.js --version 0.1.1-preview.0 --channel preview --source-ref develop
 node scripts/npm-publish-plan.js --version 0.1.1 --channel stable --source-ref main
@@ -96,7 +96,7 @@ Metadata contract:
 
 Preview archive names intentionally omit the `-preview.N` suffix because the npm installer resolves the full tag while using base-version asset names. For example, `@ium/tfy-cli@0.1.1-preview.0` downloads from tag `v0.1.1-preview.0` and expects `tfy-0.1.1-linux-x86_64.tar.gz` plus `.sha256`.
 
-The workflow fails closed when version metadata is inconsistent, when `source_ref` does not match the channel, when the tag or release already exists, or when any current npm-supported platform asset/checksum is missing. The supported matrix is shared with the npm installer in `npm/tfy-cli/scripts/lib/platform.js`.
+The workflow fails closed when version metadata is inconsistent, when `source_ref` does not match the channel, when the tag or release already exists, or when any current npm-supported platform asset/checksum is missing. Release policy and publish-plan logic run from a trusted default-branch `release-tools` checkout pinned once during preflight, while reading immutable release-source metadata through explicit roots. The supported matrix is shared with the npm installer in `npm/tfy-cli/scripts/lib/platform.js`.
 
 Local preflight examples:
 

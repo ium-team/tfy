@@ -14,6 +14,7 @@ jobs:
       rust_required: ${{ steps.classify.outputs.rust_required }}
       npm_required: ${{ steps.classify.outputs.npm_required }}
       workflow_required: ${{ steps.classify.outputs.workflow_required }}
+      claim_docs_required: ${{ steps.classify.outputs.claim_docs_required }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,6 +53,7 @@ jobs:
           rust_required="$force_all"
           npm_required="$force_all"
           workflow_required=false
+          claim_docs_required="$force_all"
           while IFS= read -r file; do
             [ -n "$file" ] || continue
             case "$file" in
@@ -63,9 +65,30 @@ jobs:
               Cargo.toml|Cargo.lock|crates/*|examples/*|corpus/*|oracle/*)
                 rust_required=true
                 ;;
-              # npm package, launcher, and release helper changes require npm smoke.
+              # npm package and launcher changes require npm smoke.
               npm/*)
                 npm_required=true
+                ;;
+              # Claim-bearing docs/matrices validate public support and benchmark claims
+              # without forcing Rust/npm unless another changed path requires them.
+              docs/command-support-matrix.json|docs/command-benchmark-manifest.json|docs/TOOL_FEEDBACK.md|docs/EVALUATION_GATES.md|docs/COMMAND_SUPPORT_MATRIX.md|docs/COMMAND_BENCHMARK_MANIFEST.md|README.md)
+                claim_docs_required=true
+                ;;
+              # Named release/npm helpers get the smallest lane that proves their contract.
+              scripts/check-release-version.js|scripts/npm-publish-plan.js|scripts/npm-dist-tag-check.js|scripts/release-config.js)
+                npm_required=true
+                ;;
+              scripts/npm-preview-smoke.js|scripts/package-release.js|scripts/release-dry-run.sh)
+                rust_required=true
+                npm_required=true
+                ;;
+              scripts/validate-command-support-matrix.js)
+                claim_docs_required=true
+                ;;
+              scripts/verify.sh)
+                rust_required=true
+                npm_required=true
+                claim_docs_required=true
                 ;;
               scripts/*)
                 rust_required=true
@@ -73,7 +96,7 @@ jobs:
                 ;;
               # Inert docs and decorative brand assets need only the lightweight gate.
               # Policy: assets/brand/** must not contain runtime/package/test inputs.
-              assets/brand/*|docs/*|README.md|AGENTS.md)
+              assets/brand/*|docs/*|AGENTS.md)
                 ;;
               # Other GitHub metadata is validated by the lightweight aggregate gate.
               .github/*)
@@ -91,6 +114,7 @@ jobs:
             printf 'rust_required=%s\n' "$rust_required"
             printf 'npm_required=%s\n' "$npm_required"
             printf 'workflow_required=%s\n' "$workflow_required"
+            printf 'claim_docs_required=%s\n' "$claim_docs_required"
           } >> "$GITHUB_OUTPUT"
 
   docs-check:
@@ -111,6 +135,18 @@ jobs:
           git cat-file -e "$HEAD^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$HEAD"
           git diff --check "$BASE" "$HEAD"
 
+  claim-docs-check:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.claim_docs_required == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Validate claim-bearing docs and matrices
+        run: node scripts/validate-command-support-matrix.js
+
   workflow-check:
     runs-on: ubuntu-latest
     needs: changes
@@ -126,7 +162,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go run github.com/rhysd/actionlint/cmd/actionlint@latest .github/workflows/ci.yml
+          go run github.com/rhysd/actionlint/cmd/actionlint@latest .github/workflows/ci.yml .github/workflows/release.yml
       - name: Assert CI routing policy
         shell: bash
         run: |
@@ -138,10 +174,14 @@ jobs:
             local rust_required="$force_all"
             local npm_required="$force_all"
             local workflow_required=false
+            local claim_docs_required="$force_all"
             while IFS= read -r file; do
               [ -n "$file" ] || continue
               case "$file" in
-                assets/brand/*|docs/*|README.md|AGENTS.md)
+                docs/command-support-matrix.json|docs/command-benchmark-manifest.json|docs/TOOL_FEEDBACK.md|docs/EVALUATION_GATES.md|docs/COMMAND_SUPPORT_MATRIX.md|docs/COMMAND_BENCHMARK_MANIFEST.md|README.md)
+                  claim_docs_required=true
+                  ;;
+                assets/brand/*|docs/*|AGENTS.md)
                   ;;
                 .github/workflows/*)
                   workflow_required=true
@@ -154,6 +194,21 @@ jobs:
                 npm/*)
                   npm_required=true
                   ;;
+                scripts/check-release-version.js|scripts/npm-publish-plan.js|scripts/npm-dist-tag-check.js|scripts/release-config.js)
+                  npm_required=true
+                  ;;
+                scripts/npm-preview-smoke.js|scripts/package-release.js|scripts/release-dry-run.sh)
+                  rust_required=true
+                  npm_required=true
+                  ;;
+                scripts/validate-command-support-matrix.js)
+                  claim_docs_required=true
+                  ;;
+                scripts/verify.sh)
+                  rust_required=true
+                  npm_required=true
+                  claim_docs_required=true
+                  ;;
                 scripts/*)
                   rust_required=true
                   npm_required=true
@@ -164,7 +219,7 @@ jobs:
                   ;;
               esac
             done <<< "$changed_files"
-            printf 'workflow=%s rust=%s npm=%s' "$workflow_required" "$rust_required" "$npm_required"
+            printf 'workflow=%s claim_docs=%s rust=%s npm=%s' "$workflow_required" "$claim_docs_required" "$rust_required" "$npm_required"
           }
 
           assert_route() {
@@ -181,14 +236,18 @@ jobs:
             printf 'routing assertion passed for %s: %s\n' "$name" "$actual"
           }
 
-          assert_route 'docs and decorative brand assets' $'assets/brand/mascot.png\ndocs/guide.md\nREADME.md' false 'workflow=false rust=false npm=false'
-          assert_route 'GitHub workflow edits' '.github/workflows/ci.yml' false 'workflow=true rust=false npm=false'
-          assert_route 'GitHub metadata edits' '.github/PULL_REQUEST_TEMPLATE.md' false 'workflow=false rust=false npm=false'
-          assert_route 'Rust workspace edits' 'crates/tfy-cli/src/main.rs' false 'workflow=false rust=true npm=false'
-          assert_route 'npm package edits' 'npm/tfy-cli/README.md' false 'workflow=false rust=false npm=true'
-          assert_route 'script edits' 'scripts/npm-preview-smoke.js' false 'workflow=false rust=true npm=true'
-          assert_route 'unknown root image edits' 'image.svg' false 'workflow=false rust=true npm=true'
-          assert_route 'uncertain new branch push' 'assets/brand/mascot.png' true 'workflow=false rust=true npm=true'
+          assert_route 'inert docs and decorative brand assets' $'assets/brand/mascot.png\ndocs/guide.md\nAGENTS.md' false 'workflow=false claim_docs=false rust=false npm=false'
+          assert_route 'claim-bearing docs and matrices' $'docs/COMMAND_SUPPORT_MATRIX.md\ndocs/command-support-matrix.json\nREADME.md' false 'workflow=false claim_docs=true rust=false npm=false'
+          assert_route 'GitHub workflow edits' '.github/workflows/ci.yml' false 'workflow=true claim_docs=false rust=false npm=false'
+          assert_route 'GitHub metadata edits' '.github/PULL_REQUEST_TEMPLATE.md' false 'workflow=false claim_docs=false rust=false npm=false'
+          assert_route 'Rust workspace edits' 'crates/tfy-cli/src/main.rs' false 'workflow=false claim_docs=false rust=true npm=false'
+          assert_route 'npm package edits' 'npm/tfy-cli/README.md' false 'workflow=false claim_docs=false rust=false npm=true'
+          assert_route 'release metadata helper edits' 'scripts/check-release-version.js' false 'workflow=false claim_docs=false rust=false npm=true'
+          assert_route 'claim validator edits' 'scripts/validate-command-support-matrix.js' false 'workflow=false claim_docs=true rust=false npm=false'
+          assert_route 'verify script edits' 'scripts/verify.sh' false 'workflow=false claim_docs=true rust=true npm=true'
+          assert_route 'script edits' 'scripts/npm-preview-smoke.js' false 'workflow=false claim_docs=false rust=true npm=true'
+          assert_route 'unknown root image edits' 'image.svg' false 'workflow=false claim_docs=false rust=true npm=true'
+          assert_route 'uncertain new branch push' 'assets/brand/mascot.png' true 'workflow=false claim_docs=true rust=true npm=true'
 
   rust:
     runs-on: ubuntu-latest
@@ -231,16 +290,18 @@ jobs:
   ci-required:
     runs-on: ubuntu-latest
     if: ${{ always() }}
-    needs: [changes, docs-check, workflow-check, rust, npm-preview-smoke]
+    needs: [changes, docs-check, claim-docs-check, workflow-check, rust, npm-preview-smoke]
     steps:
       - name: Check required CI results
         shell: bash
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           DOCS_CHECK_RESULT: ${{ needs.docs-check.result }}
+          CLAIM_DOCS_RESULT: ${{ needs.claim-docs-check.result }}
           WORKFLOW_RESULT: ${{ needs.workflow-check.result }}
           RUST_RESULT: ${{ needs.rust.result }}
           NPM_RESULT: ${{ needs.npm-preview-smoke.result }}
+          CLAIM_DOCS_REQUIRED: ${{ needs.changes.outputs.claim_docs_required }}
           WORKFLOW_REQUIRED: ${{ needs.changes.outputs.workflow_required }}
           RUST_REQUIRED: ${{ needs.changes.outputs.rust_required }}
           NPM_REQUIRED: ${{ needs.changes.outputs.npm_required }}
@@ -253,6 +314,16 @@ jobs:
           fi
           if [ "$DOCS_CHECK_RESULT" != "success" ]; then
             echo "docs-check job did not succeed: $DOCS_CHECK_RESULT" >&2
+            exit 1
+          fi
+
+          if [ "$CLAIM_DOCS_REQUIRED" = "true" ]; then
+            if [ "$CLAIM_DOCS_RESULT" != "success" ]; then
+              echo "claim-docs-check required but result was $CLAIM_DOCS_RESULT" >&2
+              exit 1
+            fi
+          elif [ "$CLAIM_DOCS_RESULT" != "skipped" ]; then
+            echo "claim-docs-check should be skipped but result was $CLAIM_DOCS_RESULT" >&2
             exit 1
           fi
 
@@ -286,4 +357,4 @@ jobs:
             exit 1
           fi
 
-          echo "ci-required passed; workflow_required=$WORKFLOW_REQUIRED rust_required=$RUST_REQUIRED npm_required=$NPM_REQUIRED"
+          echo "ci-required passed; claim_docs_required=$CLAIM_DOCS_REQUIRED workflow_required=$WORKFLOW_REQUIRED rust_required=$RUST_REQUIRED npm_required=$NPM_REQUIRED"
