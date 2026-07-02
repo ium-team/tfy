@@ -64,12 +64,12 @@ Provider/API prompt proxying, private Codex hook interception, universal termina
 
 ## Command-output superiority benchmark gate
 
-TFY may use RTK-style command-output reduction as an internal comparison lane, but public
+TFY may use external command-output baselines as internal comparison lanes, but public
 superiority claims require a reproducible benchmark manifest. The manifest must record:
 
 - fixture corpus path and command families covered
 - TFY version/commit
-- baseline mode and, when executable, RTK version/mode
+- baseline identity and mode when used
 - byte-count method and token estimate method
 - correctness rubric for retained actionable failures
 - redaction checks
@@ -88,15 +88,15 @@ Passing the internal command-output gate means:
 - redaction happens before public passthrough or summary text
 - missed-evidence rate is no worse than baseline
 
-Until that manifest exists and passes, docs may say TFY is **designed to benchmark against
-RTK-overlapping command-output workflows**, not that TFY publicly surpasses RTK.
+Until that manifest exists and passes, docs may say TFY is **designed for
+command-output benchmark workflows against external baselines**, not that TFY publicly surpasses an external baseline.
 
 
 ## Command support matrix claim gate
 
-Command-family support claims are driven by `docs/command-support-matrix.json` and validated by `scripts/validate-command-support-matrix.js`. A row may be described publicly as RTK-overlap coverage only until it has all of the following: TFY implementation, fixture evidence, failure-evidence retention, no-negative evidence, raw recovery, required redaction evidence, route evidence, and a matching benchmark-manifest measurement. Human auto-wrapping is a separate claim and requires `human_auto_wrapped=true` plus `interactive_risk=none`.
+Command-family support claims are driven by `docs/command-support-matrix.json` and validated by `scripts/validate-command-support-matrix.js`. A row may be described publicly as TFY command support only when it has the relevant evidence:  TFY implementation, fixture evidence, failure-evidence retention, no-negative evidence, raw recovery, required redaction evidence, route evidence, and a matching benchmark-manifest measurement. Human auto-wrapping is a separate claim and requires `human_auto_wrapped=true` plus `interactive_risk=none`.
 
-The provenance decision for RTK-informed command coverage lives at `docs/decisions/rtk-filter-provenance.md`; do not copy, translate, or import RTK filter behavior without satisfying that decision and attribution/notice review.
+Do not copy, translate, or import third-party filter behavior without an explicit provenance and attribution review.
 
 ## Documentation gate
 

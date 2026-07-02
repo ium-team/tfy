@@ -38,7 +38,7 @@ This document specializes the final architecture for command, shell, test, CI, G
 
 ## Implemented P0 command-family filters
 
-The Tool Gateway now assigns a stable `command_family` in the shared command-output path and uses fixture-driven summaries for the RTK-overlapping P0 families:
+The Tool Gateway now assigns a stable `command_family` in the shared command-output path and uses fixture-driven summaries for the TFY P0 command families:
 
 - `git_status`, `git_diff`, `git_log`
 - `gh_pr_checks`
@@ -48,8 +48,8 @@ The Tool Gateway now assigns a stable `command_family` in the shared command-out
 
 Every family summary still passes through the no-negative-savings selector: TFY emits the family summary only when it is smaller than redacted public raw output, or emits a recoverable suppression notice for unsafe/binary-ish output. Raw bytes are stored first in all cases. Unsupported or low-confidence commands remain on the generic path and may pass through redacted raw output; broad package build scripts such as `npm run build`, `pnpm build`, and `yarn build` are intentionally not classified as P0 families.
 
-Internal RTK-overlap comparisons must use a reproducible benchmark manifest before any public
-superiority claim: fixture corpus, TFY version, RTK version/mode when executable, measurement
+Internal external comparisons must use a reproducible benchmark manifest before any public
+superiority claim: fixture corpus, TFY version, external baseline mode when used, measurement
 method, correctness rubric, redaction/raw-recovery checks, missed-evidence classifications, and
 latency/overhead evidence.
 
@@ -61,9 +61,9 @@ TFY now also ships a built-in-only declarative filter path for predictable line-
 
 Cloud/infra and possible-interactive families are not human auto-wrapped by default. Every built-in DSL family still produces only a candidate; the shared no-negative selector decides whether model-visible output is the DSL summary, redacted raw text, or a suppressed raw-ref notice.
 
-## RTK-overlap support matrix
+## Command support matrix
 
-RTK-informed command coverage is tracked in `docs/command-support-matrix.json` with a readable overview in `docs/COMMAND_SUPPORT_MATRIX.md`. The matrix separates mapped targets, implemented TFY P0 families, fixture-verified families, human auto-wrapped families, and benchmark-manifest-backed comparison claims. `docs/decisions/rtk-filter-provenance.md` is the source-of-truth decision for how RTK can be used as a coverage reference without silently copying filter content.
+TFY-owned command coverage is tracked in `docs/command-support-matrix.json` with a readable overview in `docs/COMMAND_SUPPORT_MATRIX.md`. The matrix separates implemented TFY P0 families, fixture-verified families, human auto-wrapped families, and benchmark-manifest-backed comparison claims.
 
 Run `node scripts/validate-command-support-matrix.js` before updating public command-support wording.
 

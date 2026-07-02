@@ -18,7 +18,7 @@ semantic code + project docs + commands + CI + Git/GitHub + task state + patches
 
 - not only a code minifier
 - not only command-output compression
-- not an RTK fork
+- not a narrow command-output-only tool
 - not a provider-specific prompt-cache wrapper
 - not a lossy summarizer that hides evidence
 - not a phased MVP narrative

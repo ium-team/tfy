@@ -6,7 +6,7 @@ A support-matrix row may not set `parity_claim_eligible=true` unless the benchma
 
 - command family and fixture id;
 - TFY commit and mode;
-- RTK commit/mode when executable, or an explicit non-executable reason;
+- external baseline identity/mode when used, or an explicit no-baseline reason;
 - raw bytes, redacted raw bytes, model-visible bytes, and saved bytes;
 - no-negative selector result;
 - raw recovery result;

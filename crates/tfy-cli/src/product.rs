@@ -285,9 +285,6 @@ pub(crate) struct RawCmd {
 pub(crate) struct BenchCmd {
     #[arg(long)]
     pub json: bool,
-    /// Optional RTK executable/path. If unavailable, TFY emits a self-benchmark only.
-    #[arg(long)]
-    pub rtk: Option<PathBuf>,
     #[arg(long, default_value = ".tfy/bench/raw")]
     pub raw_dir: PathBuf,
     /// Optional path to write the reproducible benchmark manifest JSON.
@@ -971,7 +968,6 @@ struct BenchmarkManifest {
     generated_by: String,
     scenarios: Vec<BenchmarkScenario>,
     tfy_self_benchmark: BenchmarkSummary,
-    rtk_comparator: RtkComparatorReport,
     public_superiority_claim_ready: bool,
     claim_policy: String,
 }
@@ -995,14 +991,6 @@ struct BenchmarkSummary {
     saved_bytes: isize,
     no_negative_savings: bool,
     positive_savings: bool,
-}
-
-#[derive(Serialize)]
-struct RtkComparatorReport {
-    status: String,
-    executable: Option<String>,
-    reason: String,
-    required_for_public_superiority_claim: Vec<String>,
 }
 
 fn now_stamp() -> String {
@@ -2173,7 +2161,6 @@ pub(crate) fn execute_bench(cmd: BenchCmd) -> Result<()> {
             manifest.tfy_self_benchmark.saved_bytes,
             manifest.tfy_self_benchmark.no_negative_savings
         );
-        println!("rtk_comparator={}", manifest.rtk_comparator.status);
         println!(
             "public_superiority_claim_ready={}",
             manifest.public_superiority_claim_ready
@@ -3752,24 +3739,6 @@ fn build_benchmark_manifest(cmd: &BenchCmd) -> Result<BenchmarkManifest> {
         .iter()
         .all(|scenario| scenario.no_negative_savings);
     let positive_savings = scenarios.iter().any(|scenario| scenario.saved_bytes > 0);
-    let rtk_available = cmd.rtk.as_ref().is_some_and(|path| path.is_file());
-    let rtk_comparator = if rtk_available {
-        RtkComparatorReport {
-            status: "configured_unrun".into(),
-            executable: cmd.rtk.as_ref().map(|path| path.display().to_string()),
-            reason: "RTK executable was supplied; TFY records comparator availability but does not publish superiority without an explicit reviewed comparator run manifest".into(),
-            required_for_public_superiority_claim: superiority_requirements(),
-        }
-    } else {
-        RtkComparatorReport {
-            status: "skipped_unavailable".into(),
-            executable: cmd.rtk.as_ref().map(|path| path.display().to_string()),
-            reason:
-                "RTK executable/path not supplied or unavailable; emitted TFY self-benchmark only"
-                    .into(),
-            required_for_public_superiority_claim: superiority_requirements(),
-        }
-    };
     Ok(BenchmarkManifest {
         status: if no_negative_savings && positive_savings { "pass" } else { "blocked" }.into(),
         generated_by: format!("tfy {}", env!("CARGO_PKG_VERSION")),
@@ -3782,21 +3751,9 @@ fn build_benchmark_manifest(cmd: &BenchCmd) -> Result<BenchmarkManifest> {
             no_negative_savings,
             positive_savings,
         },
-        rtk_comparator,
         public_superiority_claim_ready: false,
-        claim_policy: "Public RTK superiority claim fails closed unless a reviewed manifest records RTK version/mode/corpus, reproducibility, correctness/no-lost-evidence proof, and overhead comparison.".into(),
+        claim_policy: "Public external superiority claims fail closed unless a reviewed benchmark manifest records baseline, corpus, reproducibility, correctness/no-lost-evidence proof, and overhead comparison.".into(),
     })
-}
-
-fn superiority_requirements() -> Vec<String> {
-    vec![
-        "RTK comparator executable and version".into(),
-        "fixed corpus and command list".into(),
-        "reproducible manifest".into(),
-        "correctness/no-lost-evidence proof".into(),
-        "overhead comparison".into(),
-        "independent review approval before publication".into(),
-    ]
 }
 
 fn selected_targets(project: bool, global: bool) -> Vec<ScopeTarget> {
@@ -5444,7 +5401,7 @@ fn build_release_tier_report(
         (ga_ready.status == "ready", "ga_ready is blocked"),
         (
             false,
-            "RTK comparator manifest with version/mode/corpus/reproducibility is not attached",
+            "external baseline manifest with baseline/corpus/reproducibility is not attached",
         ),
         (
             false,
@@ -5459,7 +5416,8 @@ fn build_release_tier_report(
         }
         .into(),
         evidence: vec![
-            "Public RTK superiority claims fail closed without reviewed comparator manifest".into(),
+            "Public external superiority claims fail closed without reviewed benchmark manifest"
+                .into(),
         ],
         blockers: superiority_blockers,
     };

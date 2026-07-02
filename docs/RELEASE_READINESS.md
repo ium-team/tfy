@@ -7,7 +7,7 @@ TFY release claims are evidence-gated. Developer Preview and RC are separate gat
 - `developer_preview_ready`: `cargo install`/release build verified, npm preview install smoke passes when the npm channel is in scope, GitHub Release archive/checksum evidence exists, first-success quickstart passes, required routes (`generic_shell`, `tfy_agent_adapter`, `mcp_stdio`) reach `launch_supported`, raw lifecycle commands work, a TFY benchmark manifest exists, and unsupported claim audit passes.
 - `rc_ready`: developer preview ready plus archive/checksum dry-run, docs/demo/release notes complete, independent reviews approved, and PR/CI green.
 - `ga_ready`: RC ready plus at least one named AI host real invocation with route-bound ledger/raw/no-negative/positive-savings evidence and a reproducible named-host demo.
-- `public_superiority_claim_ready`: GA/RC plus reviewed RTK comparator manifest with version, mode, corpus, reproducibility, correctness/no-lost-evidence proof, and overhead comparison.
+- `public_superiority_claim_ready`: GA/RC plus reviewed external benchmark manifest with baseline, corpus, reproducibility, correctness/no-lost-evidence proof, and overhead comparison.
 
 ## Commands
 
@@ -119,4 +119,4 @@ Raw evidence is local and recoverable:
 
 ## Claim boundaries
 
-Do not claim provider/API prompt proxying, private Codex hook interception, universal terminal interception, editor auto-hook integration, named-host launch support, or RTK superiority unless the matching launch-report/benchmark evidence gate passes.
+Do not claim provider/API prompt proxying, private Codex hook interception, universal terminal interception, editor auto-hook integration, named-host launch support, or external superiority unless the matching launch-report/benchmark evidence gate passes.

@@ -94,7 +94,7 @@ enum Cmd {
     Explain(ExplainCmd),
     /// Report launch-readiness evidence, blockers, host readiness matrix, and measured savings.
     LaunchReport(LaunchReportCmd),
-    /// Generate deterministic benchmark manifests and optional RTK-safe comparator results.
+    /// Generate deterministic self-benchmark manifests and comparison-gated claim evidence.
     Bench(BenchCmd),
     /// Start TFY lifecycle intent in this project. Bare interactive command opens a target TUI wizard.
     Start(StartCmd),

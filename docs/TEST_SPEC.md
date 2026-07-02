@@ -100,7 +100,7 @@ A release-ready method passes only when:
 - Docs describe the final architecture directly, not 1st/2nd/3rd phases.
 - README and all public docs under `docs/*.md` align with the method registry.
 - Provider/model cache behavior is optional adapter behavior.
-- No public doc frames TFY as only a code minifier, only an RTK-style command-output filter, or a phased MVP.
+- No public doc frames TFY as only a code minifier, only a command-output filter, or a phased MVP.
 - Specialized docs link back to canonical architecture.
 
 
