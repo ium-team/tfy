@@ -1,7 +1,7 @@
 use crate::human::{
     default_human_shell_name, enable_human_auto_activate_repo,
     execute_human_auto_activate_install_setup, execute_human_auto_activate_uninstall_setup,
-    execute_human_shell, human_auto_script_relative_path,
+    execute_human_shell, human_auto_activate_hook_status, human_auto_script_relative_path,
     human_managed_session_supported_on_this_platform, human_shells_supported_on_this_platform,
 };
 use crate::util::{print_json, stable_id};
@@ -1296,6 +1296,93 @@ fn confirm_fuckyou(yes: bool) -> Result<()> {
     }
 }
 
+fn selection_cancelled(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains("selection cancelled"))
+}
+
+fn offer_human_auto_activate_hook_install(shell: &str) -> Result<()> {
+    let hook_status = match human_auto_activate_hook_status(shell, None) {
+        Ok(status) => status,
+        Err(err) => {
+            println!(
+                "human_auto_activation_hook=status_unavailable install_prompt=false reason={} next_action=\"tfy setup --human --apply\"",
+                err
+            );
+            return Ok(());
+        }
+    };
+    if hook_status.marker_block_present {
+        println!(
+            "human_auto_activation_hook=already_installed marker_block_present=true selected_rcfile.path={} shell={} install_prompt=false",
+            hook_status.rcfile.display(),
+            hook_status.shell
+        );
+        return Ok(());
+    }
+
+    println!(
+        "human_auto_activation_hook=missing marker_block_present=false selected_rcfile.path={} shell={} install_prompt=true",
+        hook_status.rcfile.display(),
+        hook_status.shell
+    );
+    let mut install = false;
+    let mut prompt_resolved = false;
+    if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        let title = format!(
+            "TFY human: install one-time {} hook for future shells?",
+            hook_status.shell
+        );
+        let choices = ["No, skip for now", "Yes, install one-time shell hook"];
+        match prompt_menu_tui(&title, &choices) {
+            Ok(1) => {
+                install = true;
+                prompt_resolved = true;
+            }
+            Ok(_) => {
+                prompt_resolved = true;
+            }
+            Err(err) if raw_terminal_unavailable(&err) => {
+                eprintln!(
+                    "TFY human hook prompt: TUI unavailable ({err}); falling back to line prompt"
+                );
+            }
+            Err(err) if selection_cancelled(&err) => {
+                prompt_resolved = true;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    if !prompt_resolved && std::io::stdin().is_terminal() {
+        eprintln!(
+            "TFY human: install one-time {} hook for future shells? [y/N]",
+            hook_status.shell
+        );
+        let input = read_lifecycle_prompt_input()?;
+        install = input
+            .lines()
+            .map(|line| line.trim().to_ascii_lowercase())
+            .any(|line| line == "y" || line == "yes");
+    }
+
+    if install {
+        execute_human_auto_activate_install_setup(shell, None, false, true)
+            .context("install TFY human one-time auto-activate hook")?;
+        println!(
+            "human_auto_activation_hook=installed marker_block_present=true selected_rcfile.path={} shell={}",
+            hook_status.rcfile.display(),
+            hook_status.shell
+        );
+    } else {
+        println!(
+            "human_auto_activation_hook=skipped marker_block_present=false selected_rcfile.path={} shell={} next_action=\"tfy setup --human --apply\"",
+            hook_status.rcfile.display(),
+            hook_status.shell
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn prompt_menu_tui(title: &str, choices: &[&str]) -> Result<usize> {
     let mut selected = 0usize;
     let mut stderr = std::io::stderr();
@@ -1857,6 +1944,9 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         }
         if human_managed_session_available() {
             if project_human_only && interactive_terminal && !cmd.auto_activate {
+                if human_auto_activation_root.is_some() {
+                    offer_human_auto_activate_hook_install(&selected_human_shell)?;
+                }
                 println!("human route_state=managed_session_starting active=false support_status=managed_session_available ordinary_terminal_interception=false managed_session_interception=true managed_session_available=true managed_session_scope_root={} managed_session_entrypoint=\"tfy start --human\"", std::env::current_dir()?.display());
                 println!("ordinary terminals outside this TFY-managed session are not globally intercepted; the supported platform shell now enters a current-directory-scoped managed human session from `tfy start --human`. Use `tfy human shell --no-auto-intercept` for a managed shell without PATH/proxy routing, `tfy shell <command>` for raw passthrough, or `tfy shell -- <command>` / `tfy tool-gateway -- <command>` for explicit one-off gateway wrapping.");
                 return execute_human_shell(

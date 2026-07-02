@@ -661,26 +661,23 @@ fn human_auto_activate_rejects_both_target_before_agent_mutation() {
     assert!(!dir.path().join(".tfy/lifecycle.json").exists());
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "macos")]
 #[test]
-fn interactive_plain_human_start_creates_repo_auto_activation_marker_by_default() {
+fn interactive_plain_human_start_defaults_to_not_installing_zsh_hook_on_macos() {
     use std::fs;
 
     let dir = tempfile::tempdir().unwrap();
-    let inner = format!("{} start --human", env!("CARGO_BIN_EXE_tfy"));
-    let command = format!(
-        "printf 'exit\n' | script -q -e -c {} /dev/null",
-        shell_escape_for_test(&inner)
-    );
-    let output = Command::new("sh")
-        .current_dir(dir.path())
-        .arg("-c")
-        .arg(&command)
-        .output()
-        .unwrap();
+    let home = dir.path().join("home");
+    let zdotdir = dir.path().join("zdotdir");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&zdotdir).unwrap();
+    let rcfile = zdotdir.join(".zshrc");
+    fs::write(&rcfile, "# user rc\n").unwrap();
+
+    let output = run_macos_scripted_human_start(&dir, "\r", &zdotdir, &home);
     assert!(
         output.status.success(),
-        "command={command} stdout={} stderr={}",
+        "stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -689,17 +686,123 @@ fn interactive_plain_human_start_creates_repo_auto_activation_marker_by_default(
         stdout.contains("human_auto_activation repo_marker.enabled=true"),
         "{stdout}"
     );
-    assert!(stdout.contains("tfy setup --human --apply"), "{stdout}");
+    assert!(
+        stdout.contains("human_auto_activation_hook=missing"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("human_auto_activation_hook=skipped"),
+        "{stdout}"
+    );
     assert!(stdout.contains("managed_session_starting"), "{stdout}");
+    assert_eq!(fs::read_to_string(&rcfile).unwrap(), "# user rc\n");
     assert!(dir.path().join(".tfy/human/auto-activate.json").exists());
-    assert!(dir.path().join(".tfy/human/auto-activate.bash").exists());
+    assert!(dir.path().join(".tfy/human/auto-activate.zsh").exists());
+}
 
-    let marker: serde_json::Value = serde_json::from_slice(
-        &fs::read(dir.path().join(".tfy/human/auto-activate.json")).unwrap(),
+#[cfg(target_os = "macos")]
+#[test]
+fn interactive_plain_human_start_can_install_one_time_zsh_hook_on_macos() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let zdotdir = dir.path().join("zdotdir");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&zdotdir).unwrap();
+    let rcfile = zdotdir.join(".zshrc");
+    fs::write(&rcfile, "# user rc\n").unwrap();
+
+    let output = run_macos_scripted_human_start(&dir, "j\r", &zdotdir, &home);
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("human_auto_activation_hook=installed"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("managed_session_starting"), "{stdout}");
+    let rc_text = fs::read_to_string(&rcfile).unwrap();
+    assert!(
+        rc_text.contains("TFY:HUMAN-AUTO-ACTIVATE:START"),
+        "{rc_text}"
+    );
+    assert!(rc_text.contains("--shell zsh"), "{rc_text}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn interactive_plain_human_start_skips_prompt_when_zsh_hook_exists_on_macos() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let zdotdir = dir.path().join("zdotdir");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&zdotdir).unwrap();
+    let rcfile = zdotdir.join(".zshrc");
+    fs::write(
+        &rcfile,
+        "# user rc\n# TFY:HUMAN-AUTO-ACTIVATE:START\n# existing TFY block\n# TFY:HUMAN-AUTO-ACTIVATE:END\n",
     )
     .unwrap();
-    assert_eq!(marker["enabled"], true);
-    assert_eq!(marker["created_by"], "tfy start --human");
+
+    let output = run_macos_scripted_human_start(&dir, "", &zdotdir, &home);
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("human_auto_activation_hook=already_installed"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("install_prompt=true"), "{stdout}");
+    assert!(
+        !stdout.contains("human_auto_activation_hook=skipped"),
+        "{stdout}"
+    );
+    assert_eq!(
+        fs::read_to_string(&rcfile)
+            .unwrap()
+            .matches("TFY:HUMAN-AUTO-ACTIVATE:START")
+            .count(),
+        1
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn interactive_plain_human_start_cancel_keeps_zsh_hook_unmodified_on_macos() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let zdotdir = dir.path().join("zdotdir");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&zdotdir).unwrap();
+    let rcfile = zdotdir.join(".zshrc");
+    fs::write(&rcfile, "# user rc\n").unwrap();
+
+    let output = run_macos_scripted_human_start(&dir, "q", &zdotdir, &home);
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("human_auto_activation_hook=skipped"),
+        "{stdout}"
+    );
+    assert_eq!(fs::read_to_string(&rcfile).unwrap(), "# user rc\n");
 }
 
 #[cfg(target_os = "linux")]
@@ -955,6 +1058,46 @@ fn human_auto_activate_rejects_self_certifying_or_symlinked_state() {
     assert!(!fs::read_to_string(&rcfile)
         .unwrap()
         .contains("TFY:HUMAN-AUTO-ACTIVATE"));
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_scripted_human_start(
+    dir: &tempfile::TempDir,
+    input: &str,
+    zdotdir: &std::path::Path,
+    home: &std::path::Path,
+) -> std::process::Output {
+    let script = dir.path().join("run-start-human.expect");
+    std::fs::write(
+        &script,
+        r#"set timeout 20
+set input [lindex $argv 0]
+set zdotdir [lindex $argv 1]
+set home [lindex $argv 2]
+set tfy [lindex $argv 3]
+spawn env ZDOTDIR=$zdotdir HOME=$home $tfy start --human
+send -- $input
+expect {
+    "managed_session_starting" {}
+    timeout { exit 124 }
+}
+send -- "exit\r"
+expect eof
+set wait_result [wait]
+exit [lindex $wait_result 3]
+"#,
+    )
+    .unwrap();
+    Command::new("expect")
+        .current_dir(dir.path())
+        .arg("-f")
+        .arg(script)
+        .arg(input)
+        .arg(zdotdir)
+        .arg(home)
+        .arg(env!("CARGO_BIN_EXE_tfy"))
+        .output()
+        .unwrap()
 }
 
 #[cfg(target_os = "linux")]
