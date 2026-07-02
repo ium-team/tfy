@@ -43,6 +43,7 @@ jobs:
       prerelease: ${{ steps.metadata.outputs.prerelease }}
       npm_dist_tag: ${{ steps.metadata.outputs.npm_dist_tag }}
       target_sha: ${{ steps.ref.outputs.target_sha }}
+      release_tools_sha: ${{ steps.tools.outputs.release_tools_sha }}
     steps:
       - name: Resolve and validate source ref default
         id: defaults
@@ -62,6 +63,7 @@ jobs:
             fi
           fi
 
+          # shellcheck disable=SC1083 # @{ is literal ref-syntax rejection, not shell expansion.
           if [[ ! "$source_ref" =~ ^(main|develop|release/[A-Za-z0-9._/-]+)$ ]] || [[ "$source_ref" == *..* ]] || [[ "$source_ref" == *//* ]] || [[ "$source_ref" == */ ]] || [[ "$source_ref" == *@{* ]]; then
             echo "source_ref contains unsupported characters or ref syntax" >&2
             exit 1
@@ -89,6 +91,11 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: release-tools
+
+      - name: Pin trusted release tooling revision
+        id: tools
+        shell: bash
+        run: printf 'release_tools_sha=%s\n' "$(git -C release-tools rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout release source ref
         uses: actions/checkout@v4
@@ -166,7 +173,7 @@ jobs:
       - name: Checkout trusted release tooling
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.preflight.outputs.release_tools_sha }}
           path: release-tools
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -175,8 +182,6 @@ jobs:
           node-version: '20'
       - name: Full local gate
         run: ./scripts/verify.sh
-      - name: NPM helper tests
-        run: npm test --prefix npm/tfy-cli
 
   build:
     name: Build ${{ matrix.rust_target }}
@@ -202,7 +207,7 @@ jobs:
       - name: Checkout trusted release tooling
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.preflight.outputs.release_tools_sha }}
           path: release-tools
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -251,7 +256,7 @@ jobs:
       - name: Checkout trusted release tooling
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.preflight.outputs.release_tools_sha }}
           path: release-tools
       - uses: actions/setup-node@v4
         with:
@@ -302,6 +307,7 @@ jobs:
           npm dist-tag: ${{ needs.preflight.outputs.npm_dist_tag }}
           Source ref: ${{ needs.preflight.outputs.source_ref }}
           Target commit: ${{ needs.preflight.outputs.target_sha }}
+          Release tooling commit: ${{ needs.preflight.outputs.release_tools_sha }}
 
           This release provides GitHub Release archives and SHA-256 checksums for the npm installer. It does not change TFY claim boundaries: host launch support and token-saving claims still require route-bound evidence.
           EOF_NOTES
@@ -345,6 +351,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.preflight.outputs.target_sha }}
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.release_tools_sha }}
+          path: release-tools
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -352,14 +363,17 @@ jobs:
       - name: Verify npm Trusted Publishing runtime
         run: |
           set -euo pipefail
+          # shellcheck disable=SC2016 # JavaScript template expressions must be passed literally to node.
           node -e 'const [major] = process.versions.node.split(".").map(Number); if (major < 24) throw new Error(`Node ${process.versions.node} is too old for npm Trusted Publishing`); console.log(`node ${process.versions.node}`);'
           NPM_VERSION="$(npm --version)"
           export NPM_VERSION
+          # shellcheck disable=SC2016 # JavaScript template expressions must be passed literally to node.
           node -e 'const version = process.env.NPM_VERSION.split(".").map(Number); const min = [11, 5, 1]; for (let i = 0; i < min.length; i += 1) { if (version[i] > min[i]) break; if (version[i] < min[i]) throw new Error(`npm ${process.env.NPM_VERSION} is too old for npm Trusted Publishing`); } console.log(`npm ${process.env.NPM_VERSION}`);'
       - name: Print npm publish plan
         run: |
           set -euo pipefail
-          node scripts/npm-publish-plan.js \
+          node release-tools/scripts/npm-publish-plan.js \
+            --root "$GITHUB_WORKSPACE" \
             --version "${{ needs.preflight.outputs.version }}" \
             --channel "${{ inputs.channel }}" \
             --source-ref "${{ needs.preflight.outputs.source_ref }}"
@@ -373,7 +387,7 @@ jobs:
         run: |
           set -euo pipefail
           args=(
-            node scripts/npm-dist-tag-check.js
+            node release-tools/scripts/npm-dist-tag-check.js
             --version "${{ needs.preflight.outputs.version }}"
             --channel "${{ inputs.channel }}"
           )

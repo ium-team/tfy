@@ -141,9 +141,11 @@ Not-tested: Branch protection settings were not changed through GitHub admin API
 
 ## CI branch-protection target
 
-The CI workflow uses path-aware heavy-job skipping for docs and inert static assets. If branch protection is enabled, require the stable aggregate `ci-required` check rather than optional `rust` or `npm preview smoke (...)` jobs, because those heavy jobs intentionally skip for docs/static asset-only changes.
+The CI workflow uses path-aware heavy-job skipping for inert docs and static assets. If branch protection is enabled, require the stable aggregate `ci-required` check rather than optional lane jobs such as `rust`, `claim-docs-check`, or `npm preview smoke (...)`, because those jobs intentionally skip when their lane is not required.
 
-Do not require skipped optional heavy jobs directly unless the CI workflow is changed to make them always emit required statuses.
+Claim-bearing docs and matrices, such as command-support matrix files and public claim docs, are not treated as inert docs: CI routes them through the lightweight `claim-docs-check` lane (`node scripts/validate-command-support-matrix.js`) without forcing Rust or npm heavy lanes unless another changed path requires them.
+
+Do not require skipped optional lane jobs directly unless the CI workflow is changed to make them always emit required statuses.
 
 `assets/brand/**` is reserved for decorative brand artwork and other non-runtime identity assets. Do not place packaged runtime assets, test fixtures, release inputs, generated config, or behavior-affecting files there; use the appropriate code/package/test directory so CI routing can require Rust or npm validation.
 
