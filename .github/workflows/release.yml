@@ -63,6 +63,7 @@ jobs:
             fi
           fi
 
+          # shellcheck disable=SC1083 # @{ is literal ref-syntax rejection, not shell expansion.
           if [[ ! "$source_ref" =~ ^(main|develop|release/[A-Za-z0-9._/-]+)$ ]] || [[ "$source_ref" == *..* ]] || [[ "$source_ref" == *//* ]] || [[ "$source_ref" == */ ]] || [[ "$source_ref" == *@{* ]]; then
             echo "source_ref contains unsupported characters or ref syntax" >&2
             exit 1
@@ -362,9 +363,11 @@ jobs:
       - name: Verify npm Trusted Publishing runtime
         run: |
           set -euo pipefail
+          # shellcheck disable=SC2016 # JavaScript template expressions must be passed literally to node.
           node -e 'const [major] = process.versions.node.split(".").map(Number); if (major < 24) throw new Error(`Node ${process.versions.node} is too old for npm Trusted Publishing`); console.log(`node ${process.versions.node}`);'
           NPM_VERSION="$(npm --version)"
           export NPM_VERSION
+          # shellcheck disable=SC2016 # JavaScript template expressions must be passed literally to node.
           node -e 'const version = process.env.NPM_VERSION.split(".").map(Number); const min = [11, 5, 1]; for (let i = 0; i < min.length; i += 1) { if (version[i] > min[i]) break; if (version[i] < min[i]) throw new Error(`npm ${process.env.NPM_VERSION} is too old for npm Trusted Publishing`); } console.log(`npm ${process.env.NPM_VERSION}`);'
       - name: Print npm publish plan
         run: |
