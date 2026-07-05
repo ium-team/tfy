@@ -2,7 +2,7 @@
 
 TFY is a token-saving service for the full AI coding workflow. Its intended product use is as AI-agent I/O middleware: an agent runtime routes command execution, context injection, model outputs, and task state through TFY so the model sees compact, recoverable representations while raw/full evidence remains available.
 
-TFY is not a phased MVP, not a code minifier, and not an RTK clone. The first public shape is the final product architecture: an extensible method registry plus an agent-neutral protocol that can absorb new token-saving methods as they are discovered.
+TFY is not a phased MVP and not a code minifier. The first public shape is the final product architecture: an extensible method registry plus an agent-neutral protocol that can absorb new token-saving methods as they are discovered.
 
 ## Product contract
 
@@ -95,7 +95,6 @@ Reference/status docs:
 
 - `docs/PRODUCTION_STACK.md` — production stack expectations and current implementation status.
 - `docs/RUST_ONLY_MIGRATION.md` — Python runtime retirement record and current Rust authority-path implementation history.
-- `docs/RTK_REFERENCE.md` — RTK lessons without inheriting RTK's product boundary.
 - `docs/CONVERSATION_SUMMARY.md` — superseded discussion history and final decision summary.
 
 Repository/development harness:
@@ -333,4 +332,4 @@ done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]
 tfy "${ARGS[@]}"
 ```
 
-`tfy launch-report` now exposes release tiers (`developer_preview_ready`, `rc_ready`, `ga_ready`, `public_superiority_claim_ready`). GA and public RTK-superiority claims remain blocked unless named-host and comparator evidence gates pass.
+`tfy launch-report` now exposes release tiers (`developer_preview_ready`, `rc_ready`, `ga_ready`, `public_superiority_claim_ready`). GA and public external superiority claims remain blocked unless named-host and benchmark evidence gates pass.

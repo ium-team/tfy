@@ -109,7 +109,7 @@ Adopt the final whole-workflow token-saving architecture with an extensible meth
 
 - **Appendix-only method list:** rejected because it preserves the older narrow product center.
 - **Phased roadmap docs:** rejected because the requested docs should be final-state now.
-- **RTK-style command filter only:** rejected because TFY covers more than command output.
+- **Command filter only:** rejected because TFY covers more than command output.
 - **Provider-cache-centric product:** rejected because it would break the agent-neutral core.
 
 ### Consequences

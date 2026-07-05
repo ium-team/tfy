@@ -6,8 +6,6 @@ This file is the repo-root instruction surface for Codex and other AI coding age
 
 TFY is a Rust-first token-saving middleware for AI-agent I/O boundaries. It should reduce model-visible tokens while preserving local, recoverable evidence.
 
-Do not describe TFY as an RTK clone. RTK is a useful reference for repo discipline and command-output compression, but TFY has a broader gateway/MCP/runtime architecture.
-
 ## Non-negotiable invariants
 
 1. **Plain text by default** — model-facing command output must not default to JSON envelopes.

@@ -23,7 +23,7 @@ An authoring agent may:
 An authoring agent must not:
 
 - add script execution, shell hooks, subprocesses, or plugin code to TOML rules;
-- claim a custom rule is official TFY support or RTK parity evidence;
+- claim a custom rule is official TFY support or external-comparison evidence;
 - override built-in TFY strategies unless the user explicitly asks for a v3 `[command.override]` rule and fixture comparison proves the replacement is better; never imply `schema_version = 3` alone changes precedence;
 - mark a command `human_auto_safe = true` unless it is clearly noninteractive and low risk;
 - hide failures by stripping all error evidence;

@@ -5,7 +5,7 @@ They are an extension layer over the existing TFY command summary pipeline.
 
 ## Scope and guarantees
 
-User command rules are **local/custom support**, not official TFY command support and not RTK-comparison evidence.
+User command rules are **local/custom support**, not official TFY command support and not external-comparison evidence.
 They never bypass TFY's core invariants:
 
 1. exact raw stdout/stderr bytes are stored first;

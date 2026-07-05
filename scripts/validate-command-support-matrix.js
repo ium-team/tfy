@@ -5,7 +5,6 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const matrixPath = path.join(root, 'docs', 'command-support-matrix.json');
 const manifestPath = path.join(root, 'docs', 'command-benchmark-manifest.json');
-const provenancePath = path.join(root, 'docs', 'decisions', 'rtk-filter-provenance.md');
 
 function fail(message) {
   console.error(`command support matrix validation failed: ${message}`);
@@ -20,9 +19,6 @@ function readJson(file) {
   }
 }
 
-if (!fs.existsSync(provenancePath)) {
-  fail('docs/decisions/rtk-filter-provenance.md is required before RTK-derived filters are implemented');
-}
 
 const matrix = readJson(matrixPath);
 const manifest = readJson(manifestPath);
@@ -33,8 +29,8 @@ if (!Array.isArray(manifest.measurements)) fail('benchmark manifest measurements
 
 const required = [
   'family',
-  'rtk_source_kind',
-  'rtk_source_ref',
+  'source_kind',
+  'source_ref',
   'strategy_kind',
   'implemented',
   'fixture_verified',
@@ -72,7 +68,7 @@ const measurementRequired = [
   'fixture_id',
   'tfy_commit',
   'tfy_mode',
-  'rtk_commit_or_mode_when_executable',
+  'external_baseline_when_used',
   'raw_bytes',
   'redacted_raw_bytes',
   'model_visible_bytes',
@@ -136,19 +132,20 @@ for (const [index, row] of matrix.rows.entries()) {
 }
 
 const publicDocs = ['README.md', 'docs/TOOL_FEEDBACK.md', 'docs/EVALUATION_GATES.md', 'docs/COMMAND_SUPPORT_MATRIX.md', 'docs/COMMAND_BENCHMARK_MANIFEST.md'];
-const blockedPhrases = [/\bRTK parity\b/i, /\bRTK-parity\b/i];
+const positiveExternalComparisonClaim = /\b(public\s+)?external[-\s](comparison|superiority)\s+claims?\b/i;
+const allowedExternalComparisonContext = /\b(blocked|fail(?:s|ed)? closed|requires?|unless|until|gate|not supported|without|additionally requires|must not|may not)\b/i;
 const hasEligible = matrix.rows.some((row) => row.parity_claim_eligible);
 if (!hasEligible) {
   for (const rel of publicDocs) {
     const file = path.join(root, rel);
     if (!fs.existsSync(file)) continue;
-    const text = fs.readFileSync(file, 'utf8');
-    for (const pattern of blockedPhrases) {
-      if (pattern.test(text)) {
-        fail(`${rel} uses ${pattern} before any row is parity_claim_eligible`);
+    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+    for (const [lineIndex, line] of lines.entries()) {
+      if (positiveExternalComparisonClaim.test(line) && !allowedExternalComparisonContext.test(line)) {
+        fail(`${rel}:${lineIndex + 1} makes an ungated public external-comparison claim before any row is parity_claim_eligible`);
       }
     }
   }
 }
 
-console.log(`validated ${matrix.rows.length} command-support rows; parity-eligible rows: ${matrix.rows.filter((row) => row.parity_claim_eligible).length}`);
+console.log(`validated ${matrix.rows.length} command-support rows; comparison-eligible rows: ${matrix.rows.filter((row) => row.parity_claim_eligible).length}`);

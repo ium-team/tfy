@@ -36,4 +36,4 @@ TFY is a whole-workflow token-saving service with:
 - optional provider adapters
 - net savings and correctness evaluation gates
 
-Older narrow framings such as “code minifier,” “command-output compressor,” or “RTK clone” are superseded.
+Older narrow framings such as “code minifier” or “command-output compressor” are superseded.

@@ -2335,7 +2335,7 @@ fn raw_lifecycle_lists_inspects_exports_and_prunes_with_dry_run_gate() {
 }
 
 #[test]
-fn bench_manifest_is_self_benchmark_and_fails_closed_for_public_rtk_claim() {
+fn bench_manifest_is_self_benchmark_and_fails_closed_for_public_comparison_claim() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = dir.path().join("bench-manifest.json");
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
@@ -2357,12 +2357,11 @@ fn bench_manifest_is_self_benchmark_and_fails_closed_for_public_rtk_claim() {
     assert_eq!(json["status"], "pass", "{json}");
     assert_eq!(json["tfy_self_benchmark"]["no_negative_savings"], true);
     assert_eq!(json["tfy_self_benchmark"]["positive_savings"], true);
-    assert_eq!(json["rtk_comparator"]["status"], "skipped_unavailable");
     assert_eq!(json["public_superiority_claim_ready"], false);
     assert!(json["claim_policy"]
         .as_str()
         .unwrap()
-        .contains("fails closed"));
+        .contains("fail closed"));
     assert!(manifest_path.is_file());
 }
 

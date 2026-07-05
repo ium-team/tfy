@@ -6,7 +6,7 @@ resolver = "2"
 edition = "2021"
 version = "0.1.0"
 license = "MIT"
-repository = "https://github.com/rtk-ai/tfy"
+repository = "https://github.com/ium-team/tfy"
 
 [workspace.dependencies]
 criterion = "0.7"
