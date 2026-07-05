@@ -183,6 +183,32 @@ pub(crate) fn execute_human_auto_activate_uninstall_setup(
     })
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct HumanAutoActivateHookStatus {
+    pub(crate) shell: String,
+    pub(crate) rcfile: PathBuf,
+    pub(crate) hook_installed: bool,
+    pub(crate) marker_block_present: bool,
+}
+
+pub(crate) fn human_auto_activate_hook_status(
+    shell: &str,
+    rcfile: Option<PathBuf>,
+) -> Result<HumanAutoActivateHookStatus> {
+    let kind = ensure_supported_shell(shell)?;
+    let rcfile = rcfile.unwrap_or(home_rcfile(kind)?);
+    let marker_block_present = match fs::read_to_string(&rcfile) {
+        Ok(text) => text.contains(AUTO_START_MARKER) && text.contains(AUTO_END_MARKER),
+        Err(_) => false,
+    };
+    Ok(HumanAutoActivateHookStatus {
+        shell: kind.canonical().to_string(),
+        rcfile,
+        hook_installed: marker_block_present,
+        marker_block_present,
+    })
+}
+
 #[derive(Args)]
 pub(crate) struct HumanAutoActivateStatusCmd {
     #[arg(long, default_value = "auto")]
@@ -978,18 +1004,7 @@ fn execute_auto_activate_status(cmd: HumanAutoActivateStatusCmd) -> Result<()> {
         .as_ref()
         .map(|r| validate_auto_activate_root(r, &cmd.shell).is_ok())
         .unwrap_or(false);
-    let rcfile = cmd.rcfile.or_else(|| home_rcfile(kind).ok());
-    let (hook_installed, owned_block) = if let Some(path) = &rcfile {
-        match fs::read_to_string(path) {
-            Ok(text) => (
-                text.contains(AUTO_START_MARKER) && text.contains(AUTO_END_MARKER),
-                text.contains(AUTO_START_MARKER) && text.contains(AUTO_END_MARKER),
-            ),
-            Err(_) => (false, false),
-        }
-    } else {
-        (false, false)
-    };
+    let hook_status = human_auto_activate_hook_status(&cmd.shell, cmd.rcfile.clone()).ok();
     let active_root = std::env::var("TFY_HUMAN_ROOT").ok();
     let report = json!({
         "repo_marker": {
@@ -998,9 +1013,11 @@ fn execute_auto_activate_status(cmd: HumanAutoActivateStatusCmd) -> Result<()> {
             "valid": marker_valid
         },
         "selected_rcfile": {
-            "path": rcfile.as_ref().map(|p| p.display().to_string()),
-            "hook_installed": hook_installed,
-            "owned_block": owned_block
+            "path": hook_status.as_ref().map(|s| s.rcfile.display().to_string()),
+            "shell": hook_status.as_ref().map(|s| s.shell.clone()).unwrap_or_else(|| kind.canonical().to_string()),
+            "hook_installed": hook_status.as_ref().map(|s| s.hook_installed).unwrap_or(false),
+            "marker_block_present": hook_status.as_ref().map(|s| s.marker_block_present).unwrap_or(false),
+            "owned_block": hook_status.as_ref().map(|s| s.marker_block_present).unwrap_or(false)
         },
         "active_shell": {
             "managed": std::env::var("TFY_HUMAN_ACTIVE").ok().as_deref() == Some("1"),
@@ -1018,7 +1035,13 @@ fn execute_auto_activate_status(cmd: HumanAutoActivateStatusCmd) -> Result<()> {
             report["repo_marker"]["valid"],
             report["repo_marker"]["root"]
         );
-        println!("selected_rcfile.path={} selected_rcfile.hook_installed={} selected_rcfile.owned_block={}", report["selected_rcfile"]["path"], hook_installed, owned_block);
+        println!(
+            "selected_rcfile.path={} selected_rcfile.hook_installed={} selected_rcfile.marker_block_present={} selected_rcfile.owned_block={}",
+            report["selected_rcfile"]["path"],
+            report["selected_rcfile"]["hook_installed"],
+            report["selected_rcfile"]["marker_block_present"],
+            report["selected_rcfile"]["owned_block"]
+        );
         println!(
             "active_shell.managed={} active_shell.root={}",
             report["active_shell"]["managed"], report["active_shell"]["root"]
@@ -1359,6 +1382,9 @@ fn human_script_with_tfy_bin(
     script.push_str("tfy-human-bypass() {\n  TFY_HUMAN_BYPASS=1 PATH=\"${TFY_HUMAN_ORIGINAL_PATH:-$PATH}\" command \"$@\"\n  local status=$?\n  export TFY_LAST_STATUS=$status\n  return $status\n}\n");
     if auto_intercept {
         script.push_str(r##"export TFY_HUMAN_SHIM_DIR="${TFY_HUMAN_ROOT%/}/.tfy/human/bin"
+if [ -n "${ZSH_VERSION:-}" ]; then
+  setopt NULL_GLOB 2>/dev/null || true
+fi
 _tfy_human_strip_shim_from_path() {
   local input_path="$1"
   local old_ifs part new_path
