@@ -4464,3 +4464,247 @@ fn launch_report_accepts_unexpired_unix_evidence_and_rejects_malformed_expiry() 
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn live_host_smoke_generates_codex_launch_report_evidence_with_fake_host() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_codex = bin_dir.join("codex");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/usr/bin/env sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "codex-cli fake-live-smoke"
+  exit 0
+fi
+payload='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"for i in $(seq 1 80); do echo tfy-live-host-hook-smoke-$i; done"}}'
+out=$(printf '%s' "$payload" | ./.tfy/agent/codex-pre-tool-use)
+cmd=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["updatedInput"]["command"])')
+sh -c "$cmd"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("PATH", path)
+        .args(["smoke", "--host", "codex", "--live", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&smoke.stdout),
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
+    assert_eq!(json["status"], "pass", "{json}");
+    assert_eq!(json["mode"], "host_live", "{json}");
+    let host = &json["hosts"][0];
+    assert_eq!(host["status"], "pass", "{json}");
+    assert_eq!(host["host"], "codex", "{json}");
+    let evidence = host["host_evidence"].as_str().unwrap();
+    assert!(std::path::Path::new(evidence).is_file(), "{json}");
+
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["launch-report", "--json", "--host-evidence", evidence])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let launch: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let codex = launch["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "codex")
+        .unwrap();
+    assert_eq!(codex["status"], "launch_supported", "{launch}");
+    assert_eq!(
+        launch["host_evidence"]["named_hosts"]["codex"]["host_bound_evidence"], true,
+        "{launch}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn live_host_smoke_rejects_extra_fake_host_hook_command() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_codex = bin_dir.join("codex");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/usr/bin/env sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "codex-cli fake-live-smoke"
+  exit 0
+fi
+payload='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"for i in $(seq 1 80); do echo tfy-live-host-hook-smoke-$i; done"}}'
+out=$(printf '%s' "$payload" | ./.tfy/agent/codex-pre-tool-use)
+cmd=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["updatedInput"]["command"])')
+sh -c "$cmd"
+extra='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"for i in $(seq 1 80); do echo tfy-live-host-hook-extra-$i; done"}}'
+out=$(printf '%s' "$extra" | ./.tfy/agent/codex-pre-tool-use)
+cmd=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["updatedInput"]["command"])')
+sh -c "$cmd"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("PATH", path)
+        .args(["smoke", "--host", "codex", "--live", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        !smoke.status.success(),
+        "stdout={}",
+        String::from_utf8_lossy(&smoke.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&smoke.stderr);
+    assert!(
+        stderr.contains("expected exactly one official-host-hook command"),
+        "{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn live_host_smoke_rejects_wrong_fake_host_hook_command() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_codex = bin_dir.join("codex");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/usr/bin/env sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "codex-cli fake-live-smoke"
+  exit 0
+fi
+payload='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"for i in $(seq 1 80); do echo tfy-live-host-hook-wrong-$i; done"}}'
+out=$(printf '%s' "$payload" | ./.tfy/agent/codex-pre-tool-use)
+cmd=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["updatedInput"]["command"])')
+sh -c "$cmd"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("PATH", path)
+        .args(["smoke", "--host", "codex", "--live", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        !smoke.status.success(),
+        "stdout={}",
+        String::from_utf8_lossy(&smoke.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&smoke.stderr);
+    assert!(
+        stderr.contains("official hook command mismatch"),
+        "{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn live_host_smoke_generates_claude_code_launch_report_evidence_with_fake_host() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_claude = bin_dir.join("claude");
+    std::fs::write(
+        &fake_claude,
+        r#"#!/usr/bin/env sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "2.1.160 fake-live-smoke"
+  exit 0
+fi
+payload='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"for i in $(seq 1 80); do echo tfy-live-host-hook-smoke-$i; done"}}'
+out=$(printf '%s' "$payload" | ./.tfy/agent/claude-pre-tool-use)
+cmd=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["updatedInput"]["command"])')
+sh -c "$cmd"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("PATH", path)
+        .args(["smoke", "--host", "claude-code", "--live", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&smoke.stdout),
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
+    assert_eq!(json["status"], "pass", "{json}");
+    assert_eq!(json["mode"], "host_live", "{json}");
+    let host = &json["hosts"][0];
+    assert_eq!(host["status"], "pass", "{json}");
+    assert_eq!(host["host"], "claude-code", "{json}");
+    let evidence = host["host_evidence"].as_str().unwrap();
+    assert!(std::path::Path::new(evidence).is_file(), "{json}");
+
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["launch-report", "--json", "--host-evidence", evidence])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let launch: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let claude = launch["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "claude-code")
+        .unwrap();
+    assert_eq!(claude["status"], "launch_supported", "{launch}");
+    assert_eq!(
+        launch["host_evidence"]["named_hosts"]["claude-code"]["host_bound_evidence"], true,
+        "{launch}"
+    );
+}

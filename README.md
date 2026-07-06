@@ -290,6 +290,8 @@ tfy doctor --codex
 tfy smoke --mcp
 tfy smoke --all --json # emits adapter + agent + MCP ledger paths for launch-report evidence
 tfy smoke --codex
+tfy smoke --host codex --live --json       # opt-in live Codex CLI hook smoke; emits host_evidence when it passes
+tfy smoke --host claude-code --live --json # opt-in live Claude Code hook smoke; emits host_evidence when it passes
 tfy gain # reports no-data until command-output savings events exist
 # smoke --all emits ledger= and host_evidence= entries that can be passed to launch-report.
 tfy launch-report --all --ledger <adapter-ledger> --ledger <agent-ledger> --ledger <mcp-ledger> --host-evidence <host-evidence.json> --json

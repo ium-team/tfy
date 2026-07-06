@@ -157,6 +157,8 @@ tfy init --uninstall --codex --project --apply
 tfy doctor --codex
 tfy smoke --mcp
 tfy smoke --codex
+tfy smoke --host codex --live --json
+tfy smoke --host claude-code --live --json
 tfy setup --ai --codex --dry-run
 tfy setup --ai --host codex --apply --project
 tfy setup --ai --host claude-code --apply --project

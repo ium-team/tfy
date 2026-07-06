@@ -16,6 +16,9 @@ TFY release claims are evidence-gated. TFY is stable-first: stable is the normal
 ./scripts/release-dry-run.sh
 SMOKE_JSON=.tfy/release/smoke.json
 tfy smoke --all --json > "$SMOKE_JSON"
+# Optional named-host GA evidence, run only when installed/authenticated host CLIs are in scope:
+tfy smoke --host codex --live --json > .tfy/release/codex-live-smoke.json
+tfy smoke --host claude-code --live --json > .tfy/release/claude-live-smoke.json
 tfy raw --list --json
 ARGS=(launch-report --all --release-evidence .tfy/release/release-evidence.json --json)
 while IFS= read -r item; do

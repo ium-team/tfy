@@ -14,8 +14,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tfy_core::{raw_output_bytes, summarize_command_output_with_policy, ToolPolicy};
 use tfy_runtime::{load_events, AdapterKind, GatewayEvent, OriginInvocation};
 
@@ -81,6 +82,12 @@ pub(crate) struct SmokeCmd {
     /// Named AI-agent host checklist/smoke target.
     #[arg(long = "host")]
     pub host: Vec<String>,
+    /// Run an installed host CLI against a temporary project and emit launch-report host evidence.
+    #[arg(long)]
+    pub live: bool,
+    /// Maximum Claude Code API spend for live host smoke, when the host supports it.
+    #[arg(long, default_value = "0.50")]
+    pub max_budget_usd: String,
 }
 
 #[derive(Args, Clone)]
@@ -642,6 +649,14 @@ struct HostIntegration {
     normal_workflow: &'static str,
     launch_claim: &'static str,
     evidence_gate: &'static [&'static str],
+}
+
+#[derive(Clone, Copy)]
+struct LiveHostSmokeSpec {
+    host: &'static str,
+    binary: &'static str,
+    timeout: Duration,
+    needs_noninteractive_bypass: bool,
 }
 
 #[derive(Serialize)]
@@ -2426,12 +2441,18 @@ pub(crate) fn execute_smoke(cmd: SmokeCmd) -> Result<()> {
         let host_reports: Vec<_> = cmd
             .host
             .iter()
-            .map(|host| host_smoke_report(host))
+            .map(|host| {
+                if cmd.live {
+                    run_live_host_hook_smoke(host, &cmd.max_budget_usd)
+                } else {
+                    host_smoke_report(host)
+                }
+            })
             .collect::<Result<_>>()?;
         if cmd.json {
             print_json(&json!({
-                "status": if host_reports.iter().all(|h| h["status"] != "unsupported") {"pass"} else {"warn"},
-                "mode": "host",
+                "status": if host_reports.iter().all(|h| h["status"] == "pass" || h["status"] == "checklist") {"pass"} else {"warn"},
+                "mode": if cmd.live { "host_live" } else { "host" },
                 "hosts": host_reports
             }))?;
         } else {
@@ -3969,6 +3990,352 @@ fn host_smoke_report(host: &str) -> Result<serde_json::Value> {
     }))
 }
 
+fn live_host_smoke_spec(host: &str) -> Option<LiveHostSmokeSpec> {
+    match host {
+        "codex" => Some(LiveHostSmokeSpec {
+            host: "codex",
+            binary: "codex",
+            timeout: Duration::from_secs(180),
+            needs_noninteractive_bypass: true,
+        }),
+        "claude-code" => Some(LiveHostSmokeSpec {
+            host: "claude-code",
+            binary: "claude",
+            timeout: Duration::from_secs(180),
+            needs_noninteractive_bypass: true,
+        }),
+        _ => None,
+    }
+}
+
+fn configure_live_host_smoke_command(
+    command: &mut Command,
+    spec: LiveHostSmokeSpec,
+    prompt: &str,
+    max_budget_usd: &str,
+) {
+    match spec.host {
+        "codex" => {
+            if spec.needs_noninteractive_bypass {
+                command.args([
+                    "--dangerously-bypass-hook-trust",
+                    "--dangerously-bypass-approvals-and-sandbox",
+                ]);
+            }
+            command.args(["exec", "--skip-git-repo-check", "--json", prompt]);
+        }
+        "claude-code" => {
+            command.args(["-p"]);
+            if spec.needs_noninteractive_bypass {
+                command.args(["--permission-mode", "bypassPermissions"]);
+            }
+            command.args([
+                "--allowedTools",
+                "Bash",
+                "--include-hook-events",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--max-budget-usd",
+                max_budget_usd,
+                prompt,
+            ]);
+        }
+        _ => unreachable!("live host smoke spec exists only for supported hosts"),
+    }
+}
+
+fn run_live_host_hook_smoke(host: &str, max_budget_usd: &str) -> Result<serde_json::Value> {
+    let integration = host_integration(host)?;
+    let spec = live_host_smoke_spec(integration.id).ok_or_else(|| {
+        anyhow!(
+            "live official-hook smoke is only implemented for codex and claude-code; host '{}' uses {}",
+            integration.id,
+            integration.transport
+        )
+    })?;
+    if !host_official_hook_launch_supported(integration.id) {
+        bail!(
+            "live official-hook smoke is only implemented for codex and claude-code; host '{}' uses {}",
+            integration.id,
+            integration.transport
+        );
+    }
+    let host_version = host_version(spec.binary)
+        .with_context(|| format!("resolve installed {} version for live smoke", spec.binary))?;
+    let root = std::env::temp_dir().join(format!(
+        "tfy-live-{}-{}-{}",
+        integration.id,
+        std::process::id(),
+        stable_id(&format!("live-{}", integration.id))
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
+    fs::write(
+        root.join("README.md"),
+        "TFY live host hook smoke workspace. The host should run one Bash command only.\n",
+    )?;
+    let setup = Command::new(std::env::current_exe().context("resolve current tfy executable")?)
+        .current_dir(&root)
+        .env("CARGO_TERM_COLOR", "never")
+        .args(["start", "--agent", "--host", integration.id])
+        .output()
+        .with_context(|| format!("configure {} live smoke project", integration.id))?;
+    if !setup.status.success() {
+        bail!(
+            "live host smoke setup failed for {}: {}",
+            integration.id,
+            String::from_utf8_lossy(&setup.stderr)
+        );
+    }
+    let invocation = root.join(".tfy").join("host-smoke");
+    fs::create_dir_all(&invocation)?;
+    let stdout_path = invocation.join(format!("{}-stdout.txt", integration.id));
+    let stderr_path = invocation.join(format!("{}-stderr.txt", integration.id));
+    let command_sample = "for i in $(seq 1 80); do echo tfy-live-host-hook-smoke-$i; done";
+    let prompt = format!(
+        "In this temporary trusted smoke workspace, run exactly one Bash shell command and then stop. Do not edit files. Command: {command_sample}"
+    );
+    let baseline_start = Instant::now();
+    let baseline = Command::new("sh")
+        .current_dir(&root)
+        .args(["-c", command_sample])
+        .output()
+        .context("run live smoke baseline command")?;
+    if !baseline.status.success() {
+        bail!(
+            "baseline smoke command failed: {}",
+            String::from_utf8_lossy(&baseline.stderr)
+        );
+    }
+    let baseline_ms = millis_u64(baseline_start.elapsed());
+    let host_start = Instant::now();
+    let mut host_command = Command::new(spec.binary);
+    host_command.current_dir(&root);
+    // Live smoke is an explicit opt-in release/evidence check. Some host CLIs need
+    // noninteractive bypass flags for automation, so TFY compensates by validating
+    // the hook ledger contains exactly the intended command before emitting evidence.
+    configure_live_host_smoke_command(&mut host_command, spec, &prompt, max_budget_usd);
+    let host_output = output_with_timeout(
+        &mut host_command,
+        spec.timeout,
+        &stdout_path,
+        &stderr_path,
+        &format!("{} live hook smoke", integration.id),
+    )?;
+    let overhead_ms = millis_u64(host_start.elapsed());
+    if !host_output.status.success() {
+        bail!(
+            "live host smoke failed for {}; stdout={} stderr={}",
+            integration.id,
+            stdout_path.display(),
+            stderr_path.display()
+        );
+    }
+    let provenance_path = root.join(provenance_path(integration.id));
+    let provenance: HostConfigProvenance = serde_json::from_str(
+        &fs::read_to_string(&provenance_path)
+            .with_context(|| format!("read {}", provenance_path.display()))?,
+    )
+    .with_context(|| format!("parse {}", provenance_path.display()))?;
+    let ledger = root.join(&provenance.ledger_path);
+    let raw_dir = root.join(&provenance.raw_dir);
+    let (raw_ref, raw_bytes, model_bytes) =
+        official_hook_command_evidence(&ledger, integration.id, command_sample)
+            .with_context(|| format!("verify {} hook ledger evidence", integration.id))?;
+    let raw_artifact = raw_dir.join(format!("{raw_ref}.json"));
+    if !raw_artifact.is_file() {
+        bail!(
+            "raw artifact missing after live host smoke: {}",
+            raw_artifact.display()
+        );
+    }
+    let setup_artifact = provenance_path;
+    let config_path = root.join(&provenance.config_path);
+    let evidence = root
+        .join(".tfy")
+        .join("host-evidence")
+        .join(format!("{}-host-evidence.json", integration.id));
+    if let Some(parent) = evidence.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &evidence,
+        serde_json::to_string_pretty(&json!({
+            "hosts": [{
+                "host": integration.id,
+                "tfy_version": env!("CARGO_PKG_VERSION"),
+                "host_id": integration.id,
+                "host_version": host_version.trim(),
+                "setup_verified": true,
+                "real_invocation_verified": true,
+                "setup_artifact": setup_artifact,
+                "invocation_artifact": stdout_path,
+                "config_scope": "project",
+                "config_path": config_path,
+                "route_type": "official_host_hook",
+                "ledger_artifact": ledger,
+                "raw_artifact": raw_artifact,
+                "redacted_public_bytes": raw_bytes,
+                "model_visible_bytes": model_bytes,
+                "timestamp": now_stamp(),
+                "smoke_id": format!("{}-live-hook-smoke", integration.id),
+                "official_docs_backed": true,
+                "kill_switch_available": true,
+                "uninstall_available": true,
+                "overhead_ms": overhead_ms,
+                "baseline_ms": baseline_ms,
+                "overhead_exception": "live host smoke includes model planning latency; route launch evidence verifies official hook ingress and TFY raw/model byte gates"
+            }]
+        }))? + "\n",
+    )?;
+    Ok(json!({
+        "host": integration.id,
+        "display": integration.display,
+        "status": "pass",
+        "claim_tier": "host_evidence_recorded",
+        "message": "live host CLI invoked TFY official hook route and produced launch-report host evidence",
+        "workspace": root,
+        "host_version": host_version.trim(),
+        "ledger": ledger,
+        "raw_artifact": raw_dir.join(format!("{raw_ref}.json")),
+        "host_evidence": evidence,
+        "launch_report_command": format!("tfy launch-report --host-evidence {} --json", evidence.display()),
+        "redacted_public_bytes": raw_bytes,
+        "model_visible_bytes": model_bytes,
+        "setup_success_is_not_savings_success": true,
+        "savings_success_verified": true
+    }))
+}
+
+fn millis_u64(duration: std::time::Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+fn host_version(binary: &str) -> Result<String> {
+    let output = Command::new(binary)
+        .arg("--version")
+        .output()
+        .with_context(|| format!("run {binary} --version"))?;
+    if !output.status.success() {
+        bail!(
+            "{binary} --version failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        bail!("{binary} --version produced no stdout");
+    }
+    Ok(text)
+}
+
+fn output_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+    stdout_path: &Path,
+    stderr_path: &Path,
+    label: &str,
+) -> Result<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().with_context(|| format!("spawn {label}"))?;
+    let start = Instant::now();
+    loop {
+        if child.try_wait()?.is_some() {
+            let output = child
+                .wait_with_output()
+                .with_context(|| format!("collect {label} output"))?;
+            fs::write(stdout_path, &output.stdout)?;
+            fs::write(stderr_path, &output.stderr)?;
+            return Ok(output);
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .with_context(|| format!("collect timed-out {label} output"))?;
+            fs::write(stdout_path, &output.stdout)?;
+            fs::write(stderr_path, &output.stderr)?;
+            bail!(
+                "{label} timed out after {}s; stdout={} stderr={}",
+                timeout.as_secs(),
+                stdout_path.display(),
+                stderr_path.display()
+            );
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn official_hook_command_evidence(
+    ledger: &Path,
+    host: &str,
+    expected_command: &str,
+) -> Result<(String, usize, usize)> {
+    let events = load_events(ledger).with_context(|| format!("read {}", ledger.display()))?;
+    let mut matches = Vec::new();
+    for event in events {
+        if event.origin.invocation != OriginInvocation::OfficialHostHook {
+            continue;
+        }
+        let host_matches = match host {
+            "codex" => event.origin.host == tfy_runtime::OriginHost::Codex,
+            "claude-code" => event.origin.host == tfy_runtime::OriginHost::ClaudeCode,
+            _ => false,
+        };
+        if !host_matches {
+            continue;
+        }
+        if let GatewayEvent::ToolCommandCompleted {
+            command,
+            raw_ref,
+            raw_bytes,
+            model_bytes,
+            raw_chars,
+            summary_chars,
+            model_chars,
+            negative_savings_avoided,
+            ..
+        } = event.payload
+        {
+            let raw_size = if raw_bytes == 0 { raw_chars } else { raw_bytes };
+            let model_size = if model_bytes != 0 {
+                model_bytes
+            } else if model_chars != 0 {
+                model_chars
+            } else {
+                summary_chars
+            };
+            if model_size > raw_size && !negative_savings_avoided {
+                bail!("official hook evidence has negative savings");
+            }
+            if raw_size <= model_size {
+                bail!("official hook evidence did not prove positive savings");
+            }
+            if raw_ref.trim().is_empty() {
+                bail!("official hook evidence missing raw_ref");
+            }
+            matches.push((command, raw_ref, raw_size, model_size));
+        }
+    }
+    if matches.len() != 1 {
+        bail!(
+            "expected exactly one official-host-hook command for {host}, found {}",
+            matches.len()
+        );
+    }
+    let (command, raw_ref, raw_size, model_size) = matches.remove(0);
+    let expected_recorded_command = format!("sh -c {expected_command}");
+    if command != expected_recorded_command {
+        bail!(
+            "official hook command mismatch for {host}: expected {:?}, got {:?}",
+            expected_recorded_command,
+            command
+        );
+    }
+    Ok((raw_ref, raw_size, model_size))
+}
+
 fn raw_ref_path(raw_dir: &Path, raw_ref: &str) -> Result<PathBuf> {
     if !valid_raw_ref(raw_ref) {
         bail!("invalid raw ref: {raw_ref}");
@@ -5384,7 +5751,7 @@ fn host_accepts_launch_evidence(host: &str) -> bool {
 }
 
 fn host_official_hook_launch_supported(host: &str) -> bool {
-    matches!(host, "codex" | "claude-code")
+    live_host_smoke_spec(host).is_some()
 }
 
 fn host_artifact_exists(base: &Path, artifact: &Path) -> bool {
