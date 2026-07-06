@@ -63,7 +63,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: AdapterCmd,
     },
-    /// MCP stdio server and Codex setup commands for agent-native tool/resource integration.
+    /// MCP stdio server and host setup commands for advanced agent-native tool/resource integration.
     Mcp {
         #[command(subcommand)]
         cmd: McpCmd,
@@ -78,13 +78,13 @@ enum Cmd {
         #[command(subcommand)]
         cmd: HumanCmd,
     },
-    /// Product-facing setup lifecycle for Codex/MCP guidance. Bare `tfy init` is a safe dry-run.
+    /// Product-facing setup lifecycle guidance. Bare `tfy init` is a safe dry-run.
     Init(InitCmd),
     /// Diagnose local TFY and optional Codex-facing integration readiness.
     Doctor(DoctorCmd),
-    /// Run local MCP smoke tests or print host-facing smoke checklists.
+    /// Run local adapter/agent/MCP smoke tests or print host-facing smoke checklists.
     Smoke(SmokeCmd),
-    /// Report measured TFY savings from adapter/MCP ledgers.
+    /// Report measured TFY savings from adapter/agent/MCP ledgers.
     Gain(GainCmd),
     /// Easy setup for AI-agent host routing or explicit human shell auto-activation.
     Setup(SetupCmd),

@@ -1624,11 +1624,11 @@ fn launch_report_promotes_adapter_when_gain_ledger_has_command_evidence() {
         .unwrap()
         .contains("local smoke verified"));
     assert_eq!(json["status"], "blocked");
-    assert!(json["blockers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|b| { b.as_str().unwrap().contains("required v1 host mcp_stdio") }));
+    assert!(json["blockers"].as_array().unwrap().iter().any(|b| {
+        b.as_str()
+            .unwrap()
+            .contains("required v1 host tfy_agent_adapter")
+    }));
 }
 
 #[test]
@@ -1642,11 +1642,16 @@ fn launch_report_blocks_unverified_codex_and_exposes_v1_host_matrix() {
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["status"], "blocked");
-    assert!(json["blockers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|b| { b.as_str().unwrap().contains("required v1 host mcp_stdio") }));
+    assert!(json["blockers"].as_array().unwrap().iter().any(|b| {
+        b.as_str()
+            .unwrap()
+            .contains("required v1 host generic_shell")
+    }));
+    assert!(json["blockers"].as_array().unwrap().iter().any(|b| {
+        b.as_str()
+            .unwrap()
+            .contains("required v1 host tfy_agent_adapter")
+    }));
     let hosts = json["host_matrix"].as_array().unwrap();
     assert!(hosts.iter().any(|h| h["host"] == "mcp_stdio"));
     assert!(hosts.iter().any(|h| h["host"] == "tfy_agent_adapter"));
@@ -1654,9 +1659,11 @@ fn launch_report_blocks_unverified_codex_and_exposes_v1_host_matrix() {
     assert!(hosts.iter().all(|h| h.get("normal_workflow").is_some()));
     assert!(hosts
         .iter()
-        .filter(|h| ["mcp_stdio", "tfy_agent_adapter", "generic_shell"]
-            .contains(&h["host"].as_str().unwrap()))
+        .filter(|h| ["tfy_agent_adapter", "generic_shell"].contains(&h["host"].as_str().unwrap()))
         .all(|h| h["required_for_v1"] == true));
+    assert!(hosts
+        .iter()
+        .any(|h| h["host"] == "mcp_stdio" && h["required_for_v1"] == false));
     assert!(hosts
         .iter()
         .any(|h| h["host"] == "codex" && h["status"] == "config_snippet_available"));
@@ -2415,7 +2422,7 @@ fn launch_report_release_tiers_require_release_evidence_and_keep_ga_blocked_with
         .as_array()
         .unwrap()
         .iter()
-        .any(|blocker| blocker.as_str().unwrap().contains("no named AI host")));
+        .any(|b| b.as_str().unwrap().contains("no named AI host")));
     assert_eq!(
         json["release_tiers"]["public_superiority_claim_ready"]["status"],
         "blocked"
@@ -2484,7 +2491,11 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
     );
     let start_text = String::from_utf8_lossy(&start.stdout);
     assert!(
-        start_text.contains("host_route_configured_verification_required"),
+        start_text.contains("agent_wrapper_configured_verification_required"),
+        "{start_text}"
+    );
+    assert!(
+        start_text.contains("Installed TFY agent command wrapper"),
         "{start_text}"
     );
     assert!(
@@ -2509,8 +2520,9 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
     assert_eq!(json["project_lifecycle"]["agent"]["desired"], true);
     assert_eq!(
         json["project_lifecycle"]["agent"]["support_status"],
-        "host_route_configured_verification_required"
+        "agent_wrapper_configured_verification_required"
     );
+    assert!(dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
     assert!(json["project_lifecycle"]["agent"]["active_routes"].is_null());
     assert_eq!(
         json["project_lifecycle"]["agent"]["intended_routes"]
@@ -3458,7 +3470,7 @@ fn lifecycle_start_host_all_apply_only_uses_safe_writers() {
 }
 
 #[test]
-fn lifecycle_start_agent_auto_configures_codex_by_default() {
+fn lifecycle_start_agent_installs_wrapper_by_default() {
     let dir = tempfile::tempdir().unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3472,19 +3484,20 @@ fn lifecycle_start_agent_auto_configures_codex_by_default() {
     );
     let text = String::from_utf8_lossy(&start.stdout);
     assert!(
-        text.contains("Configured Codex project MCP route: .codex/config.toml"),
+        text.contains("Installed TFY agent command wrapper: .tfy/agent/tfy-agent-wrapper"),
         "{text}"
     );
     assert!(
-        text.contains("Open/reload Codex in a trusted project"),
+        text.contains("MCP remains an advanced complementary route"),
         "{text}"
     );
     assert!(text.contains("Status: configured, not active."), "{text}");
     assert!(!text.contains("TFY is active"), "{text}");
     assert!(!text.contains("saving tokens"), "{text}");
-    assert!(dir.path().join(".codex/config.toml").exists());
+    assert!(!dir.path().join(".codex/config.toml").exists());
     assert!(!dir.path().join(".cursor/mcp.json").exists());
-    assert!(dir.path().join(".tfy/host-config/codex.json").exists());
+    assert!(!dir.path().join(".tfy/host-config/codex.json").exists());
+    assert!(dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
     assert!(dir.path().join(".tfy/raw").is_dir());
     assert!(dir.path().join(".tfy/state").is_dir());
     assert!(dir.path().join(".tfy/adapter").is_dir());
@@ -3497,17 +3510,20 @@ fn lifecycle_start_agent_auto_configures_codex_by_default() {
         .output()
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    let codex = &json["project_lifecycle"]["agent"]["host_routes"]["codex"];
-    assert_eq!(codex["route_state"], "configured_unverified", "{json}");
-    assert_eq!(codex["configured"], true, "{json}");
-    assert_eq!(codex["route_configured"], true, "{json}");
-    assert_eq!(codex["host_reload_required"], true, "{json}");
-    assert_eq!(codex["host_approval_required"], false, "{json}");
-    assert_eq!(codex["host_route_available_after_reload"], false, "{json}");
-    assert_eq!(codex["mcp_invocation_observed"], false, "{json}");
+    let wrapper = &json["project_lifecycle"]["agent"]["host_routes"]["agent-wrapper"];
+    assert_eq!(wrapper["route_state"], "configured_unverified", "{json}");
+    assert_eq!(wrapper["configured"], true, "{json}");
+    assert_eq!(wrapper["route_configured"], true, "{json}");
+    assert_eq!(wrapper["host_reload_required"], false, "{json}");
+    assert_eq!(wrapper["host_approval_required"], false, "{json}");
+    assert_eq!(
+        wrapper["host_route_available_after_reload"], false,
+        "{json}"
+    );
+    assert_eq!(wrapper["mcp_invocation_observed"], false, "{json}");
     assert_eq!(
         json["project_lifecycle"]["agent"]["support_status"],
-        "host_route_configured_verification_required",
+        "agent_wrapper_configured_verification_required",
         "{json}"
     );
     assert_eq!(
@@ -3650,7 +3666,7 @@ fn lifecycle_start_agent_fails_closed_on_unowned_codex_tfy_route() {
     .unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3668,7 +3684,7 @@ fn lifecycle_start_agent_fails_closed_on_malformed_codex_toml() {
     std::fs::write(codex_dir.join("config.toml"), "[mcp_servers.tfy\n").unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3686,7 +3702,7 @@ key =";
     std::fs::write(codex_dir.join("config.toml"), original).unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3711,7 +3727,7 @@ command = "custom"
     std::fs::write(codex_dir.join("config.toml"), original).unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3734,7 +3750,7 @@ fn lifecycle_start_agent_fails_closed_on_dotted_codex_tfy_route() {
     std::fs::write(codex_dir.join("config.toml"), original).unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3757,7 +3773,7 @@ fn lifecycle_start_agent_fails_closed_on_nested_dotted_codex_tfy_route() {
     std::fs::write(codex_dir.join("config.toml"), original).unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3783,7 +3799,7 @@ fn lifecycle_start_agent_fails_closed_on_incomplete_codex_tfy_marker() {
     .unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3808,7 +3824,7 @@ fn lifecycle_start_agent_fails_closed_on_orphan_codex_tfy_end_marker() {
     std::fs::write(codex_dir.join("config.toml"), original).unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
