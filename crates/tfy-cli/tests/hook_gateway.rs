@@ -1,4 +1,22 @@
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+fn run_with_stdin(args: &[&str], stdin: &str) -> std::process::Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
 
 fn run_plain(args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
@@ -113,23 +131,142 @@ fn hook_kill_switch_fails_closed() {
 }
 
 #[test]
-fn hook_run_fails_closed_for_real_hosts_until_official_e2e_support_exists() {
+fn hook_run_rewrites_codex_pre_tool_use_without_executing_pending_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = dir.path().join("raw");
+    let ledger = dir.path().join("ledger.jsonl");
+    let side_effect = dir.path().join("side-effect");
+    let payload = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": format!("printf side > {}", side_effect.display())}
+    });
+    let output = run_with_stdin(
+        &[
+            "hook",
+            "run",
+            "--host",
+            "codex",
+            "--raw-dir",
+            raw.to_str().unwrap(),
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--session",
+            "codex-hook",
+        ],
+        &payload.to_string(),
+    );
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !side_effect.exists(),
+        "PreToolUse must not execute the pending command"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rewritten = json["hookSpecificOutput"]["updatedInput"]["command"]
+        .as_str()
+        .unwrap();
+    assert_eq!(json["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+    assert_eq!(json["hookSpecificOutput"]["permissionDecision"], "allow");
+    assert!(rewritten.contains(" hook run --host "), "{rewritten}");
+    assert!(rewritten.contains("codex"), "{rewritten}");
+    assert!(rewritten.contains(raw.to_str().unwrap()), "{rewritten}");
+    assert!(rewritten.contains(ledger.to_str().unwrap()), "{rewritten}");
+}
+
+#[test]
+fn rewritten_hook_command_records_official_hook_provenance_when_host_executes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = dir.path().join("raw");
+    let ledger = dir.path().join("ledger.jsonl");
+    let payload = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "printf ok"}
+    });
+    let output = run_with_stdin(
+        &[
+            "hook",
+            "run",
+            "--host",
+            "claude-code",
+            "--raw-dir",
+            raw.to_str().unwrap(),
+            "--ledger",
+            ledger.to_str().unwrap(),
+            "--session",
+            "claude-hook",
+        ],
+        &payload.to_string(),
+    );
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rewritten = json["hookSpecificOutput"]["updatedInput"]["command"]
+        .as_str()
+        .unwrap();
+    let executed = Command::new("sh").args(["-c", rewritten]).output().unwrap();
+    assert!(
+        executed.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&executed.stdout), "ok");
+    let ledger_text = std::fs::read_to_string(&ledger).unwrap();
+    assert!(ledger_text.contains("official_host_hook"), "{ledger_text}");
+    assert!(ledger_text.contains("claude_code"), "{ledger_text}");
+}
+
+#[test]
+fn hook_run_fails_closed_for_unsupported_host_even_with_explicit_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args([
             "hook",
             "run",
             "--host",
-            "codex",
+            "cursor",
             "--",
             "sh",
             "-c",
-            "printf ok",
+            "printf no",
         ])
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("supported only for test-shim"), "{stderr}");
+    assert!(stderr.contains("unsupported hook target"), "{stderr}");
+}
+
+#[test]
+fn hook_run_fails_closed_for_non_bash_and_ambiguous_payloads() {
+    for payload in [
+        r#"{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file":"README.md"}}"#,
+        r#"{"hook_event_name":"PreToolUse","tool_name":"PowerShell","tool_input":{"command":"Write-Output ok"}}"#,
+        r#"{"hook_event_name":"PreToolUse","tool_name":"ShellScript","tool_input":{"command":"printf ok"}}"#,
+    ] {
+        let non_bash = run_with_stdin(&["hook", "run", "--host", "codex"], payload);
+        assert!(!non_bash.status.success(), "payload={payload}");
+        let stderr = String::from_utf8_lossy(&non_bash.stderr);
+        assert!(stderr.contains("only Bash/shell"), "{stderr}");
+    }
+
+    let ambiguous = run_with_stdin(
+        &["hook", "run", "--host", "claude-code"],
+        r#"{"command":"printf ok"}"#,
+    );
+    assert!(!ambiguous.status.success());
+    let stderr = String::from_utf8_lossy(&ambiguous.stderr);
+    assert!(stderr.contains("hook_event_name=PreToolUse"), "{stderr}");
+}
+
+#[test]
+fn hook_run_fails_closed_on_malformed_real_host_payload() {
+    let output = run_with_stdin(&["hook", "run", "--host", "claude-code"], "not-json");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("parse host hook JSON"), "{stderr}");
 }
 
 #[test]
@@ -142,7 +279,7 @@ fn hook_capabilities_and_install_are_truthful_dry_run_surfaces() {
     let json: serde_json::Value = serde_json::from_slice(&caps.stdout).unwrap();
     assert_eq!(
         json["default_policy"],
-        "disabled_until_official_host_docs_and_e2e_evidence"
+        "official_docs_backed_for_codex_and_claude_code_but_launch_evidence_gated"
     );
     assert!(json["not_claimed"]
         .as_array()
@@ -155,7 +292,7 @@ fn hook_capabilities_and_install_are_truthful_dry_run_surfaces() {
         .iter()
         .find(|target| target["target"] == "codex")
         .unwrap();
-    assert_eq!(codex["claim_tier"], "unsupported");
+    assert_eq!(codex["claim_tier"], "config_written");
 
     let dry = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args(["hook", "install", "--target", "codex", "--dry-run"])
@@ -163,7 +300,7 @@ fn hook_capabilities_and_install_are_truthful_dry_run_surfaces() {
         .unwrap();
     assert!(dry.status.success());
     let text = String::from_utf8_lossy(&dry.stdout);
-    assert!(text.contains("unsupported_without_public_official_hook"));
+    assert!(text.contains("supported_configured_unverified"));
     assert!(text.contains("kill_switch=TFY_HOOK_DISABLE=1"));
 
     let apply = Command::new(env!("CARGO_BIN_EXE_tfy"))
