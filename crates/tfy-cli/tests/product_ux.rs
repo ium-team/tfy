@@ -2624,11 +2624,19 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
     );
     let start_text = String::from_utf8_lossy(&start.stdout);
     assert!(
-        start_text.contains("agent_wrapper_configured_verification_required"),
+        start_text.contains("default_agent_routes_configured_verification_required"),
         "{start_text}"
     );
     assert!(
         start_text.contains("Installed TFY agent command wrapper"),
+        "{start_text}"
+    );
+    assert!(
+        start_text.contains("Configured Codex project PreToolUse Bash hook route"),
+        "{start_text}"
+    );
+    assert!(
+        start_text.contains("Configured Claude Code project PreToolUse Bash hook route"),
         "{start_text}"
     );
     assert!(
@@ -2653,7 +2661,7 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
     assert_eq!(json["project_lifecycle"]["agent"]["desired"], true);
     assert_eq!(
         json["project_lifecycle"]["agent"]["support_status"],
-        "agent_wrapper_configured_verification_required"
+        "default_agent_routes_configured_verification_required"
     );
     assert!(dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
     assert!(json["project_lifecycle"]["agent"]["active_routes"].is_null());
@@ -3619,7 +3627,7 @@ fn lifecycle_start_host_all_apply_only_uses_safe_writers() {
 }
 
 #[test]
-fn lifecycle_start_agent_installs_wrapper_by_default() {
+fn lifecycle_start_agent_installs_default_agent_routes() {
     let dir = tempfile::tempdir().unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3637,16 +3645,33 @@ fn lifecycle_start_agent_installs_wrapper_by_default() {
         "{text}"
     );
     assert!(
+        text.contains("Configured Codex project PreToolUse Bash hook route: .codex/config.toml"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "Configured Claude Code project PreToolUse Bash hook route: .claude/settings.json"
+        ),
+        "{text}"
+    );
+    assert!(
         text.contains("MCP remains an advanced complementary route"),
         "{text}"
     );
     assert!(text.contains("Status: configured, not active."), "{text}");
     assert!(!text.contains("TFY is active"), "{text}");
     assert!(!text.contains("saving tokens"), "{text}");
-    assert!(!dir.path().join(".codex/config.toml").exists());
+    assert!(dir.path().join(".codex/config.toml").exists());
+    assert!(dir.path().join(".claude/settings.json").exists());
     assert!(!dir.path().join(".cursor/mcp.json").exists());
-    assert!(!dir.path().join(".tfy/host-config/codex.json").exists());
+    assert!(dir.path().join(".tfy/host-config/codex.json").exists());
+    assert!(dir
+        .path()
+        .join(".tfy/host-config/claude-code.json")
+        .exists());
     assert!(dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
+    assert!(dir.path().join(".tfy/agent/codex-pre-tool-use").exists());
+    assert!(dir.path().join(".tfy/agent/claude-pre-tool-use").exists());
     assert!(dir.path().join(".tfy/raw").is_dir());
     assert!(dir.path().join(".tfy/state").is_dir());
     assert!(dir.path().join(".tfy/adapter").is_dir());
@@ -3659,6 +3684,14 @@ fn lifecycle_start_agent_installs_wrapper_by_default() {
         .output()
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let routes = json["project_lifecycle"]["agent"]["host_routes"]
+        .as_object()
+        .unwrap();
+    assert!(routes.contains_key("agent-wrapper"), "{json}");
+    assert!(routes.contains_key("codex"), "{json}");
+    assert!(routes.contains_key("claude-code"), "{json}");
+    assert!(!routes.contains_key("cursor"), "{json}");
+
     let wrapper = &json["project_lifecycle"]["agent"]["host_routes"]["agent-wrapper"];
     assert_eq!(wrapper["route_state"], "configured_unverified", "{json}");
     assert_eq!(wrapper["configured"], true, "{json}");
@@ -3670,9 +3703,26 @@ fn lifecycle_start_agent_installs_wrapper_by_default() {
         "{json}"
     );
     assert_eq!(wrapper["mcp_invocation_observed"], false, "{json}");
+
+    let codex = &json["project_lifecycle"]["agent"]["host_routes"]["codex"];
+    assert_eq!(codex["route_state"], "configured_unverified", "{json}");
+    assert_eq!(codex["route_type"], "official_host_hook", "{json}");
+    assert_eq!(codex["route_configured"], true, "{json}");
+    assert_eq!(codex["active"], false, "{json}");
+    assert_eq!(codex["host_reload_required"], true, "{json}");
+    assert_eq!(codex["host_approval_required"], true, "{json}");
+
+    let claude = &json["project_lifecycle"]["agent"]["host_routes"]["claude-code"];
+    assert_eq!(claude["route_state"], "configured_unverified", "{json}");
+    assert_eq!(claude["route_type"], "official_host_hook", "{json}");
+    assert_eq!(claude["route_configured"], true, "{json}");
+    assert_eq!(claude["active"], false, "{json}");
+    assert_eq!(claude["host_reload_required"], true, "{json}");
+    assert_eq!(claude["host_approval_required"], false, "{json}");
+
     assert_eq!(
         json["project_lifecycle"]["agent"]["support_status"],
-        "agent_wrapper_configured_verification_required",
+        "default_agent_routes_configured_verification_required",
         "{json}"
     );
     assert_eq!(
@@ -3696,7 +3746,9 @@ fn lifecycle_start_agent_no_apply_records_intent_without_cursor_config() {
     );
     assert!(!dir.path().join(".cursor/mcp.json").exists());
     assert!(!dir.path().join(".codex/config.toml").exists());
+    assert!(!dir.path().join(".claude/settings.json").exists());
     assert!(!dir.path().join(".mcp.json").exists());
+    assert!(!dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
     let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
         .args(["status", "--agent", "--json"])
@@ -3743,6 +3795,50 @@ fn lifecycle_start_agent_host_cursor_applies_without_apply_flag() {
 }
 
 #[test]
+fn lifecycle_start_agent_host_codex_stays_narrow() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--host", "codex"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    assert!(dir.path().join(".codex/config.toml").exists());
+    assert!(dir.path().join(".tfy/agent/codex-pre-tool-use").exists());
+    assert!(!dir.path().join(".claude/settings.json").exists());
+    assert!(!dir.path().join(".tfy/agent/claude-pre-tool-use").exists());
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let routes = json["project_lifecycle"]["agent"]["host_routes"]
+        .as_object()
+        .unwrap();
+    assert!(routes.contains_key("codex"), "{json}");
+    assert!(!routes.contains_key("claude-code"), "{json}");
+    assert!(!routes.contains_key("agent-wrapper"), "{json}");
+    assert!(!routes.contains_key("cursor"), "{json}");
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["host_routes"]["codex"]["route_type"],
+        "official_host_hook",
+        "{json}"
+    );
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["active"], false,
+        "{json}"
+    );
+}
+
+#[test]
 fn lifecycle_start_agent_host_claude_code_applies_project_hook_with_verification_required() {
     let dir = tempfile::tempdir().unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
@@ -3756,6 +3852,8 @@ fn lifecycle_start_agent_host_claude_code_applies_project_hook_with_verification
         String::from_utf8_lossy(&start.stderr)
     );
     assert!(dir.path().join(".claude/settings.json").exists());
+    assert!(!dir.path().join(".codex/config.toml").exists());
+    assert!(!dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
     let script = dir.path().join(".tfy/agent/claude-pre-tool-use");
     assert!(script.exists());
     let script_text = std::fs::read_to_string(&script).unwrap();
@@ -3861,6 +3959,29 @@ fn lifecycle_start_agent_unsupported_host_is_guidance_only_without_configured_cl
     assert_eq!(opencode["configured"], false, "{json}");
     assert_eq!(opencode["route_configured"], false, "{json}");
     assert_eq!(opencode["active"], false, "{json}");
+}
+
+#[test]
+fn lifecycle_start_agent_default_fails_closed_on_unowned_codex_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        "[mcp_servers.tfy]\ncommand = \"custom\"\n",
+    )
+    .unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(stderr.contains("not TFY-owned"), "{stderr}");
+    assert!(!dir.path().join(".claude/settings.json").exists());
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
 }
 
 #[test]

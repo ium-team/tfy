@@ -1808,11 +1808,16 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         .host
         .as_deref()
         .is_some_and(|host| host.trim().eq_ignore_ascii_case("all"));
-    let selected_hosts = host_selection(cmd.host.as_deref())?;
     let default_agent_wrapper_setup = scope == LifecycleScope::Project
         && targets.contains(&LifecycleTarget::Agent)
         && cmd.host.is_none()
         && !cmd.no_apply;
+    let default_agent_official_hook_setup = default_agent_wrapper_setup;
+    let selected_hosts = if default_agent_official_hook_setup {
+        vec![host_integration("codex")?, host_integration("claude-code")?]
+    } else {
+        host_selection(cmd.host.as_deref())?
+    };
     let auto_apply_supported_agent_routes = scope == LifecycleScope::Project
         && targets.contains(&LifecycleTarget::Agent)
         && !cmd.no_apply
@@ -1822,8 +1827,8 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                 "codex" | "claude-code" | "claude" | "cursor" | "all"
             )
         });
-    let should_apply_supported_routes =
-        scope == LifecycleScope::Project && (cmd.apply || auto_apply_supported_agent_routes);
+    let should_apply_supported_routes = scope == LifecycleScope::Project
+        && (cmd.apply || auto_apply_supported_agent_routes || default_agent_official_hook_setup);
     let mut state = read_lifecycle(scope)?;
     let now = now_stamp();
     for target in &targets {
@@ -1930,8 +1935,9 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                 }
                 if cmd.verify {
                     agent.support_status = "verification_requested_route_evidence_required".into();
-                } else if default_agent_wrapper_setup {
-                    agent.support_status = "agent_wrapper_configured_verification_required".into();
+                } else if default_agent_official_hook_setup {
+                    agent.support_status =
+                        "default_agent_routes_configured_verification_required".into();
                 } else if agent
                     .host_routes
                     .values()
@@ -1988,7 +1994,11 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
             .map(|agent| agent.support_status.as_str())
             .unwrap_or("host_route_configuration_required");
         println!("agent route_state=intent_recorded active=false support_status={support_status} private_hook_interception=false provider_prompt_gateway=false");
-        println!("Agent mode uses the shared TFY command-output pipeline through a configured command route: the TFY agent wrapper/executor route by default, and official Codex/Claude Code host hooks when explicitly configured. MCP remains an advanced complementary route, not the default command interception path.");
+        if default_agent_official_hook_setup {
+            println!("Agent mode uses the shared TFY command-output pipeline through configured command routes: the TFY agent wrapper fallback plus Codex and Claude Code official project hooks by default. MCP remains an advanced complementary route, not the default command interception path.");
+        } else {
+            println!("Agent mode uses the shared TFY command-output pipeline through a configured command route: the TFY agent wrapper/executor route and official Codex/Claude Code host hooks when configured. MCP remains an advanced complementary route, not the default command interception path.");
+        }
         if default_agent_wrapper_setup {
             println!("Installed TFY agent command wrapper: .tfy/agent/tfy-agent-wrapper");
             println!("Configure your AI agent host command executor to call: .tfy/agent/tfy-agent-wrapper -- <ordinary command>");
@@ -4937,7 +4947,7 @@ fn effective_agent_status(
         } else if !desired {
             "Run `tfy start --agent` in this project, or configure global agent defaults with `tfy use always --agent`.".into()
         } else if host_routes_empty {
-            "Run `tfy start --agent` to create the project agent wrapper, or use `tfy start --agent --no-apply` for lifecycle intent only.".into()
+            "Run `tfy start --agent` to prepare the project agent wrapper plus Codex and Claude Code official hook routes, or use `tfy start --agent --no-apply` for lifecycle intent only.".into()
         } else {
             "Configured but not verified: run the configured host and collect route-bound raw/ledger/no-negative/positive-savings/overhead evidence before active=true.".into()
         },
