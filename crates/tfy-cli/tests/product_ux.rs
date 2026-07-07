@@ -364,13 +364,10 @@ fn smoke_codex_is_checklist_only() {
 }
 
 #[test]
-fn setup_named_hosts_emit_truthful_mcp_snippets_without_claiming_savings() {
+fn setup_named_hosts_emit_truthful_snippets_without_claiming_savings() {
     let cases = [
-        ("codex", "codex mcp add tfy"),
-        ("claude-code", "claude mcp add tfy"),
-        ("cursor", "\"mcpServers\""),
-        ("opencode", "\"mcp\""),
-        ("hermes", "mcp_servers:"),
+        ("codex", "[[hooks.PreToolUse]]"),
+        ("claude-code", "\"PreToolUse\""),
     ];
     for (host, expected) in cases {
         let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
@@ -396,15 +393,19 @@ fn setup_named_hosts_emit_truthful_mcp_snippets_without_claiming_savings() {
 }
 
 #[test]
-fn setup_openclaw_remains_planned_discovery() {
+fn setup_cursor_remains_planned_discovery() {
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
-        .args(["setup", "--ai", "--host", "openclaw", "--dry-run"])
+        .args(["setup", "--ai", "--host", "cursor", "--dry-run"])
         .output()
         .unwrap();
-    assert!(output.status.success());
-    let text = String::from_utf8_lossy(&output.stdout);
-    assert!(text.contains("planned_discovery"), "{text}");
-    assert!(text.contains("no setup/apply/smoke support"), "{text}");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "host 'cursor' is not available in TFY agent mode; supported hosts: codex, claude-code"
+        ),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -413,61 +414,24 @@ fn setup_cursor_project_apply_is_reversible_and_preserves_existing_config() {
     let cursor_dir = dir.path().join(".cursor");
     std::fs::create_dir_all(&cursor_dir).unwrap();
     let config = cursor_dir.join("mcp.json");
-    std::fs::write(
-        &config,
-        r#"{"mcpServers":{"other":{"command":"other"}},"keep":true}"#,
-    )
-    .unwrap();
+    let original = r#"{"mcpServers":{"other":{"command":"other"}},"keep":true}"#;
+    std::fs::write(&config, original).unwrap();
 
-    for _ in 0..2 {
-        let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
-            .current_dir(dir.path())
-            .args(["setup", "--ai", "--host", "cursor", "--apply", "--project"])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "stderr={}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    assert!(cursor_dir.join("mcp.json.tfy-backup").exists());
-    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
-    assert_eq!(json["keep"], true);
-    assert_eq!(json["mcpServers"]["other"]["command"], "other");
-    assert_eq!(json["mcpServers"]["tfy"]["command"], "tfy");
-    assert_eq!(json["mcpServers"]["tfy"]["tfy_managed"], true);
-    assert_eq!(json["mcpServers"]["tfy"].as_object().unwrap().len(), 3);
-    assert_eq!(
-        std::fs::read_to_string(cursor_dir.join("mcp.json.tfy-backup")).unwrap(),
-        r#"{"mcpServers":{"other":{"command":"other"}},"keep":true}"#
-    );
-
-    let uninstall = Command::new(env!("CARGO_BIN_EXE_tfy"))
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args([
-            "setup",
-            "--ai",
-            "--host",
-            "cursor",
-            "--uninstall",
-            "--apply",
-            "--project",
-        ])
+        .args(["setup", "--ai", "--host", "cursor", "--apply", "--project"])
         .output()
         .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        uninstall.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&uninstall.stderr)
+        stderr.contains(
+            "host 'cursor' is not available in TFY agent mode; supported hosts: codex, claude-code"
+        ),
+        "{stderr}"
     );
-    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
-    assert_eq!(json["mcpServers"]["other"]["command"], "other");
-    assert!(json["mcpServers"]["tfy"].is_null(), "{json}");
-    assert_eq!(
-        std::fs::read_to_string(cursor_dir.join("mcp.json.tfy-backup")).unwrap(),
-        r#"{"mcpServers":{"other":{"command":"other"}},"keep":true}"#
-    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+    assert!(!cursor_dir.join("mcp.json.tfy-backup").exists());
 }
 
 #[test]
@@ -485,24 +449,9 @@ fn setup_cursor_project_apply_refuses_to_overwrite_unowned_tfy_entry() {
         .output()
         .unwrap();
     assert!(!apply.status.success());
+    assert!(String::from_utf8_lossy(&apply.stderr).contains("not available in TFY agent mode"));
     assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
     assert!(!cursor_dir.join("mcp.json.tfy-backup").exists());
-
-    let uninstall = Command::new(env!("CARGO_BIN_EXE_tfy"))
-        .current_dir(dir.path())
-        .args([
-            "setup",
-            "--ai",
-            "--host",
-            "cursor",
-            "--uninstall",
-            "--apply",
-            "--project",
-        ])
-        .output()
-        .unwrap();
-    assert!(!uninstall.status.success());
-    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
 }
 
 #[test]
@@ -540,17 +489,8 @@ fn setup_cursor_project_dry_run_writes_nothing() {
         ])
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        text.contains("status=dry_run claim_tier=configurable"),
-        "{text}"
-    );
-    assert!(text.contains("dry_run=true applied=false"), "{text}");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not available in TFY agent mode"));
     assert!(!dir.path().join(".cursor").join("mcp.json").exists());
 }
 
@@ -570,28 +510,15 @@ fn setup_cursor_project_uninstall_without_existing_config_writes_nothing() {
         ])
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not available in TFY agent mode"));
     assert!(!dir.path().join(".cursor").join("mcp.json").exists());
 }
 
 #[test]
 fn setup_cursor_project_uninstall_removes_tfy_created_config_without_backup() {
     let dir = tempfile::tempdir().unwrap();
-    let apply = Command::new(env!("CARGO_BIN_EXE_tfy"))
-        .current_dir(dir.path())
-        .args(["setup", "--ai", "--host", "cursor", "--apply", "--project"])
-        .output()
-        .unwrap();
-    assert!(
-        apply.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&apply.stderr)
-    );
-    let uninstall = Command::new(env!("CARGO_BIN_EXE_tfy"))
+    let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
         .args([
             "setup",
@@ -604,42 +531,47 @@ fn setup_cursor_project_uninstall_removes_tfy_created_config_without_backup() {
         ])
         .output()
         .unwrap();
-    assert!(
-        uninstall.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&uninstall.stderr)
-    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not available in TFY agent mode"));
     assert!(!dir.path().join(".cursor").join("mcp.json").exists());
-    assert!(!dir
-        .path()
-        .join(".cursor")
-        .join("mcp.json.tfy-backup")
-        .exists());
 }
 
 #[test]
 fn mcp_install_supports_named_host_dry_runs_and_blocks_non_codex_output() {
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
-        .args(["mcp", "install", "--target", "hermes", "--dry-run"])
+        .args(["mcp", "install", "--target", "claude-code", "--dry-run"])
         .output()
         .unwrap();
     assert!(output.status.success());
     let text = String::from_utf8_lossy(&output.stdout);
-    assert!(text.contains("TFY MCP Hermes setup dry-run"), "{text}");
-    assert!(text.contains("mcp_servers:"), "{text}");
+    assert!(text.contains("TFY MCP Claude Code setup dry-run"), "{text}");
+    assert!(text.contains("mcpServers"), "{text}");
     assert!(
         text.contains("Setup success is not token-savings success"),
         "{text}"
     );
 
+    let invalid = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["mcp", "install", "--target", "cursor", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid.stderr).contains(
+            "target 'cursor' is not available in TFY agent mode; supported hosts: codex, claude-code"
+        ),
+        "stderr={}",
+        String::from_utf8_lossy(&invalid.stderr)
+    );
+
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("cursor.json");
+    let path = dir.path().join("claude-code.json");
     let blocked = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args([
             "mcp",
             "install",
             "--target",
-            "cursor",
+            "claude-code",
             "--output",
             path.to_str().unwrap(),
         ])
@@ -651,6 +583,35 @@ fn mcp_install_supports_named_host_dry_runs_and_blocks_non_codex_output() {
         String::from_utf8_lossy(&blocked.stderr).contains("Codex TOML only"),
         "stderr={}",
         String::from_utf8_lossy(&blocked.stderr)
+    );
+}
+
+#[test]
+fn cursor_doctor_and_smoke_are_unsupported_not_configurable() {
+    let doctor = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["doctor", "--host", "cursor", "--json"])
+        .output()
+        .unwrap();
+    assert!(!doctor.status.success());
+    assert!(
+        String::from_utf8_lossy(&doctor.stderr).contains(
+            "host 'cursor' is not available in TFY agent mode; supported hosts: codex, claude-code"
+        ),
+        "stderr={}",
+        String::from_utf8_lossy(&doctor.stderr)
+    );
+
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["smoke", "--host", "cursor", "--json"])
+        .output()
+        .unwrap();
+    assert!(!smoke.status.success());
+    assert!(
+        String::from_utf8_lossy(&smoke.stderr).contains(
+            "host 'cursor' is not available in TFY agent mode; supported hosts: codex, claude-code"
+        ),
+        "stderr={}",
+        String::from_utf8_lossy(&smoke.stderr)
     );
 }
 
@@ -671,13 +632,14 @@ fn status_json_exposes_canonical_named_host_taxonomy() {
     };
     assert_eq!(find("codex")["status"], "config_snippet_available");
     assert_eq!(find("claude-code")["status"], "config_snippet_available");
-    assert_eq!(find("cursor")["status"], "config_snippet_available");
-    assert_eq!(find("opencode")["status"], "config_snippet_available");
-    assert_eq!(find("hermes")["status"], "config_snippet_available");
-    assert_eq!(find("openclaw")["status"], "planned_discovery");
+    for hidden in ["cursor", "opencode", "hermes", "openclaw"] {
+        assert!(
+            hosts.iter().all(|host| host["host"] != hidden),
+            "unexpected public host {hidden}: {json}"
+        );
+    }
     assert_eq!(find("codex")["claim_tier"], "configurable");
-    assert_eq!(find("cursor")["claim_tier"], "configurable");
-    assert_eq!(find("openclaw")["claim_tier"], "planned_discovery");
+    assert_eq!(find("claude-code")["claim_tier"], "configurable");
     assert!(json["claim_evidence_ladder"]
         .as_array()
         .unwrap()
@@ -688,7 +650,12 @@ fn status_json_exposes_canonical_named_host_taxonomy() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|ingress| ingress == "mcp_stdio"));
+        .any(|ingress| ingress == "official_host_hook"));
+    assert!(find("claude-code")["supported_ingress"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|ingress| ingress == "official_host_hook"));
     assert!(find("codex")["unsupported_ingress"]
         .as_array()
         .unwrap()
@@ -706,7 +673,7 @@ fn launch_report_keeps_named_host_setup_evidence_below_launch_supported() {
     let evidence = dir.path().join("host-evidence.json");
     std::fs::write(
         &evidence,
-        r#"{"hosts":[{"host":"cursor","tfy_version":"0.1.0","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup.txt","invocation_artifact":"invoke.txt","overhead_ms":10,"baseline_ms":10}]}"#,
+        r#"{"hosts":[{"host":"claude-code","tfy_version":"0.1.0","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup.txt","invocation_artifact":"invoke.txt","overhead_ms":10,"baseline_ms":10}]}"#,
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
@@ -721,13 +688,13 @@ fn launch_report_keeps_named_host_setup_evidence_below_launch_supported() {
         .unwrap();
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let cursor = json["host_matrix"]
+    let claude_code = json["host_matrix"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|host| host["host"] == "cursor")
+        .find(|host| host["host"] == "claude-code")
         .unwrap();
-    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert_ne!(claude_code["status"], "launch_supported", "{json}");
     assert!(
         json["blockers"].as_array().unwrap().iter().any(|b| b
             .as_str()
@@ -738,7 +705,7 @@ fn launch_report_keeps_named_host_setup_evidence_below_launch_supported() {
 }
 
 #[test]
-fn launch_report_keeps_openclaw_planned_discovery_even_with_host_evidence() {
+fn launch_report_keeps_cursor_planned_discovery_even_with_host_evidence() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("setup-proof.txt"), "configured").unwrap();
     std::fs::write(dir.path().join("invocation-proof.txt"), "invoked").unwrap();
@@ -747,7 +714,7 @@ fn launch_report_keeps_openclaw_planned_discovery_even_with_host_evidence() {
         &host_evidence,
         r#"{
           "hosts": [
-            {"host":"openclaw","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":10,"baseline_ms":10}
+            {"host":"cursor","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":10,"baseline_ms":10}
           ]
         }"#,
     )
@@ -762,23 +729,23 @@ fn launch_report_keeps_openclaw_planned_discovery_even_with_host_evidence() {
         ])
         .output()
         .unwrap();
-    assert!(
-        report.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&report.stderr)
-    );
+    assert!(report.status.success());
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-    let openclaw = json["host_matrix"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|host| host["host"] == "openclaw")
-        .unwrap();
-    assert_eq!(openclaw["status"], "planned_discovery", "{json}");
-    assert_eq!(
-        openclaw["launch_claim"],
-        "unsupported/planned until official/current evidence proves a safe route",
+    assert!(
+        json["host_matrix"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|host| host["host"] != "cursor"),
         "{json}"
+    );
+    assert!(
+        json["host_evidence"]["named_hosts"]["cursor"].is_null(),
+        "{json}"
+    );
+    assert!(
+        !json.to_string().contains("cursor"),
+        "unsupported host leaked into public launch report: {json}"
     );
 }
 
@@ -789,8 +756,8 @@ fn launch_report_promotes_named_host_only_with_host_bound_evidence() {
     for file in [
         "setup.txt",
         "invoke.txt",
-        ".cursor/mcp.json",
-        "cursor-ledger.jsonl",
+        "claude_code.json",
+        "claude-code-ledger.jsonl",
         "raw.txt",
     ] {
         std::fs::write(dir.path().join(file), "evidence").unwrap();
@@ -801,7 +768,7 @@ fn launch_report_promotes_named_host_only_with_host_bound_evidence() {
         r#"{
           "hosts": [
             {
-              "host":"cursor",
+              "host":"claude-code",
               "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
@@ -809,18 +776,18 @@ fn launch_report_promotes_named_host_only_with_host_bound_evidence() {
               "invocation_artifact":"invoke.txt",
               "overhead_ms":10,
               "baseline_ms":10,
-              "host_id":"cursor",
+              "host_id":"claude-code",
               "host_version":"test",
               "config_scope":"project",
-              "config_path":".cursor/mcp.json",
+              "config_path":"claude_code.json",
               "route_type":"mcp",
-              "ledger_artifact":"cursor-ledger.jsonl",
+              "ledger_artifact":"claude-code-ledger.jsonl",
               "raw_artifact":"raw.txt",
               "redacted_public_bytes":200,
               "model_visible_bytes":100,
               "savings_result":"positive",
               "timestamp":"2026-06-09T00:00:00Z",
-              "smoke_id":"cursor-smoke-1"
+              "smoke_id":"claude-code-smoke-1"
             }
           ]
         }"#,
@@ -842,16 +809,16 @@ fn launch_report_promotes_named_host_only_with_host_bound_evidence() {
         String::from_utf8_lossy(&report.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-    let cursor = json["host_matrix"]
+    let claude_code = json["host_matrix"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|host| host["host"] == "cursor")
+        .find(|host| host["host"] == "claude-code")
         .unwrap();
-    assert_eq!(cursor["status"], "launch_supported", "{json}");
-    assert_eq!(cursor["claim_tier"], "launch_supported", "{json}");
+    assert_eq!(claude_code["status"], "launch_supported", "{json}");
+    assert_eq!(claude_code["claim_tier"], "launch_supported", "{json}");
     assert_eq!(
-        json["host_evidence"]["named_hosts"]["cursor"]["host_bound_evidence"], true,
+        json["host_evidence"]["named_hosts"]["claude-code"]["host_bound_evidence"], true,
         "{json}"
     );
 }
@@ -863,8 +830,8 @@ fn launch_report_keeps_setup_only_named_evidence_from_poisoning_byte_proof() {
     for file in [
         "setup.txt",
         "invoke.txt",
-        ".cursor/mcp.json",
-        "cursor-ledger.jsonl",
+        "claude_code.json",
+        "claude-code-ledger.jsonl",
         "raw.txt",
     ] {
         std::fs::write(dir.path().join(file), "evidence").unwrap();
@@ -875,7 +842,7 @@ fn launch_report_keeps_setup_only_named_evidence_from_poisoning_byte_proof() {
         r#"{
           "hosts": [
             {
-              "host":"cursor",
+              "host":"claude-code",
               "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
@@ -894,7 +861,7 @@ fn launch_report_keeps_setup_only_named_evidence_from_poisoning_byte_proof() {
         r#"{
           "hosts": [
             {
-              "host":"cursor",
+              "host":"claude-code",
               "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
@@ -902,17 +869,17 @@ fn launch_report_keeps_setup_only_named_evidence_from_poisoning_byte_proof() {
               "invocation_artifact":"invoke.txt",
               "overhead_ms":10,
               "baseline_ms":10,
-              "host_id":"cursor",
+              "host_id":"claude-code",
               "host_version":"test",
               "config_scope":"project",
-              "config_path":".cursor/mcp.json",
+              "config_path":"claude_code.json",
               "route_type":"mcp",
-              "ledger_artifact":"cursor-ledger.jsonl",
+              "ledger_artifact":"claude-code-ledger.jsonl",
               "raw_artifact":"raw.txt",
               "redacted_public_bytes":200,
               "model_visible_bytes":100,
               "timestamp":"2026-06-09T00:00:00Z",
-              "smoke_id":"cursor-smoke-1"
+              "smoke_id":"claude-code-smoke-1"
             }
           ]
         }"#,
@@ -936,15 +903,15 @@ fn launch_report_keeps_setup_only_named_evidence_from_poisoning_byte_proof() {
         String::from_utf8_lossy(&report.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-    let cursor = json["host_matrix"]
+    let claude_code = json["host_matrix"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|host| host["host"] == "cursor")
+        .find(|host| host["host"] == "claude-code")
         .unwrap();
-    assert_eq!(cursor["status"], "launch_supported", "{json}");
+    assert_eq!(claude_code["status"], "launch_supported", "{json}");
     assert_eq!(
-        json["host_evidence"]["named_hosts"]["cursor"]["no_negative_savings"], true,
+        json["host_evidence"]["named_hosts"]["claude-code"]["no_negative_savings"], true,
         "{json}"
     );
 }
@@ -956,8 +923,8 @@ fn launch_report_does_not_promote_named_host_when_bytes_contradict_positive_labe
     for file in [
         "setup.txt",
         "invoke.txt",
-        ".cursor/mcp.json",
-        "cursor-ledger.jsonl",
+        "claude_code.json",
+        "claude-code-ledger.jsonl",
         "raw.txt",
     ] {
         std::fs::write(dir.path().join(file), "evidence").unwrap();
@@ -968,7 +935,7 @@ fn launch_report_does_not_promote_named_host_when_bytes_contradict_positive_labe
         r#"{
           "hosts": [
             {
-              "host":"cursor",
+              "host":"claude-code",
               "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
@@ -976,18 +943,18 @@ fn launch_report_does_not_promote_named_host_when_bytes_contradict_positive_labe
               "invocation_artifact":"invoke.txt",
               "overhead_ms":10,
               "baseline_ms":10,
-              "host_id":"cursor",
+              "host_id":"claude-code",
               "host_version":"test",
               "config_scope":"project",
-              "config_path":".cursor/mcp.json",
+              "config_path":"claude_code.json",
               "route_type":"mcp",
-              "ledger_artifact":"cursor-ledger.jsonl",
+              "ledger_artifact":"claude-code-ledger.jsonl",
               "raw_artifact":"raw.txt",
               "redacted_public_bytes":100,
               "model_visible_bytes":200,
               "savings_result":"positive",
               "timestamp":"2026-06-09T00:00:00Z",
-              "smoke_id":"cursor-smoke-1"
+              "smoke_id":"claude-code-smoke-1"
             }
           ]
         }"#,
@@ -1009,15 +976,15 @@ fn launch_report_does_not_promote_named_host_when_bytes_contradict_positive_labe
         String::from_utf8_lossy(&report.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-    let cursor = json["host_matrix"]
+    let claude_code = json["host_matrix"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|host| host["host"] == "cursor")
+        .find(|host| host["host"] == "claude-code")
         .unwrap();
-    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert_ne!(claude_code["status"], "launch_supported", "{json}");
     assert_eq!(
-        json["host_evidence"]["named_hosts"]["cursor"]["host_bound_evidence"], false,
+        json["host_evidence"]["named_hosts"]["claude-code"]["host_bound_evidence"], false,
         "{json}"
     );
 }
@@ -1029,8 +996,8 @@ fn launch_report_rejects_positive_label_without_byte_fields() {
     for file in [
         "setup.txt",
         "invoke.txt",
-        ".cursor/mcp.json",
-        "cursor-ledger.jsonl",
+        "claude_code.json",
+        "claude-code-ledger.jsonl",
         "raw.txt",
     ] {
         std::fs::write(dir.path().join(file), "evidence").unwrap();
@@ -1041,7 +1008,7 @@ fn launch_report_rejects_positive_label_without_byte_fields() {
         r#"{
           "hosts": [
             {
-              "host":"cursor",
+              "host":"claude-code",
               "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
@@ -1049,16 +1016,16 @@ fn launch_report_rejects_positive_label_without_byte_fields() {
               "invocation_artifact":"invoke.txt",
               "overhead_ms":10,
               "baseline_ms":10,
-              "host_id":"cursor",
+              "host_id":"claude-code",
               "host_version":"test",
               "config_scope":"project",
-              "config_path":".cursor/mcp.json",
+              "config_path":"claude_code.json",
               "route_type":"mcp",
-              "ledger_artifact":"cursor-ledger.jsonl",
+              "ledger_artifact":"claude-code-ledger.jsonl",
               "raw_artifact":"raw.txt",
               "savings_result":"positive",
               "timestamp":"2026-06-09T00:00:00Z",
-              "smoke_id":"cursor-smoke-1"
+              "smoke_id":"claude-code-smoke-1"
             }
           ]
         }"#,
@@ -1080,15 +1047,15 @@ fn launch_report_rejects_positive_label_without_byte_fields() {
         String::from_utf8_lossy(&report.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-    let cursor = json["host_matrix"]
+    let claude_code = json["host_matrix"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|host| host["host"] == "cursor")
+        .find(|host| host["host"] == "claude-code")
         .unwrap();
-    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert_ne!(claude_code["status"], "launch_supported", "{json}");
     assert_eq!(
-        json["host_evidence"]["named_hosts"]["cursor"]["host_bound_evidence"], false,
+        json["host_evidence"]["named_hosts"]["claude-code"]["host_bound_evidence"], false,
         "{json}"
     );
 }
@@ -1100,8 +1067,8 @@ fn launch_report_rejects_substring_positive_savings_labels() {
     for file in [
         "setup.txt",
         "invoke.txt",
-        ".cursor/mcp.json",
-        "cursor-ledger.jsonl",
+        "claude_code.json",
+        "claude-code-ledger.jsonl",
         "raw.txt",
     ] {
         std::fs::write(dir.path().join(file), "evidence").unwrap();
@@ -1112,7 +1079,7 @@ fn launch_report_rejects_substring_positive_savings_labels() {
         r#"{
           "hosts": [
             {
-              "host":"cursor",
+              "host":"claude-code",
               "tfy_version":"0.1.0",
               "setup_verified":true,
               "real_invocation_verified":true,
@@ -1120,16 +1087,16 @@ fn launch_report_rejects_substring_positive_savings_labels() {
               "invocation_artifact":"invoke.txt",
               "overhead_ms":10,
               "baseline_ms":10,
-              "host_id":"cursor",
+              "host_id":"claude-code",
               "host_version":"test",
               "config_scope":"project",
-              "config_path":".cursor/mcp.json",
+              "config_path":"claude_code.json",
               "route_type":"mcp",
-              "ledger_artifact":"cursor-ledger.jsonl",
+              "ledger_artifact":"claude-code-ledger.jsonl",
               "raw_artifact":"raw.txt",
               "savings_result":"not_positive",
               "timestamp":"2026-06-09T00:00:00Z",
-              "smoke_id":"cursor-smoke-1"
+              "smoke_id":"claude-code-smoke-1"
             }
           ]
         }"#,
@@ -1151,15 +1118,15 @@ fn launch_report_rejects_substring_positive_savings_labels() {
         String::from_utf8_lossy(&report.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-    let cursor = json["host_matrix"]
+    let claude_code = json["host_matrix"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|host| host["host"] == "cursor")
+        .find(|host| host["host"] == "claude-code")
         .unwrap();
-    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert_ne!(claude_code["status"], "launch_supported", "{json}");
     assert_eq!(
-        json["host_evidence"]["named_hosts"]["cursor"]["host_bound_evidence"], false,
+        json["host_evidence"]["named_hosts"]["claude-code"]["host_bound_evidence"], false,
         "{json}"
     );
 }
@@ -1196,7 +1163,7 @@ fn launch_report_caps_named_host_even_with_unrelated_mcp_savings() {
         &host_evidence,
         r#"{
           "hosts": [
-            {"host":"cursor","tfy_version":"0.1.0","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":10,"baseline_ms":10}
+            {"host":"claude-code","tfy_version":"0.1.0","setup_verified":true,"real_invocation_verified":true,"setup_artifact":"setup-proof.txt","invocation_artifact":"invocation-proof.txt","overhead_ms":10,"baseline_ms":10}
           ]
         }"#,
     )
@@ -1215,16 +1182,16 @@ fn launch_report_caps_named_host_even_with_unrelated_mcp_savings() {
     );
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
     assert_eq!(json["host_evidence"]["positive_savings"], true, "{json}");
-    let cursor = json["host_matrix"]
+    let claude_code = json["host_matrix"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|host| host["host"] == "cursor")
+        .find(|host| host["host"] == "claude-code")
         .unwrap();
-    assert_eq!(cursor["status"], "verified_host_invocation", "{json}");
-    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert_eq!(claude_code["status"], "verified_host_invocation", "{json}");
+    assert_ne!(claude_code["status"], "launch_supported", "{json}");
     assert!(
-        cursor["evidence_gate"]
+        claude_code["evidence_gate"]
             .as_array()
             .unwrap()
             .iter()
@@ -1624,11 +1591,11 @@ fn launch_report_promotes_adapter_when_gain_ledger_has_command_evidence() {
         .unwrap()
         .contains("local smoke verified"));
     assert_eq!(json["status"], "blocked");
-    assert!(json["blockers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|b| { b.as_str().unwrap().contains("required v1 host mcp_stdio") }));
+    assert!(json["blockers"].as_array().unwrap().iter().any(|b| {
+        b.as_str()
+            .unwrap()
+            .contains("required v1 host tfy_agent_adapter")
+    }));
 }
 
 #[test]
@@ -1642,11 +1609,16 @@ fn launch_report_blocks_unverified_codex_and_exposes_v1_host_matrix() {
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["status"], "blocked");
-    assert!(json["blockers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|b| { b.as_str().unwrap().contains("required v1 host mcp_stdio") }));
+    assert!(json["blockers"].as_array().unwrap().iter().any(|b| {
+        b.as_str()
+            .unwrap()
+            .contains("required v1 host generic_shell")
+    }));
+    assert!(json["blockers"].as_array().unwrap().iter().any(|b| {
+        b.as_str()
+            .unwrap()
+            .contains("required v1 host tfy_agent_adapter")
+    }));
     let hosts = json["host_matrix"].as_array().unwrap();
     assert!(hosts.iter().any(|h| h["host"] == "mcp_stdio"));
     assert!(hosts.iter().any(|h| h["host"] == "tfy_agent_adapter"));
@@ -1654,9 +1626,11 @@ fn launch_report_blocks_unverified_codex_and_exposes_v1_host_matrix() {
     assert!(hosts.iter().all(|h| h.get("normal_workflow").is_some()));
     assert!(hosts
         .iter()
-        .filter(|h| ["mcp_stdio", "tfy_agent_adapter", "generic_shell"]
-            .contains(&h["host"].as_str().unwrap()))
+        .filter(|h| ["tfy_agent_adapter", "generic_shell"].contains(&h["host"].as_str().unwrap()))
         .all(|h| h["required_for_v1"] == true));
+    assert!(hosts
+        .iter()
+        .any(|h| h["host"] == "mcp_stdio" && h["required_for_v1"] == false));
     assert!(hosts
         .iter()
         .any(|h| h["host"] == "codex" && h["status"] == "config_snippet_available"));
@@ -1964,9 +1938,9 @@ fn launch_report_promotes_claims_only_from_route_bound_evidence_tiers() {
     for file in [
         "setup-proof.txt",
         "invocation-proof.txt",
-        "cursor-config.json",
-        "cursor-ledger.jsonl",
-        "cursor-raw.txt",
+        "claude-code-config.json",
+        "claude-code-ledger.jsonl",
+        "claude-code-raw.txt",
     ] {
         std::fs::write(dir.path().join(file), "proof").unwrap();
     }
@@ -1976,20 +1950,20 @@ fn launch_report_promotes_claims_only_from_route_bound_evidence_tiers() {
         r#"{
           "hosts": [
             {
-              "host":"cursor",
+              "host":"claude-code",
               "tfy_version":"0.1.0",
-              "host_id":"cursor",
+              "host_id":"claude-code",
               "host_version":"test",
               "setup_verified":true,
               "real_invocation_verified":true,
               "setup_artifact":"setup-proof.txt",
               "invocation_artifact":"invocation-proof.txt",
               "config_scope":"project",
-              "config_path":"cursor-config.json",
+              "config_path":"claude-code-config.json",
               "route_type":"mcp_stdio",
-              "ledger_artifact":"cursor-ledger.jsonl",
-              "raw_artifact":"cursor-raw.txt",
-              "smoke_id":"cursor-mcp-smoke",
+              "ledger_artifact":"claude-code-ledger.jsonl",
+              "raw_artifact":"claude-code-raw.txt",
+              "smoke_id":"claude-code-mcp-smoke",
               "timestamp":"2026-06-09T00:00:00Z",
               "redacted_public_bytes":1000,
               "model_visible_bytes":100,
@@ -2016,13 +1990,13 @@ fn launch_report_promotes_claims_only_from_route_bound_evidence_tiers() {
         String::from_utf8_lossy(&report.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-    let cursor = json["host_matrix"]
+    let claude_code = json["host_matrix"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|h| h["host"] == "cursor")
+        .find(|h| h["host"] == "claude-code")
         .unwrap();
-    assert_eq!(cursor["status"], "launch_supported", "{json}");
+    assert_eq!(claude_code["status"], "launch_supported", "{json}");
     for tier in [
         "config_written",
         "host_launched",
@@ -2032,7 +2006,7 @@ fn launch_report_promotes_claims_only_from_route_bound_evidence_tiers() {
         "launch_supported",
     ] {
         assert!(
-            cursor["evidence_tiers"]
+            claude_code["evidence_tiers"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -2040,7 +2014,7 @@ fn launch_report_promotes_claims_only_from_route_bound_evidence_tiers() {
             "missing {tier}: {json}"
         );
     }
-    assert_eq!(cursor["next_evidence_tier"], "complete", "{json}");
+    assert_eq!(claude_code["next_evidence_tier"], "complete", "{json}");
     assert!(json["unsupported_claim_audit"]["rule"]
         .as_str()
         .unwrap()
@@ -2058,9 +2032,9 @@ fn launch_report_refuses_named_host_unsupported_route_type_even_with_artifacts_a
     for file in [
         "setup-proof.txt",
         "invocation-proof.txt",
-        "cursor-config.json",
-        "cursor-ledger.jsonl",
-        "cursor-raw.txt",
+        "claude-code-config.json",
+        "claude-code-ledger.jsonl",
+        "claude-code-raw.txt",
     ] {
         std::fs::write(dir.path().join(file), "proof").unwrap();
     }
@@ -2070,20 +2044,20 @@ fn launch_report_refuses_named_host_unsupported_route_type_even_with_artifacts_a
         r#"{
           "hosts": [
             {
-              "host":"cursor",
+              "host":"claude-code",
               "tfy_version":"0.1.0",
-              "host_id":"cursor",
+              "host_id":"claude-code",
               "host_version":"test",
               "setup_verified":true,
               "real_invocation_verified":true,
               "setup_artifact":"setup-proof.txt",
               "invocation_artifact":"invocation-proof.txt",
               "config_scope":"project",
-              "config_path":"cursor-config.json",
+              "config_path":"claude-code-config.json",
               "route_type":"provider_api_prompt_proxy",
-              "ledger_artifact":"cursor-ledger.jsonl",
-              "raw_artifact":"cursor-raw.txt",
-              "smoke_id":"cursor-provider-proxy-smoke",
+              "ledger_artifact":"claude-code-ledger.jsonl",
+              "raw_artifact":"claude-code-raw.txt",
+              "smoke_id":"claude-code-provider-proxy-smoke",
               "timestamp":"2026-06-09T00:00:00Z",
               "redacted_public_bytes":1000,
               "model_visible_bytes":100,
@@ -2110,14 +2084,14 @@ fn launch_report_refuses_named_host_unsupported_route_type_even_with_artifacts_a
         String::from_utf8_lossy(&report.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-    let cursor = json["host_matrix"]
+    let claude_code = json["host_matrix"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|h| h["host"] == "cursor")
+        .find(|h| h["host"] == "claude-code")
         .unwrap();
-    assert_ne!(cursor["status"], "launch_supported", "{json}");
-    assert!(!cursor["evidence_tiers"]
+    assert_ne!(claude_code["status"], "launch_supported", "{json}");
+    assert!(!claude_code["evidence_tiers"]
         .as_array()
         .unwrap()
         .iter()
@@ -2130,14 +2104,19 @@ fn launch_report_refuses_named_host_unsupported_route_type_even_with_artifacts_a
 }
 
 #[test]
-fn launch_report_refuses_official_hook_promotion_without_supported_hook_authority() {
+fn launch_report_promotes_codex_and_claude_code_official_hook_evidence() {
     let dir = tempfile::tempdir().unwrap();
     for file in [
-        "setup-proof.txt",
-        "invocation-proof.txt",
-        "cursor-config.json",
-        "cursor-ledger.jsonl",
-        "cursor-raw.txt",
+        "codex-setup.txt",
+        "codex-invocation.txt",
+        "codex-config.toml",
+        "codex-ledger.jsonl",
+        "codex-raw.txt",
+        "claude-setup.txt",
+        "claude-invocation.txt",
+        "claude-settings.json",
+        "claude-ledger.jsonl",
+        "claude-raw.txt",
     ] {
         std::fs::write(dir.path().join(file), "proof").unwrap();
     }
@@ -2147,20 +2126,44 @@ fn launch_report_refuses_official_hook_promotion_without_supported_hook_authorit
         r#"{
           "hosts": [
             {
-              "host":"cursor",
+              "host":"codex",
               "tfy_version":"0.1.0",
-              "host_id":"cursor",
+              "host_id":"codex",
               "host_version":"test",
               "setup_verified":true,
               "real_invocation_verified":true,
-              "setup_artifact":"setup-proof.txt",
-              "invocation_artifact":"invocation-proof.txt",
+              "setup_artifact":"codex-setup.txt",
+              "invocation_artifact":"codex-invocation.txt",
               "config_scope":"project",
-              "config_path":"cursor-config.json",
+              "config_path":"codex-config.toml",
               "route_type":"official_host_hook",
-              "ledger_artifact":"cursor-ledger.jsonl",
-              "raw_artifact":"cursor-raw.txt",
-              "smoke_id":"cursor-hook-smoke",
+              "ledger_artifact":"codex-ledger.jsonl",
+              "raw_artifact":"codex-raw.txt",
+              "smoke_id":"codex-hook-smoke",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "redacted_public_bytes":1000,
+              "model_visible_bytes":100,
+              "official_docs_backed":true,
+              "kill_switch_available":true,
+              "uninstall_available":true,
+              "overhead_ms":10,
+              "baseline_ms":10
+            },
+            {
+              "host":"claude-code",
+              "tfy_version":"0.1.0",
+              "host_id":"claude-code",
+              "host_version":"test",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"claude-setup.txt",
+              "invocation_artifact":"claude-invocation.txt",
+              "config_scope":"project",
+              "config_path":"claude-settings.json",
+              "route_type":"official_host_hook",
+              "ledger_artifact":"claude-ledger.jsonl",
+              "raw_artifact":"claude-raw.txt",
+              "smoke_id":"claude-hook-smoke",
               "timestamp":"2026-06-09T00:00:00Z",
               "redacted_public_bytes":1000,
               "model_visible_bytes":100,
@@ -2190,14 +2193,113 @@ fn launch_report_refuses_official_hook_promotion_without_supported_hook_authorit
         String::from_utf8_lossy(&report.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-    let cursor = json["host_matrix"]
+    for host_name in ["codex", "claude-code"] {
+        let host = json["host_matrix"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|host| host["host"] == host_name)
+            .unwrap();
+        assert_eq!(host["status"], "launch_supported", "{json}");
+        let tiers = host["evidence_tiers"].as_array().unwrap();
+        assert!(
+            tiers.iter().any(|tier| tier == "verified_host_hook"),
+            "{json}"
+        );
+        assert!(
+            tiers.iter().any(|tier| tier == "launch_supported"),
+            "{json}"
+        );
+        assert!(host["evidence_gate"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gate| gate
+                .as_str()
+                .unwrap()
+                .contains("route_type=official_host_hook")));
+        assert_eq!(
+            json["host_evidence"]["named_hosts"][host_name]["host_bound_evidence"], true,
+            "{json}"
+        );
+    }
+    assert!(json["host_evidence"]["evidence_notes"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|h| h["host"] == "cursor")
+        .filter_map(serde_json::Value::as_str)
+        .any(|note| note.contains("codex") && note.contains("hook_authorized=true")));
+}
+
+#[test]
+fn launch_report_refuses_official_hook_promotion_without_supported_hook_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    for file in [
+        "setup-proof.txt",
+        "invocation-proof.txt",
+        "claude-code-config.json",
+        "claude-code-ledger.jsonl",
+        "claude-code-raw.txt",
+    ] {
+        std::fs::write(dir.path().join(file), "proof").unwrap();
+    }
+    let host_evidence = dir.path().join("host-evidence.json");
+    std::fs::write(
+        &host_evidence,
+        r#"{
+          "hosts": [
+            {
+              "host":"claude-code",
+              "tfy_version":"0.1.0",
+              "host_id":"claude-code",
+              "host_version":"test",
+              "setup_verified":true,
+              "real_invocation_verified":true,
+              "setup_artifact":"setup-proof.txt",
+              "invocation_artifact":"invocation-proof.txt",
+              "config_scope":"project",
+              "config_path":"claude-code-config.json",
+              "route_type":"official_host_hook",
+              "ledger_artifact":"claude-code-ledger.jsonl",
+              "raw_artifact":"claude-code-raw.txt",
+              "smoke_id":"claude-code-hook-smoke",
+              "timestamp":"2026-06-09T00:00:00Z",
+              "redacted_public_bytes":1000,
+              "model_visible_bytes":100,
+              "official_docs_backed":false,
+              "kill_switch_available":true,
+              "uninstall_available":true,
+              "overhead_ms":10,
+              "baseline_ms":10
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args([
+            "launch-report",
+            "--json",
+            "--host-evidence",
+            host_evidence.to_str().unwrap(),
+        ])
+        .output()
         .unwrap();
-    assert_ne!(cursor["status"], "launch_supported", "{json}");
-    assert!(!cursor["evidence_tiers"]
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let claude_code = json["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["host"] == "claude-code")
+        .unwrap();
+    assert_ne!(claude_code["status"], "launch_supported", "{json}");
+    assert!(!claude_code["evidence_tiers"]
         .as_array()
         .unwrap()
         .iter()
@@ -2415,7 +2517,7 @@ fn launch_report_release_tiers_require_release_evidence_and_keep_ga_blocked_with
         .as_array()
         .unwrap()
         .iter()
-        .any(|blocker| blocker.as_str().unwrap().contains("no named AI host")));
+        .any(|b| b.as_str().unwrap().contains("no named AI host")));
     assert_eq!(
         json["release_tiers"]["public_superiority_claim_ready"]["status"],
         "blocked"
@@ -2484,7 +2586,19 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
     );
     let start_text = String::from_utf8_lossy(&start.stdout);
     assert!(
-        start_text.contains("host_route_configured_verification_required"),
+        start_text.contains("default_agent_routes_configured_verification_required"),
+        "{start_text}"
+    );
+    assert!(
+        start_text.contains("Installed TFY agent command wrapper"),
+        "{start_text}"
+    );
+    assert!(
+        start_text.contains("Configured Codex project PreToolUse Bash hook route"),
+        "{start_text}"
+    );
+    assert!(
+        start_text.contains("Configured Claude Code project PreToolUse Bash hook route"),
         "{start_text}"
     );
     assert!(
@@ -2509,15 +2623,16 @@ fn lifecycle_project_start_stop_restart_status_truthful() {
     assert_eq!(json["project_lifecycle"]["agent"]["desired"], true);
     assert_eq!(
         json["project_lifecycle"]["agent"]["support_status"],
-        "host_route_configured_verification_required"
+        "default_agent_routes_configured_verification_required"
     );
+    assert!(dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
     assert!(json["project_lifecycle"]["agent"]["active_routes"].is_null());
     assert_eq!(
         json["project_lifecycle"]["agent"]["intended_routes"]
             .as_array()
             .unwrap()
             .len(),
-        3
+        4
     );
     assert_eq!(
         json["project_lifecycle"]["agent"]["private_hook_interception"],
@@ -3025,10 +3140,7 @@ fn lifecycle_global_start_accepts_host_options_as_default_guidance_only() {
         json["global_lifecycle"]["agent"]["host_routes"]["claude-code"]["route_state"],
         "config_snippet_available"
     );
-    assert_eq!(
-        json["global_lifecycle"]["agent"]["host_routes"]["cursor"]["route_state"],
-        "config_snippet_available"
-    );
+    assert!(json["global_lifecycle"]["agent"]["host_routes"]["cursor"].is_null());
     assert_eq!(json["effective_lifecycle"]["agent"]["active"], false);
     assert_eq!(json["lifecycle_summary"]["status"], "intent_recorded");
 }
@@ -3164,7 +3276,7 @@ fn lifecycle_status_reports_effective_state_and_next_actions() {
     let project_start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
         .env("TFY_HOME", home.path())
-        .args(["start", "agent", "--host", "cursor", "--apply"])
+        .args(["start", "agent", "--host", "codex", "--apply"])
         .output()
         .unwrap();
     assert!(project_start.status.success());
@@ -3266,7 +3378,7 @@ fn lifecycle_start_verify_prints_persisted_support_status() {
     let dir = tempfile::tempdir().unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "agent", "--host", "cursor", "--verify"])
+        .args(["start", "agent", "--host", "all", "--verify"])
         .output()
         .unwrap();
     assert!(
@@ -3354,48 +3466,15 @@ fn lifecycle_start_cursor_apply_caps_at_configured_unverified() {
         .args(["start", "agent", "--host", "cursor", "--apply"])
         .output()
         .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
     assert!(
-        start.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&start.stderr)
+        stderr.contains(
+            "host 'cursor' is not available in TFY agent mode; supported hosts: codex, claude-code"
+        ),
+        "{stderr}"
     );
-    let text = String::from_utf8_lossy(&start.stdout);
-    assert!(text.contains("route_state=configured_unverified"), "{text}");
-    assert!(
-        text.contains("Configured Cursor project MCP route: .cursor/mcp.json"),
-        "{text}"
-    );
-    assert!(
-        text.contains("Restart/reload Cursor to make the route visible."),
-        "{text}"
-    );
-    assert!(text.contains("Status: configured, not active."), "{text}");
-    assert!(
-        text.contains("Next: open Cursor and invoke a TFY MCP tool to verify real host routing."),
-        "{text}"
-    );
-    assert!(!text.contains("Cursor is now saving tokens"), "{text}");
-    assert!(text.contains("active=false"), "{text}");
-    assert!(dir.path().join(".cursor/mcp.json").exists());
-
-    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
-        .current_dir(dir.path())
-        .args(["status", "--json"])
-        .output()
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    let cursor = &json["project_lifecycle"]["agent"]["host_routes"]["cursor"];
-    assert_eq!(cursor["route_state"], "configured_unverified");
-    assert_eq!(cursor["active"], false);
-    assert_eq!(cursor["route_configured"], true);
-    assert_eq!(cursor["host_reload_required"], true);
-    assert_eq!(cursor["host_route_available_after_reload"], false);
-    assert_eq!(json["project_lifecycle"]["agent"]["active"], false);
-    assert!(json["minimum_v1_host_matrix"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|h| h["host"] == "cursor" && h["status"] != "launch_supported"));
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
 }
 
 #[test]
@@ -3417,17 +3496,17 @@ fn lifecycle_start_host_all_apply_only_uses_safe_writers() {
         "{text}"
     );
     assert!(
-        text.contains("host=claude-code route_state=configured_unverified"),
+        text.contains("host=codex route_state=configured_unverified active=false route_configured=true host_reload_required=true host_approval_required=true"),
         "{text}"
     );
     assert!(
-        text.contains("host=cursor route_state=configured_unverified"),
+        text.contains("host=claude-code route_state=configured_unverified"),
         "{text}"
     );
-    assert!(text.contains("host=opencode"), "{text}");
-    assert!(dir.path().join(".cursor/mcp.json").exists());
+    assert!(!text.contains("host=cursor"), "{text}");
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
     assert!(dir.path().join(".codex/config.toml").exists());
-    assert!(dir.path().join(".mcp.json").exists());
+    assert!(dir.path().join(".claude/settings.json").exists());
 
     let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3440,16 +3519,20 @@ fn lifecycle_start_host_all_apply_only_uses_safe_writers() {
         "configured_unverified"
     );
     assert_eq!(
+        json["project_lifecycle"]["agent"]["host_routes"]["codex"]["route_type"],
+        "official_host_hook"
+    );
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["host_routes"]["codex"]["host_approval_required"],
+        true
+    );
+    assert_eq!(
         json["project_lifecycle"]["agent"]["host_routes"]["claude-code"]["route_state"],
         "configured_unverified"
     );
     assert_eq!(
-        json["project_lifecycle"]["agent"]["host_routes"]["cursor"]["route_configured"],
-        true
-    );
-    assert_eq!(
-        json["project_lifecycle"]["agent"]["host_routes"]["cursor"]["host_reload_required"],
-        true
+        json["project_lifecycle"]["agent"]["host_routes"]["claude-code"]["route_type"],
+        "official_host_hook"
     );
     assert_eq!(
         json["project_lifecycle"]["agent"]["host_routes"]["claude-code"]["active"],
@@ -3458,7 +3541,7 @@ fn lifecycle_start_host_all_apply_only_uses_safe_writers() {
 }
 
 #[test]
-fn lifecycle_start_agent_auto_configures_codex_by_default() {
+fn lifecycle_start_agent_installs_default_agent_routes() {
     let dir = tempfile::tempdir().unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3472,19 +3555,37 @@ fn lifecycle_start_agent_auto_configures_codex_by_default() {
     );
     let text = String::from_utf8_lossy(&start.stdout);
     assert!(
-        text.contains("Configured Codex project MCP route: .codex/config.toml"),
+        text.contains("Installed TFY agent command wrapper: .tfy/agent/tfy-agent-wrapper"),
         "{text}"
     );
     assert!(
-        text.contains("Open/reload Codex in a trusted project"),
+        text.contains("Configured Codex project PreToolUse Bash hook route: .codex/config.toml"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "Configured Claude Code project PreToolUse Bash hook route: .claude/settings.json"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("MCP remains an advanced complementary route"),
         "{text}"
     );
     assert!(text.contains("Status: configured, not active."), "{text}");
     assert!(!text.contains("TFY is active"), "{text}");
     assert!(!text.contains("saving tokens"), "{text}");
     assert!(dir.path().join(".codex/config.toml").exists());
+    assert!(dir.path().join(".claude/settings.json").exists());
     assert!(!dir.path().join(".cursor/mcp.json").exists());
     assert!(dir.path().join(".tfy/host-config/codex.json").exists());
+    assert!(dir
+        .path()
+        .join(".tfy/host-config/claude-code.json")
+        .exists());
+    assert!(dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
+    assert!(dir.path().join(".tfy/agent/codex-pre-tool-use").exists());
+    assert!(dir.path().join(".tfy/agent/claude-pre-tool-use").exists());
     assert!(dir.path().join(".tfy/raw").is_dir());
     assert!(dir.path().join(".tfy/state").is_dir());
     assert!(dir.path().join(".tfy/adapter").is_dir());
@@ -3497,17 +3598,45 @@ fn lifecycle_start_agent_auto_configures_codex_by_default() {
         .output()
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let routes = json["project_lifecycle"]["agent"]["host_routes"]
+        .as_object()
+        .unwrap();
+    assert!(routes.contains_key("agent-wrapper"), "{json}");
+    assert!(routes.contains_key("codex"), "{json}");
+    assert!(routes.contains_key("claude-code"), "{json}");
+    assert!(!routes.contains_key("cursor"), "{json}");
+
+    let wrapper = &json["project_lifecycle"]["agent"]["host_routes"]["agent-wrapper"];
+    assert_eq!(wrapper["route_state"], "configured_unverified", "{json}");
+    assert_eq!(wrapper["configured"], true, "{json}");
+    assert_eq!(wrapper["route_configured"], true, "{json}");
+    assert_eq!(wrapper["host_reload_required"], false, "{json}");
+    assert_eq!(wrapper["host_approval_required"], false, "{json}");
+    assert_eq!(
+        wrapper["host_route_available_after_reload"], false,
+        "{json}"
+    );
+    assert_eq!(wrapper["mcp_invocation_observed"], false, "{json}");
+
     let codex = &json["project_lifecycle"]["agent"]["host_routes"]["codex"];
     assert_eq!(codex["route_state"], "configured_unverified", "{json}");
-    assert_eq!(codex["configured"], true, "{json}");
+    assert_eq!(codex["route_type"], "official_host_hook", "{json}");
     assert_eq!(codex["route_configured"], true, "{json}");
+    assert_eq!(codex["active"], false, "{json}");
     assert_eq!(codex["host_reload_required"], true, "{json}");
-    assert_eq!(codex["host_approval_required"], false, "{json}");
-    assert_eq!(codex["host_route_available_after_reload"], false, "{json}");
-    assert_eq!(codex["mcp_invocation_observed"], false, "{json}");
+    assert_eq!(codex["host_approval_required"], true, "{json}");
+
+    let claude = &json["project_lifecycle"]["agent"]["host_routes"]["claude-code"];
+    assert_eq!(claude["route_state"], "configured_unverified", "{json}");
+    assert_eq!(claude["route_type"], "official_host_hook", "{json}");
+    assert_eq!(claude["route_configured"], true, "{json}");
+    assert_eq!(claude["active"], false, "{json}");
+    assert_eq!(claude["host_reload_required"], true, "{json}");
+    assert_eq!(claude["host_approval_required"], false, "{json}");
+
     assert_eq!(
         json["project_lifecycle"]["agent"]["support_status"],
-        "host_route_configured_verification_required",
+        "default_agent_routes_configured_verification_required",
         "{json}"
     );
     assert_eq!(
@@ -3531,7 +3660,9 @@ fn lifecycle_start_agent_no_apply_records_intent_without_cursor_config() {
     );
     assert!(!dir.path().join(".cursor/mcp.json").exists());
     assert!(!dir.path().join(".codex/config.toml").exists());
+    assert!(!dir.path().join(".claude/settings.json").exists());
     assert!(!dir.path().join(".mcp.json").exists());
+    assert!(!dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
     let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
         .args(["status", "--agent", "--json"])
@@ -3542,13 +3673,15 @@ fn lifecycle_start_agent_no_apply_records_intent_without_cursor_config() {
         json["project_lifecycle"]["agent"]["desired"], true,
         "{json}"
     );
-    assert!(
-        json["project_lifecycle"]["agent"]["host_routes"]
-            .as_object()
-            .unwrap()
-            .is_empty(),
-        "{json}"
-    );
+    if let Some(agent) = json["project_lifecycle"]["agent"].as_object() {
+        assert!(
+            agent
+                .get("host_routes")
+                .and_then(serde_json::Value::as_object)
+                .is_none_or(serde_json::Map::is_empty),
+            "{json}"
+        );
+    }
     assert_eq!(
         json["effective_lifecycle"]["agent"]["route_configured"], false,
         "{json}"
@@ -3567,18 +3700,57 @@ fn lifecycle_start_agent_host_cursor_applies_without_apply_flag() {
         .args(["start", "--agent", "--host", "cursor"])
         .output()
         .unwrap();
+    assert!(!start.status.success());
+    assert!(String::from_utf8_lossy(&start.stderr).contains("not available in TFY agent mode"));
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+}
+
+#[test]
+fn lifecycle_start_agent_host_codex_stays_narrow() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--host", "codex"])
+        .output()
+        .unwrap();
     assert!(
         start.status.success(),
         "stderr={}",
         String::from_utf8_lossy(&start.stderr)
     );
-    assert!(dir.path().join(".cursor/mcp.json").exists());
-    let text = String::from_utf8_lossy(&start.stdout);
-    assert!(text.contains("route_state=configured_unverified"), "{text}");
+    assert!(dir.path().join(".codex/config.toml").exists());
+    assert!(dir.path().join(".tfy/agent/codex-pre-tool-use").exists());
+    assert!(!dir.path().join(".claude/settings.json").exists());
+    assert!(!dir.path().join(".tfy/agent/claude-pre-tool-use").exists());
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["status", "--agent", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let routes = json["project_lifecycle"]["agent"]["host_routes"]
+        .as_object()
+        .unwrap();
+    assert!(routes.contains_key("codex"), "{json}");
+    assert!(!routes.contains_key("claude-code"), "{json}");
+    assert!(!routes.contains_key("agent-wrapper"), "{json}");
+    assert!(!routes.contains_key("cursor"), "{json}");
+    assert_eq!(
+        json["project_lifecycle"]["agent"]["host_routes"]["codex"]["route_type"],
+        "official_host_hook",
+        "{json}"
+    );
+    assert_eq!(
+        json["effective_lifecycle"]["agent"]["active"], false,
+        "{json}"
+    );
 }
 
 #[test]
-fn lifecycle_start_agent_host_claude_code_applies_project_mcp_with_approval_required() {
+fn lifecycle_start_agent_host_claude_code_applies_project_hook_with_verification_required() {
     let dir = tempfile::tempdir().unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
@@ -3590,7 +3762,26 @@ fn lifecycle_start_agent_host_claude_code_applies_project_mcp_with_approval_requ
         "stderr={}",
         String::from_utf8_lossy(&start.stderr)
     );
-    assert!(dir.path().join(".mcp.json").exists());
+    assert!(dir.path().join(".claude/settings.json").exists());
+    assert!(!dir.path().join(".codex/config.toml").exists());
+    assert!(!dir.path().join(".tfy/agent/tfy-agent-wrapper").exists());
+    let script = dir.path().join(".tfy/agent/claude-pre-tool-use");
+    assert!(script.exists());
+    let script_text = std::fs::read_to_string(&script).unwrap();
+    assert!(script_text.contains("--host claude-code"), "{script_text}");
+    assert!(
+        script_text.contains(dir.path().join(".tfy/raw").to_str().unwrap()),
+        "{script_text}"
+    );
+    assert!(
+        script_text.contains(
+            dir.path()
+                .join(".tfy/hook/claude-code-ledger.jsonl")
+                .to_str()
+                .unwrap()
+        ),
+        "{script_text}"
+    );
     assert!(dir
         .path()
         .join(".tfy/host-config/claude-code.json")
@@ -3603,18 +3794,38 @@ fn lifecycle_start_agent_host_claude_code_applies_project_mcp_with_approval_requ
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     let claude = &json["project_lifecycle"]["agent"]["host_routes"]["claude-code"];
     assert_eq!(claude["route_state"], "configured_unverified", "{json}");
+    assert_eq!(claude["route_type"], "official_host_hook", "{json}");
     assert_eq!(claude["configured"], true, "{json}");
     assert_eq!(claude["route_configured"], true, "{json}");
-    assert_eq!(claude["host_approval_required"], true, "{json}");
+    assert_eq!(claude["host_approval_required"], false, "{json}");
     assert_eq!(claude["active"], false, "{json}");
 }
 
 #[test]
-fn lifecycle_start_agent_unsupported_host_is_guidance_only_without_configured_claim() {
+fn lifecycle_start_agent_claude_preserves_similar_unowned_hook_without_provenance() {
     let dir = tempfile::tempdir().unwrap();
+    let claude_dir = dir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        r#"{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash",
+      "hooks": [{
+        "type": "command",
+        "command": "/user/managed/.tfy/agent/claude-pre-tool-use",
+        "timeout": 30
+      }]
+    }]
+  }
+}
+"#,
+    )
+    .unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent", "--host", "opencode"])
+        .args(["start", "--agent", "--host", "claude-code"])
         .output()
         .unwrap();
     assert!(
@@ -3622,20 +3833,64 @@ fn lifecycle_start_agent_unsupported_host_is_guidance_only_without_configured_cl
         "stderr={}",
         String::from_utf8_lossy(&start.stderr)
     );
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+            .unwrap();
+    let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{settings}");
+    assert!(settings
+        .to_string()
+        .contains("/user/managed/.tfy/agent/claude-pre-tool-use"));
+}
+
+#[test]
+fn lifecycle_start_agent_unsupported_host_is_guidance_only_without_configured_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent", "--host", "cursor"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    assert!(String::from_utf8_lossy(&start.stderr).contains("not available in TFY agent mode"));
     let status = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
         .args(["status", "--agent", "--json"])
         .output()
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    let opencode = &json["project_lifecycle"]["agent"]["host_routes"]["opencode"];
-    assert_eq!(
-        opencode["route_state"], "config_snippet_available",
-        "{json}"
-    );
-    assert_eq!(opencode["configured"], false, "{json}");
-    assert_eq!(opencode["route_configured"], false, "{json}");
-    assert_eq!(opencode["active"], false, "{json}");
+    if let Some(agent) = json["project_lifecycle"]["agent"].as_object() {
+        assert!(
+            agent
+                .get("host_routes")
+                .and_then(serde_json::Value::as_object)
+                .is_none_or(serde_json::Map::is_empty),
+            "{json}"
+        );
+    }
+}
+
+#[test]
+fn lifecycle_start_agent_default_fails_closed_on_unowned_codex_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex_dir = dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        "[mcp_servers.tfy]\ncommand = \"custom\"\n",
+    )
+    .unwrap();
+    let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .current_dir(dir.path())
+        .args(["start", "--agent"])
+        .output()
+        .unwrap();
+    assert!(!start.status.success());
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(stderr.contains("not TFY-owned"), "{stderr}");
+    assert!(!dir.path().join(".claude/settings.json").exists());
+    assert!(!dir.path().join(".cursor/mcp.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
 }
 
 #[test]
@@ -3650,7 +3905,7 @@ fn lifecycle_start_agent_fails_closed_on_unowned_codex_tfy_route() {
     .unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3668,7 +3923,7 @@ fn lifecycle_start_agent_fails_closed_on_malformed_codex_toml() {
     std::fs::write(codex_dir.join("config.toml"), "[mcp_servers.tfy\n").unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3686,7 +3941,7 @@ key =";
     std::fs::write(codex_dir.join("config.toml"), original).unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3711,7 +3966,7 @@ command = "custom"
     std::fs::write(codex_dir.join("config.toml"), original).unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3734,7 +3989,7 @@ fn lifecycle_start_agent_fails_closed_on_dotted_codex_tfy_route() {
     std::fs::write(codex_dir.join("config.toml"), original).unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3757,7 +4012,7 @@ fn lifecycle_start_agent_fails_closed_on_nested_dotted_codex_tfy_route() {
     std::fs::write(codex_dir.join("config.toml"), original).unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3783,7 +4038,7 @@ fn lifecycle_start_agent_fails_closed_on_incomplete_codex_tfy_marker() {
     .unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -3808,7 +4063,7 @@ fn lifecycle_start_agent_fails_closed_on_orphan_codex_tfy_end_marker() {
     std::fs::write(codex_dir.join("config.toml"), original).unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "--agent"])
+        .args(["start", "--agent", "--host", "codex"])
         .output()
         .unwrap();
     assert!(!start.status.success());
@@ -4042,9 +4297,9 @@ fn launch_report_demotes_stale_or_failed_reverify_named_host_evidence() {
     for file in [
         "setup-proof.txt",
         "invocation-proof.txt",
-        "cursor-config.json",
-        "cursor-ledger.jsonl",
-        "cursor-raw.txt",
+        "claude-code-config.json",
+        "claude-code-ledger.jsonl",
+        "claude-code-raw.txt",
     ] {
         std::fs::write(dir.path().join(file), "proof").unwrap();
     }
@@ -4054,21 +4309,21 @@ fn launch_report_demotes_stale_or_failed_reverify_named_host_evidence() {
         r#"{
           "hosts": [
             {
-              "host":"cursor",
+              "host":"claude-code",
               "tfy_version":"0.0.0-stale",
               "reverify_failed":true,
-              "host_id":"cursor",
+              "host_id":"claude-code",
               "host_version":"test",
               "setup_verified":true,
               "real_invocation_verified":true,
               "setup_artifact":"setup-proof.txt",
               "invocation_artifact":"invocation-proof.txt",
               "config_scope":"project",
-              "config_path":"cursor-config.json",
+              "config_path":"claude-code-config.json",
               "route_type":"mcp_stdio",
-              "ledger_artifact":"cursor-ledger.jsonl",
-              "raw_artifact":"cursor-raw.txt",
-              "smoke_id":"cursor-mcp-smoke",
+              "ledger_artifact":"claude-code-ledger.jsonl",
+              "raw_artifact":"claude-code-raw.txt",
+              "smoke_id":"claude-code-mcp-smoke",
               "timestamp":"2026-06-09T00:00:00Z",
               "redacted_public_bytes":1000,
               "model_visible_bytes":100,
@@ -4095,15 +4350,15 @@ fn launch_report_demotes_stale_or_failed_reverify_named_host_evidence() {
         String::from_utf8_lossy(&report.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-    let cursor = json["host_matrix"]
+    let claude_code = json["host_matrix"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|h| h["host"] == "cursor")
+        .find(|h| h["host"] == "claude-code")
         .unwrap();
-    assert_ne!(cursor["status"], "launch_supported", "{json}");
+    assert_ne!(claude_code["status"], "launch_supported", "{json}");
     assert_eq!(
-        json["host_evidence"]["named_hosts"]["cursor"]["host_bound_evidence"], false,
+        json["host_evidence"]["named_hosts"]["claude-code"]["host_bound_evidence"], false,
         "{json}"
     );
     assert!(
@@ -4121,7 +4376,7 @@ fn lifecycle_status_exposes_derived_activation_vocabulary() {
     let dir = tempfile::tempdir().unwrap();
     let start = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .current_dir(dir.path())
-        .args(["start", "agent", "--host", "cursor", "--apply"])
+        .args(["start", "agent", "--host", "codex", "--apply"])
         .output()
         .unwrap();
     assert!(start.status.success());
@@ -4151,9 +4406,9 @@ fn launch_report_accepts_unexpired_unix_evidence_and_rejects_malformed_expiry() 
     for file in [
         "setup-proof.txt",
         "invocation-proof.txt",
-        "cursor-config.json",
-        "cursor-ledger.jsonl",
-        "cursor-raw.txt",
+        "claude-code-config.json",
+        "claude-code-ledger.jsonl",
+        "claude-code-raw.txt",
     ] {
         std::fs::write(dir.path().join(file), "proof").unwrap();
     }
@@ -4173,21 +4428,21 @@ fn launch_report_accepts_unexpired_unix_evidence_and_rejects_malformed_expiry() 
                 r#"{{
                   "hosts": [
                     {{
-                      "host":"cursor",
+                      "host":"claude-code",
                       "tfy_version":"0.1.0",
                       "evidence_expires_at":"{expires}",
-                      "host_id":"cursor",
+                      "host_id":"claude-code",
                       "host_version":"test",
                       "setup_verified":true,
                       "real_invocation_verified":true,
                       "setup_artifact":"setup-proof.txt",
                       "invocation_artifact":"invocation-proof.txt",
                       "config_scope":"project",
-                      "config_path":"cursor-config.json",
+                      "config_path":"claude-code-config.json",
                       "route_type":"mcp_stdio",
-                      "ledger_artifact":"cursor-ledger.jsonl",
-                      "raw_artifact":"cursor-raw.txt",
-                      "smoke_id":"cursor-mcp-smoke",
+                      "ledger_artifact":"claude-code-ledger.jsonl",
+                      "raw_artifact":"claude-code-raw.txt",
+                      "smoke_id":"claude-code-mcp-smoke",
                       "timestamp":"unix:{future}",
                       "redacted_public_bytes":1000,
                       "model_visible_bytes":100,
@@ -4215,16 +4470,16 @@ fn launch_report_accepts_unexpired_unix_evidence_and_rejects_malformed_expiry() 
             String::from_utf8_lossy(&report.stderr)
         );
         let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-        let cursor = json["host_matrix"]
+        let claude_code = json["host_matrix"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|h| h["host"] == "cursor")
+            .find(|h| h["host"] == "claude-code")
             .unwrap();
         if should_launch {
-            assert_eq!(cursor["status"], "launch_supported", "{json}");
+            assert_eq!(claude_code["status"], "launch_supported", "{json}");
         } else {
-            assert_ne!(cursor["status"], "launch_supported", "{json}");
+            assert_ne!(claude_code["status"], "launch_supported", "{json}");
             assert!(
                 json["host_evidence"]["evidence_notes"]
                     .as_array()
@@ -4238,4 +4493,248 @@ fn launch_report_accepts_unexpired_unix_evidence_and_rejects_malformed_expiry() 
             );
         }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn live_host_smoke_generates_codex_launch_report_evidence_with_fake_host() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_codex = bin_dir.join("codex");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/usr/bin/env sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "codex-cli fake-live-smoke"
+  exit 0
+fi
+payload='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"for i in $(seq 1 80); do echo tfy-live-host-hook-smoke-$i; done"}}'
+out=$(printf '%s' "$payload" | ./.tfy/agent/codex-pre-tool-use)
+cmd=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["updatedInput"]["command"])')
+sh -c "$cmd"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("PATH", path)
+        .args(["smoke", "--host", "codex", "--live", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&smoke.stdout),
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
+    assert_eq!(json["status"], "pass", "{json}");
+    assert_eq!(json["mode"], "host_live", "{json}");
+    let host = &json["hosts"][0];
+    assert_eq!(host["status"], "pass", "{json}");
+    assert_eq!(host["host"], "codex", "{json}");
+    let evidence = host["host_evidence"].as_str().unwrap();
+    assert!(std::path::Path::new(evidence).is_file(), "{json}");
+
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["launch-report", "--json", "--host-evidence", evidence])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let launch: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let codex = launch["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "codex")
+        .unwrap();
+    assert_eq!(codex["status"], "launch_supported", "{launch}");
+    assert_eq!(
+        launch["host_evidence"]["named_hosts"]["codex"]["host_bound_evidence"], true,
+        "{launch}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn live_host_smoke_rejects_extra_fake_host_hook_command() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_codex = bin_dir.join("codex");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/usr/bin/env sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "codex-cli fake-live-smoke"
+  exit 0
+fi
+payload='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"for i in $(seq 1 80); do echo tfy-live-host-hook-smoke-$i; done"}}'
+out=$(printf '%s' "$payload" | ./.tfy/agent/codex-pre-tool-use)
+cmd=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["updatedInput"]["command"])')
+sh -c "$cmd"
+extra='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"for i in $(seq 1 80); do echo tfy-live-host-hook-extra-$i; done"}}'
+out=$(printf '%s' "$extra" | ./.tfy/agent/codex-pre-tool-use)
+cmd=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["updatedInput"]["command"])')
+sh -c "$cmd"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("PATH", path)
+        .args(["smoke", "--host", "codex", "--live", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        !smoke.status.success(),
+        "stdout={}",
+        String::from_utf8_lossy(&smoke.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&smoke.stderr);
+    assert!(
+        stderr.contains("expected exactly one official-host-hook command"),
+        "{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn live_host_smoke_rejects_wrong_fake_host_hook_command() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_codex = bin_dir.join("codex");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/usr/bin/env sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "codex-cli fake-live-smoke"
+  exit 0
+fi
+payload='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"for i in $(seq 1 80); do echo tfy-live-host-hook-wrong-$i; done"}}'
+out=$(printf '%s' "$payload" | ./.tfy/agent/codex-pre-tool-use)
+cmd=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["updatedInput"]["command"])')
+sh -c "$cmd"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("PATH", path)
+        .args(["smoke", "--host", "codex", "--live", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        !smoke.status.success(),
+        "stdout={}",
+        String::from_utf8_lossy(&smoke.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&smoke.stderr);
+    assert!(
+        stderr.contains("official hook command mismatch"),
+        "{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn live_host_smoke_generates_claude_code_launch_report_evidence_with_fake_host() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_claude = bin_dir.join("claude");
+    std::fs::write(
+        &fake_claude,
+        r#"#!/usr/bin/env sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "2.1.160 fake-live-smoke"
+  exit 0
+fi
+payload='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"for i in $(seq 1 80); do echo tfy-live-host-hook-smoke-$i; done"}}'
+out=$(printf '%s' "$payload" | ./.tfy/agent/claude-pre-tool-use)
+cmd=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["updatedInput"]["command"])')
+sh -c "$cmd"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let smoke = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .env("PATH", path)
+        .args(["smoke", "--host", "claude-code", "--live", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        smoke.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&smoke.stdout),
+        String::from_utf8_lossy(&smoke.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&smoke.stdout).unwrap();
+    assert_eq!(json["status"], "pass", "{json}");
+    assert_eq!(json["mode"], "host_live", "{json}");
+    let host = &json["hosts"][0];
+    assert_eq!(host["status"], "pass", "{json}");
+    assert_eq!(host["host"], "claude-code", "{json}");
+    let evidence = host["host_evidence"].as_str().unwrap();
+    assert!(std::path::Path::new(evidence).is_file(), "{json}");
+
+    let report = Command::new(env!("CARGO_BIN_EXE_tfy"))
+        .args(["launch-report", "--json", "--host-evidence", evidence])
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let launch: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    let claude = launch["host_matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["host"] == "claude-code")
+        .unwrap();
+    assert_eq!(claude["status"], "launch_supported", "{launch}");
+    assert_eq!(
+        launch["host_evidence"]["named_hosts"]["claude-code"]["host_bound_evidence"], true,
+        "{launch}"
+    );
 }

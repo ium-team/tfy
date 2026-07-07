@@ -2,9 +2,9 @@
 
 ## Purpose
 
-TFY is intended to sit inside supported AI-agent runtimes as an **I/O middleware**, not merely as a command a human types manually. The Rust CLI remains the debug/protocol surface, and the supported product path is explicit host routing through TFY wrappers, adapters, or MCP tools. Editor auto-integration and provider/API gateway proxying are outside TFY scope, and private/hidden Codex prompt hooks are not claimed.
+TFY is intended to sit inside supported AI-agent runtimes as an **I/O middleware**, not merely as a command a human types manually. The Rust CLI remains the debug/protocol surface, and the supported product path is explicit host routing through TFY wrappers/adapters or official Codex/Claude Code PreToolUse Bash hooks, with MCP as an advanced/complementary tool-resource route. Editor auto-integration and provider/API gateway proxying are outside TFY scope, and private/hidden Codex prompt hooks are not claimed.
 
-Current status: the Rust core, CLI primitives, project/global lifecycle intent commands (`tfy start`, `tfy stop`, `tfy status --agent/--human`, `tfy fuckyou`, `tfy global start|stop|fuckyou`) plus `tfy use always|stop|cancel|fuckyou` global aliases, bare-command arrow-key TUI selection, lifecycle target aliases (`agent`/`ai`, `human`, `both`), effective status guidance including `lifecycle_summary`, lifecycle `route_state`/`active` fields, `tfy-runtime` wire contract, Tool/Shell Gateway surfaces, Context Gateway CLI, Output Gateway preview/validate CLI plus proof-gated local single-file selected-scope apply, State Gateway ledger/projection CLI, `tfy adapter` generic-shell command-boundary adapter, configured `tfy agent` AI-runtime wrapper, display-only restore formatter, exact multi-file WorkspaceApplyPlan validate/apply, and `tfy mcp` stdio tool/resource server are implemented. MCP now includes a host-routed agent-native Code I/O workflow: bounded ID-first scope listing, compact selected-scope context with `ApplyProof`, preview-only validation, display-only restoration, WorkspaceApplyPlan validation, and proof-gated apply. Product setup can now generate named-host MCP routing snippets for Codex, Claude Code, Cursor, OpenCode, and Hermes, and can safely apply/uninstall Codex project `.codex/config.toml`, Claude Code project `.mcp.json`, and Cursor project `.cursor/mcp.json` routing with backup/idempotency/provenance; `tfy start --agent` defaults to the Codex writer, prepares raw/ledger directories, and records only `configured_unverified`/`active=false` until lifecycle desire is on and real route evidence exists; `--no-apply` keeps lifecycle intent only. OpenClaw remains planned-discovery until an official/current route is proven. Private/hidden Codex hooks are not claimed, and editor/provider automatic hooks are outside TFY scope. Conservative proof-gated unique-anchor fuzzy workspace mutation is implemented; broader semantic conflict resolution remains fail-closed.
+Current status: the Rust core, CLI primitives, project/global lifecycle intent commands (`tfy start`, `tfy stop`, `tfy status --agent/--human`, `tfy fuckyou`, `tfy global start|stop|fuckyou`) plus `tfy use always|stop|cancel|fuckyou` global aliases, bare-command arrow-key TUI selection, lifecycle target aliases (`agent`/`ai`, `human`, `both`), effective status guidance including `lifecycle_summary`, lifecycle `route_state`/`active` fields, `tfy-runtime` wire contract, Tool/Shell Gateway surfaces, Context Gateway CLI, Output Gateway preview/validate CLI plus proof-gated local single-file selected-scope apply, State Gateway ledger/projection CLI, `tfy adapter` generic-shell command-boundary adapter, configured `tfy agent` AI-runtime wrapper, display-only restore formatter, exact multi-file WorkspaceApplyPlan validate/apply, and `tfy mcp` stdio tool/resource server are implemented. MCP now includes a host-routed agent-native Code I/O workflow: bounded ID-first scope listing, compact selected-scope context with `ApplyProof`, preview-only validation, display-only restoration, WorkspaceApplyPlan validation, and proof-gated apply. Product setup can now generate supported-host setup snippets, safely apply/uninstall Codex project `.codex/config.toml` PreToolUse hooks, Claude Code project `.claude/settings.json` PreToolUse hooks, and legacy TFY-owned Claude Code `.mcp.json` cleanup; `tfy start --agent` defaults to creating `.tfy/agent/tfy-agent-wrapper` plus the safe Codex and Claude Code project hook routes, prepares raw/ledger directories, and records only `configured_unverified`/`active=false` until lifecycle desire is on and real route evidence exists; `--no-apply` keeps lifecycle intent only. Private/hidden Codex hooks are not claimed, and editor/provider automatic hooks are outside TFY scope. Conservative proof-gated unique-anchor fuzzy workspace mutation is implemented; broader semantic conflict resolution remains fail-closed.
 
 ## Boundary model
 
@@ -12,7 +12,7 @@ The gateway model is the external runtime integration model. It does not replace
 
 - Internal spine: representation ladder, token-saving method registry, agent-neutral Rust core.
 - External boundaries: Tool Gateway, Context Gateway, Output Gateway, State Gateway.
-- Runtime connectors: shell/agent wrapper, MCP host routing, and other explicit AI-runtime adapters. Provider/API gateways and editor auto-integration are out of scope; private hidden Codex hooks are not claimed.
+- Runtime connectors: shell/agent wrapper, official Codex/Claude Code PreToolUse hook routing, MCP host routing, and other explicit AI-runtime adapters. Provider/API gateways and editor auto-integration are out of scope; private hidden Codex hooks are not claimed.
 
 ## Gateway-to-registry crosswalk
 
@@ -158,22 +158,26 @@ An AI agent still intends to run the ordinary command. The host runtime or wrapp
 Support claim boundary:
 
 - `generic-shell` command-boundary interception: implemented and tested.
-- Codex/OMX command wrapping: only supported where the host is explicitly configured to call the generic-shell adapter.
+- AI-agent command wrapping: supported where the host is explicitly configured to call `.tfy/agent/tfy-agent-wrapper` or the generic-shell adapter.
 - MCP stdio tool/resource integration: implemented and tested through `tfy mcp serve`, including `tfy_scope_list`, enriched `tfy_context_get`, preview-only `tfy_output_validate`, and proof-gated `tfy_output_apply`.
-- Product UX lifecycle: implemented through `tfy init`, `tfy doctor`, `tfy smoke`, and `tfy gain`. These commands make setup, diagnostics, local MCP smoke, and savings reporting easier while keeping the same host-routing boundary.
-- Configured AI-agent wrapper: implemented through `tfy agent run`; lifecycle `tfy start --agent` now auto-configures the implemented safe Codex project MCP route unless `--no-apply` is passed; Claude Code and Cursor writers are explicit host/all routes, but it does not prove host invocation or launch support; effective `active=true` is derived only from verified host/route evidence and savings, not config presence.
+- Product UX lifecycle: implemented through `tfy init`, `tfy doctor`, `tfy smoke`, and `tfy gain`. These commands make setup, diagnostics, local adapter/agent/MCP smoke, and savings reporting easier while keeping the same host-routing boundary.
+- Configured AI-agent wrapper and default official hooks: implemented through `tfy agent run` plus lifecycle `tfy start --agent`, which creates `.tfy/agent/tfy-agent-wrapper` and prepares Codex/Claude Code project hook routes unless `--no-apply` is passed; none of these setup writes prove host invocation or launch support; effective `active=true` is derived only from verified host/route evidence and savings, not config presence.
 - Human lifecycle: `tfy start --human` records managed-session intent and, on supported platform shells (Linux bash, macOS zsh, Windows PowerShell), interactive project-only runs immediately enter a TFY-managed current-directory-scoped shell session with generated PATH shims or PowerShell proxy functions for safely resolved ordinary external commands. It still keeps `ordinary_terminal_interception=false` because ordinary terminals outside that managed session or trusted marked current directories with the explicit rc/profile hook are not globally intercepted. Supported sessions report `session_wrapper_available=true`, `managed_session_available=true`, `managed_session_scope=current_directory_scoped_tfy_managed_session`, and wrapped-command evidence in the TFY ledger; unsupported platforms report `managed_session_available=false` with `support_status=managed_session_unsupported_platform`. `tfy setup --human` is the short dry-run for the explicit one-time rc/profile hook, and `tfy setup --human --apply` installs that hook for trusted TFY-marked current directories by delegating to the same safety path as `tfy human auto-activate install`; npm install prints only opt-in guidance and never mutates startup files. `tfy human shell --no-auto-intercept` keeps only the managed shell environment without PATH/proxy routing, and `tfy human install --dry-run|--output <path>` generates the TFY-owned sourceable script. Shell-local functions, aliases, builtins, direct paths, explicit bypass, TFY gateway, and outside-current-directory-scope commands run raw without summary claims; automatic interactive/TUI/stateful subcommand classification is not claimed in v1. Wrapped commands expose TFY ledger evidence and preserve wrapper exit status.
 - Private Codex hook, editor auto-integration, and provider/API prompt gateway: not claimed; editor/provider are outside TFY scope.
 
-## Adapter v2: MCP/Codex setup foundation
+## Agent route foundation
 
-`tfy mcp serve` lets an MCP-aware agent host call TFY at the tool/resource boundary:
+Bare `tfy start --agent` prepares the product-facing command routes by writing `.tfy/agent/tfy-agent-wrapper` and the safe project-local Codex plus Claude Code official PreToolUse Bash hook configs. If the user later uses Codex in that project, the Codex hook route is ready; if they later use Claude Code, the Claude Code hook route is ready. Human and agent routes share the same raw-first/no-negative/custom command-summary pipeline; the difference is only where the command boundary is entered.
+
+Setup remains `configured_unverified` until a real host invocation creates route-bound evidence. `tfy start --agent --host codex` and `tfy start --agent --host claude-code` remain explicit/narrow setup paths.
+
+MCP remains an advanced/complementary tool-resource route. `tfy mcp serve` lets an MCP-aware agent host call TFY at that boundary:
 
 ```bash
 tfy mcp serve --session <id> --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw
 ```
 
-The host still decides to route through MCP. TFY does not secretly intercept every Codex command. The supported Codex path is:
+The host still decides to route through MCP. TFY does not secretly intercept every Codex command. The complementary MCP setup path is:
 
 ```bash
 tfy mcp install --target codex --dry-run
@@ -181,18 +185,22 @@ tfy mcp install --target codex --dry-run
 
 which prints a concrete `codex mcp add tfy -- tfy mcp serve ...` command and an equivalent TOML snippet. This keeps setup reversible and prevents false claims about private runtime hooks.
 
-The product-facing Codex path is:
+The product-facing setup path is:
 
 ```bash
-tfy init --codex --dry-run
-tfy init --codex --project --apply
-tfy doctor --codex
-tfy smoke --mcp
-tfy smoke --codex
-tfy setup --ai --codex --dry-run
+tfy start --agent
+# Prepares .tfy/agent/tfy-agent-wrapper plus Codex and Claude Code project hooks
 tfy status --json
 tfy explain
-tfy gain # reports no-data until adapter/tfy_tool_run command events exist
+tfy gain # reports no-data until adapter/agent/MCP command events exist
+
+# Optional explicit named-host setup remains available:
+tfy start --agent --host codex       # .codex/config.toml PreToolUse Bash hook
+tfy start --agent --host claude-code # .claude/settings.json PreToolUse Bash hook
+tfy smoke --mcp
+tfy smoke --codex
+tfy smoke --host codex --live --json
+tfy smoke --host claude-code --live --json
 ```
 
-`tfy init --codex --project --apply` writes only a TFY-owned marker block in `AGENTS.md`. `tfy setup --ai --host <host> --dry-run` and `tfy mcp install --target <host> --dry-run` generate host-specific MCP setup snippets for Codex, Claude Code, Cursor, OpenCode, and Hermes; `tfy setup --ai --host codex --apply --project`, `tfy setup --ai --host claude-code --apply --project`, and `tfy setup --ai --host cursor --apply --project` are safe project writers and preserve unrelated host config with backup, provenance, idempotency, and TFY-only uninstall. Other JSONC/YAML/TOML config writing remains dry-run/manual until a reversible writer exists. Unsupported hosts must not be silently marked configured by `tfy start --agent`. `tfy smoke --codex` and `tfy smoke --host <host>` remain checklist/evidence-collection surfaces and do not claim that the host invoked TFY; `tfy smoke --mcp` is the automated local proof that TFY's MCP Code I/O path works. `tfy smoke --all` adds local generic-shell and agent-wrapper smoke evidence. `tfy launch-report` exposes the v1 host matrix, uses the canonical statuses `config_snippet_available`, `not_configured`, `applied_unverified`, `verified_local_mcp`, `verified_host_invocation`, `launch_supported`, `unsupported`, and `planned_discovery`; lifecycle status additionally uses `configured_unverified` for safe config writes that have no host invocation evidence, plus claim tiers, and requires route-specific artifact-backed host setup, real-invocation, config path, ledger/raw evidence, no-negative/positive savings, and overhead evidence before named or required routes become `launch_supported`. Setup success is not savings success. `tfy gain` reports command-output savings only after adapter or MCP `tfy_tool_run` command events exist.
+`tfy init --codex --project --apply` writes only a TFY-owned marker block in `AGENTS.md`. `tfy setup --ai --host codex --dry-run`, `tfy setup --ai --host claude-code --dry-run`, and matching `tfy mcp install --target ... --dry-run` commands generate supported setup snippets; `tfy setup --ai --host codex --apply --project` and `tfy setup --ai --host claude-code --apply --project` are safe project writers and preserve unrelated host config with backup, provenance, idempotency, and TFY-only uninstall. Codex writes a PreToolUse Bash hook in `.codex/config.toml`, and Claude Code writes a PreToolUse Bash hook in `.claude/settings.json`. Host options outside the supported set must not be silently marked launch-supported by `tfy start --agent`. `tfy smoke --codex` and plain `tfy smoke --host <host>` remain checklist/evidence-collection surfaces and do not claim that the host invoked TFY; `tfy smoke --host codex --live` and `tfy smoke --host claude-code --live` are explicit opt-in live CLI smokes that create a temporary project, configure the official hook, ask the installed host CLI to run one Bash command, and emit a `host_evidence` JSON file for `tfy launch-report` only if the TFY ledger/raw/no-negative/positive-savings gates pass. `tfy smoke --mcp` is the automated local proof that TFY's MCP Code I/O path works. `tfy smoke --all` adds local generic-shell, agent-wrapper, and MCP smoke evidence. `tfy launch-report` exposes the v1 host matrix, uses the canonical statuses `config_snippet_available`, `not_configured`, `applied_unverified`, `verified_local_mcp`, `verified_local_hook`, `verified_host_invocation`, and `launch_supported`; lifecycle status additionally uses `configured_unverified` for safe config writes that have no host invocation evidence, plus claim tiers, and requires route-specific artifact-backed host setup, real-invocation, config path, ledger/raw evidence, no-negative/positive savings, and overhead evidence before named or required routes become `launch_supported`. Setup success is not savings success. `tfy gain` reports command-output savings only after adapter, agent, hook, or MCP command events exist.

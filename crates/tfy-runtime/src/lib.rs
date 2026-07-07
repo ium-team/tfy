@@ -42,6 +42,7 @@ pub enum OriginKind {
 #[serde(rename_all = "snake_case")]
 pub enum OriginHost {
     Codex,
+    ClaudeCode,
     Omx,
     Generic,
     Unknown,

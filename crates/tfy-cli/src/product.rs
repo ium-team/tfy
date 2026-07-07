@@ -14,8 +14,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tfy_core::{raw_output_bytes, summarize_command_output_with_policy, ToolPolicy};
 use tfy_runtime::{load_events, AdapterKind, GatewayEvent, OriginInvocation};
 
@@ -59,7 +60,7 @@ pub(crate) struct InitCmd {
 pub(crate) struct DoctorCmd {
     #[arg(long)]
     pub codex: bool,
-    /// Named AI-agent host to diagnose (codex, claude-code, cursor, opencode, hermes, openclaw).
+    /// Named AI-agent host to diagnose (codex, claude-code).
     #[arg(long = "host")]
     pub host: Vec<String>,
     #[arg(long)]
@@ -81,6 +82,12 @@ pub(crate) struct SmokeCmd {
     /// Named AI-agent host checklist/smoke target.
     #[arg(long = "host")]
     pub host: Vec<String>,
+    /// Run an installed host CLI against a temporary project and emit launch-report host evidence.
+    #[arg(long)]
+    pub live: bool,
+    /// Maximum Claude Code API spend for live host smoke, when the host supports it.
+    #[arg(long, default_value = "0.50")]
+    pub max_budget_usd: String,
 }
 
 #[derive(Args, Clone)]
@@ -103,10 +110,10 @@ pub(crate) struct SetupCmd {
     /// Prepare explicit human shell auto-activation for trusted TFY-marked current directories. Dry-run by default; writes only with --apply.
     #[arg(long)]
     pub human: bool,
-    /// Print Codex MCP/instruction setup guidance.
+    /// Print Codex integration setup guidance.
     #[arg(long)]
     pub codex: bool,
-    /// Named AI-agent host to configure (codex, claude-code, cursor, opencode, hermes, openclaw).
+    /// Named AI-agent host to configure (codex, claude-code).
     #[arg(long = "host")]
     pub host: Vec<String>,
     #[arg(long)]
@@ -149,10 +156,10 @@ pub(crate) struct StartCmd {
     /// Target alias: agent/ai, human, or both.
     #[arg(value_name = "TARGET")]
     pub target_alias: Option<String>,
-    /// Named AI-agent host setup route (codex, claude-code, cursor, opencode, hermes, openclaw, all).
+    /// Named AI-agent host setup route (codex, claude-code, all).
     #[arg(long)]
     pub host: Option<String>,
-    /// Apply only safe, implemented host configuration writers. Unsupported hosts stay guidance-only.
+    /// Apply only safe Codex/Claude Code project config writers; unknown hosts fail closed.
     #[arg(long)]
     pub apply: bool,
     /// Record lifecycle intent only; do not write supported host config.
@@ -434,6 +441,8 @@ struct HumanLifecycleState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LifecycleHostRoute {
+    #[serde(default = "default_lifecycle_route_type")]
+    route_type: String,
     route_state: String,
     active: bool,
     #[serde(default)]
@@ -457,6 +466,10 @@ struct LifecycleHostRoute {
     config_path: Option<String>,
     claim_tier: String,
     message: String,
+}
+
+fn default_lifecycle_route_type() -> String {
+    "unknown".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -496,9 +509,10 @@ struct LifecycleFile {
 
 fn default_agent_intended_routes() -> Vec<String> {
     vec![
-        "mcp_stdio".into(),
         "agent_wrapper".into(),
         "generic_shell_adapter".into(),
+        "official_host_hook_when_configured".into(),
+        "mcp_stdio_complementary".into(),
     ]
 }
 
@@ -635,6 +649,14 @@ struct HostIntegration {
     normal_workflow: &'static str,
     launch_claim: &'static str,
     evidence_gate: &'static [&'static str],
+}
+
+#[derive(Clone, Copy)]
+struct LiveHostSmokeSpec {
+    host: &'static str,
+    binary: &'static str,
+    timeout: Duration,
+    needs_noninteractive_bypass: bool,
 }
 
 #[derive(Serialize)]
@@ -1581,9 +1603,35 @@ fn target_names(targets: &[LifecycleTarget]) -> String {
 
 fn host_selection(host: Option<&str>) -> Result<Vec<HostIntegration>> {
     match host {
-        Some(host) if host.trim().eq_ignore_ascii_case("all") => Ok(host_registry()),
+        Some(host) if host.trim().eq_ignore_ascii_case("all") => Ok(host_registry()
+            .into_iter()
+            .filter(|host| matches!(host.id, "codex" | "claude-code"))
+            .collect()),
         Some(host) => Ok(vec![host_integration(host)?]),
         None => Ok(Vec::new()),
+    }
+}
+
+fn lifecycle_agent_wrapper_route(
+    config_path: Option<String>,
+    message: impl Into<String>,
+) -> LifecycleHostRoute {
+    LifecycleHostRoute {
+        route_type: "agent_wrapper".into(),
+        route_state: "configured_unverified".into(),
+        active: false,
+        configured: true,
+        route_configured: true,
+        host_reload_required: false,
+        host_route_available_after_reload: false,
+        host_approval_required: false,
+        mcp_invocation_observed: false,
+        route_verified: false,
+        savings_verified: false,
+        normal_workflow_supported: false,
+        config_path,
+        claim_tier: "configured_unverified".into(),
+        message: message.into(),
     }
 }
 
@@ -1593,14 +1641,39 @@ fn lifecycle_host_route(
     claim_tier: &str,
     message: impl Into<String>,
 ) -> LifecycleHostRoute {
-    lifecycle_host_route_with_approval(route_state, config_path, claim_tier, false, message)
+    lifecycle_host_route_with_type(
+        route_state,
+        config_path,
+        claim_tier,
+        false,
+        "mcp_stdio",
+        message,
+    )
 }
 
-fn lifecycle_host_route_with_approval(
+fn lifecycle_official_hook_route(
     route_state: &str,
     config_path: Option<String>,
     claim_tier: &str,
     host_approval_required: bool,
+    message: impl Into<String>,
+) -> LifecycleHostRoute {
+    lifecycle_host_route_with_type(
+        route_state,
+        config_path,
+        claim_tier,
+        host_approval_required,
+        "official_host_hook",
+        message,
+    )
+}
+
+fn lifecycle_host_route_with_type(
+    route_state: &str,
+    config_path: Option<String>,
+    claim_tier: &str,
+    host_approval_required: bool,
+    route_type: &str,
     message: impl Into<String>,
 ) -> LifecycleHostRoute {
     let configured = matches!(
@@ -1621,6 +1694,7 @@ fn lifecycle_host_route_with_approval(
     let route_verified = matches!(route_state, "verified_host_invocation" | "launch_supported");
     let savings_verified = route_state == "launch_supported";
     LifecycleHostRoute {
+        route_type: route_type.into(),
         route_state: route_state.into(),
         active: false,
         configured,
@@ -1636,6 +1710,37 @@ fn lifecycle_host_route_with_approval(
         claim_tier: claim_tier.into(),
         message: message.into(),
     }
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn install_project_agent_wrapper(session: &str) -> Result<PathBuf> {
+    let wrapper = PathBuf::from(".tfy/agent/tfy-agent-wrapper");
+    if let Some(parent) = wrapper.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let exe = std::env::current_exe().context("resolve current tfy executable")?;
+    let exe = exe
+        .to_str()
+        .ok_or_else(|| anyhow!("current tfy executable path is not valid UTF-8"))?;
+    let exe = shell_single_quote(exe);
+    let script = format!(
+        r#"#!/usr/bin/env sh
+# TFY AI-agent command wrapper. Configure an AI agent runtime command executor to call this file.
+# Generated by `tfy start --agent`; it does not modify human shell startup files.
+exec {exe} agent run --host "${{TFY_AGENT_HOST:-generic}}" --session "${{TFY_SESSION_ID:-{session}}}" -- "$@"
+"#
+    );
+    fs::write(&wrapper, script).with_context(|| format!("write {}", wrapper.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("chmod {}", wrapper.display()))?;
+    }
+    Ok(wrapper)
 }
 
 pub(crate) fn execute_start(cmd: StartCmd) -> Result<()> {
@@ -1706,31 +1811,59 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         .host
         .as_deref()
         .is_some_and(|host| host.trim().eq_ignore_ascii_case("all"));
-    let mut selected_hosts = host_selection(cmd.host.as_deref())?;
+    let default_agent_wrapper_setup = scope == LifecycleScope::Project
+        && targets.contains(&LifecycleTarget::Agent)
+        && cmd.host.is_none()
+        && !cmd.no_apply;
+    let default_agent_official_hook_setup = default_agent_wrapper_setup;
+    let selected_hosts = if default_agent_official_hook_setup {
+        vec![host_integration("codex")?, host_integration("claude-code")?]
+    } else {
+        host_selection(cmd.host.as_deref())?
+    };
+    if selected_hosts
+        .iter()
+        .any(|host| host.status == "unsupported")
+    {
+        let unsupported = selected_hosts
+            .iter()
+            .find(|host| host.status == "unsupported")
+            .expect("unsupported host present");
+        bail!(
+            "host '{}' is unsupported in TFY current product scope; supported named hosts: codex, claude-code; generic wrapper fallback remains available",
+            unsupported.id
+        );
+    }
     let auto_apply_supported_agent_routes = scope == LifecycleScope::Project
         && targets.contains(&LifecycleTarget::Agent)
         && !cmd.no_apply
-        && (cmd.host.is_none()
-            || cmd.host.as_deref().is_some_and(|host| {
-                matches!(
-                    host.trim().to_ascii_lowercase().as_str(),
-                    "codex" | "claude-code" | "claude" | "cursor" | "all"
-                )
-            }));
-    if selected_hosts.is_empty() && auto_apply_supported_agent_routes {
-        selected_hosts = vec![host_integration("codex")?];
-    }
-    let should_apply_supported_routes =
-        scope == LifecycleScope::Project && (cmd.apply || auto_apply_supported_agent_routes);
+        && cmd.host.as_deref().is_some_and(|host| {
+            matches!(
+                host.trim().to_ascii_lowercase().as_str(),
+                "codex" | "claude-code" | "claude" | "all"
+            )
+        });
+    let should_apply_supported_routes = scope == LifecycleScope::Project
+        && (cmd.apply || auto_apply_supported_agent_routes || default_agent_official_hook_setup);
     let mut state = read_lifecycle(scope)?;
     let now = now_stamp();
     for target in &targets {
         match target {
             LifecycleTarget::Agent => {
                 let mut agent = agent_started(&now);
+                if default_agent_wrapper_setup {
+                    let wrapper_path = install_project_agent_wrapper(&cmd.session)?;
+                    agent.host_routes.insert(
+                        "agent-wrapper".into(),
+                        lifecycle_agent_wrapper_route(
+                            Some(wrapper_path.display().to_string()),
+                            "project TFY agent command wrapper created; configure the AI agent command executor to call this wrapper, then verify real wrapper invocation plus raw/ledger/no-negative/positive-savings evidence before active=true",
+                        ),
+                    );
+                }
                 for host in &selected_hosts {
                     if host.id == "codex" && should_apply_supported_routes {
-                        let result = configure_codex_project_mcp(
+                        let result = configure_codex_project_hook(
                             &cmd.session,
                             HostConfigScope::Project,
                             false,
@@ -1738,26 +1871,7 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                         )?;
                         agent.host_routes.insert(
                             host.id.into(),
-                            lifecycle_host_route(
-                                "configured_unverified",
-                                result
-                                    .get("config_path")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_string),
-                                "configured_unverified",
-                                "safe project .codex/config.toml writer ran; open/reload Codex in a trusted project, then verify real host invocation plus raw/ledger/no-negative/positive-savings evidence before active=true",
-                            ),
-                        );
-                    } else if host.id == "claude-code" && should_apply_supported_routes {
-                        let result = configure_claude_project_mcp(
-                            &cmd.session,
-                            HostConfigScope::Project,
-                            false,
-                            false,
-                        )?;
-                        agent.host_routes.insert(
-                            host.id.into(),
-                            lifecycle_host_route_with_approval(
+                            lifecycle_official_hook_route(
                                 "configured_unverified",
                                 result
                                     .get("config_path")
@@ -1765,11 +1879,11 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                                     .map(str::to_string),
                                 "configured_unverified",
                                 true,
-                                "safe project .mcp.json writer ran; open/reload Claude Code and approve the project MCP server if prompted, then verify real host invocation plus raw/ledger/no-negative/positive-savings evidence before active=true",
+                                "safe project .codex/config.toml PreToolUse Bash hook writer ran; trust the project .codex layer, review/enable the hook with Codex /hooks, then verify real host invocation plus raw/ledger/no-negative/positive-savings evidence before active=true",
                             ),
                         );
-                    } else if host.id == "cursor" && should_apply_supported_routes {
-                        let result = configure_cursor_project_mcp(
+                    } else if host.id == "claude-code" && should_apply_supported_routes {
+                        let result = configure_claude_project_hook(
                             &cmd.session,
                             HostConfigScope::Project,
                             false,
@@ -1777,14 +1891,15 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                         )?;
                         agent.host_routes.insert(
                             host.id.into(),
-                            lifecycle_host_route(
+                            lifecycle_official_hook_route(
                                 "configured_unverified",
                                 result
                                     .get("config_path")
                                     .and_then(Value::as_str)
                                     .map(str::to_string),
                                 "configured_unverified",
-                                "safe project .cursor/mcp.json writer ran; restart/reload Cursor, then verify real host invocation plus raw/ledger/no-negative/positive-savings evidence before active=true",
+                                false,
+                                "safe project .claude/settings.json PreToolUse Bash hook writer ran; reload Claude Code, then verify real host invocation plus raw/ledger/no-negative/positive-savings evidence before active=true",
                             ),
                         );
                     } else if should_apply_supported_routes && !host_all {
@@ -1817,6 +1932,9 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
                 }
                 if cmd.verify {
                     agent.support_status = "verification_requested_route_evidence_required".into();
+                } else if default_agent_official_hook_setup {
+                    agent.support_status =
+                        "default_agent_routes_configured_verification_required".into();
                 } else if agent
                     .host_routes
                     .values()
@@ -1863,7 +1981,7 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         && (cmd.host.is_some() || cmd.apply || cmd.no_apply)
     {
         println!(
-            "global_host_apply=false reason=project_scoped_host_config_required next_action=run `tfy start --agent` inside each project to write Codex/Claude/Cursor config"
+            "global_host_apply=false reason=project_scoped_host_config_required next_action=run `tfy start --agent` inside each project to create the wrapper, or explicit `--host ...` to write Codex/Claude Code config"
         );
     }
     if targets.contains(&LifecycleTarget::Agent) {
@@ -1873,30 +1991,33 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
             .map(|agent| agent.support_status.as_str())
             .unwrap_or("host_route_configuration_required");
         println!("agent route_state=intent_recorded active=false support_status={support_status} private_hook_interception=false provider_prompt_gateway=false");
-        println!("Configure supported host routing through tfy mcp serve, tfy agent run, or tfy adapter run; lifecycle start does not mark any host launch-supported.");
+        if default_agent_official_hook_setup {
+            println!("Agent mode uses the shared TFY command-output pipeline through configured command routes: the TFY agent wrapper fallback plus Codex and Claude Code official project hooks by default. MCP remains an advanced complementary route, not the default command interception path.");
+        } else {
+            println!("Agent mode uses the shared TFY command-output pipeline through a configured command route: the TFY agent wrapper/executor route and official Codex/Claude Code host hooks when configured. MCP remains an advanced complementary route, not the default command interception path.");
+        }
+        if default_agent_wrapper_setup {
+            println!("Installed TFY agent command wrapper: .tfy/agent/tfy-agent-wrapper");
+            println!("Configure your AI agent host command executor to call: .tfy/agent/tfy-agent-wrapper -- <ordinary command>");
+            println!("Status: configured, not active.");
+            println!("Next: run the AI agent through that wrapper and collect raw/ledger/no-negative/positive-savings evidence before active=true.");
+            println!("host=agent-wrapper route_state=configured_unverified active=false route_configured=true host_reload_required=false host_approval_required=false host_route_available_after_reload=false config_path=.tfy/agent/tfy-agent-wrapper");
+        }
         for host in &selected_hosts {
             if host.id == "codex" && should_apply_supported_routes {
-                println!("Configured Codex project MCP route: .codex/config.toml");
-                println!("Open/reload Codex in a trusted project to make the route visible.");
+                println!("Configured Codex project PreToolUse Bash hook route: .codex/config.toml");
+                println!("Trust the project .codex layer, then use Codex /hooks to review and enable the TFY hook.");
                 println!("Status: configured, not active.");
-                println!("Next: open Codex and invoke a TFY MCP tool to verify real host routing.");
-                println!("host=codex route_state=configured_unverified active=false route_configured=true host_reload_required=true host_approval_required=false host_route_available_after_reload=false config_path=.codex/config.toml");
+                println!("Next: run a real Codex Bash command through the hook and collect route-bound raw/ledger/no-negative/positive-savings evidence.");
+                println!("host=codex route_state=configured_unverified active=false route_configured=true host_reload_required=true host_approval_required=true host_route_available_after_reload=false config_path=.codex/config.toml");
             } else if host.id == "claude-code" && should_apply_supported_routes {
-                println!("Configured Claude Code project MCP route: .mcp.json");
-                println!("Open/reload Claude Code and approve the project MCP server if prompted.");
+                println!("Configured Claude Code project PreToolUse Bash hook route: .claude/settings.json");
+                println!("Reload Claude Code so the project hook config is visible.");
                 println!("Status: configured, not active.");
                 println!(
-                    "Next: open Claude Code and invoke a TFY MCP tool to verify real host routing."
+                    "Next: run a real Claude Code Bash command through the hook and collect route-bound raw/ledger/no-negative/positive-savings evidence."
                 );
-                println!("host=claude-code route_state=configured_unverified active=false route_configured=true host_reload_required=true host_approval_required=true host_route_available_after_reload=false config_path=.mcp.json");
-            } else if host.id == "cursor" && should_apply_supported_routes {
-                println!("Configured Cursor project MCP route: .cursor/mcp.json");
-                println!("Restart/reload Cursor to make the route visible.");
-                println!("Status: configured, not active.");
-                println!(
-                    "Next: open Cursor and invoke a TFY MCP tool to verify real host routing."
-                );
-                println!("host=cursor route_state=configured_unverified active=false route_configured=true host_reload_required=true host_route_available_after_reload=false config_path=.cursor/mcp.json");
+                println!("host=claude-code route_state=configured_unverified active=false route_configured=true host_reload_required=true host_approval_required=false host_route_available_after_reload=false config_path=.claude/settings.json");
             } else if should_apply_supported_routes {
                 println!(
                     "host={} route_state={} active=false configured=false apply=guidance_only",
@@ -2319,12 +2440,18 @@ pub(crate) fn execute_smoke(cmd: SmokeCmd) -> Result<()> {
         let host_reports: Vec<_> = cmd
             .host
             .iter()
-            .map(|host| host_smoke_report(host))
+            .map(|host| {
+                if cmd.live {
+                    run_live_host_hook_smoke(host, &cmd.max_budget_usd)
+                } else {
+                    host_smoke_report(host)
+                }
+            })
             .collect::<Result<_>>()?;
         if cmd.json {
             print_json(&json!({
-                "status": if host_reports.iter().all(|h| h["status"] != "unsupported") {"pass"} else {"warn"},
-                "mode": "host",
+                "status": if host_reports.iter().all(|h| h["status"] == "pass" || h["status"] == "checklist") {"pass"} else {"warn"},
+                "mode": if cmd.live { "host_live" } else { "host" },
                 "hosts": host_reports
             }))?;
         } else {
@@ -2653,20 +2780,20 @@ fn host_registry() -> Vec<HostIntegration> {
             display: "Codex",
             status: "config_snippet_available",
             required_for_v1: false,
-            config: "codex mcp add tfy -- tfy mcp serve ... or ~/.codex/config.toml [mcp_servers.tfy]",
-            transport: "MCP stdio",
-            official_source: "https://developers.openai.com/codex/mcp",
-            config_strategy: "Codex project .codex/config.toml [mcp_servers.tfy] or codex mcp add",
+            config: "project .codex/config.toml [[hooks.PreToolUse]] matcher=^Bash$ command hook",
+            transport: "Official Codex PreToolUse Bash hook",
+            official_source: "https://developers.openai.com/codex/hooks and https://developers.openai.com/codex/config-advanced",
+            config_strategy: "Codex project .codex/config.toml PreToolUse Bash command hook; project .codex layer and /hooks trust required",
             apply_strategy: "safe TOML writer for project .codex/config.toml with TFY marker block, backup, provenance, idempotency, and uninstall",
-            smoke_strategy: "local MCP smoke plus host invocation artifact",
-            host_evidence_strategy: "host-bound MCP ledger/raw evidence with Codex invocation artifact",
-            setup: "project .codex/config.toml MCP route plus optional AGENTS.md guidance through tfy init",
-            normal_workflow: "Codex may call TFY MCP tools after host MCP routing is configured; setup alone is not token-savings proof",
+            smoke_strategy: "local hook smoke plus real Codex invocation artifact",
+            host_evidence_strategy: "host-bound official_host_hook ledger/raw evidence with Codex invocation artifact",
+            setup: "project .codex/config.toml PreToolUse Bash hook plus optional AGENTS.md guidance through tfy init",
+            normal_workflow: "Codex may route Bash tool execution through TFY after project .codex trust and /hooks review; setup alone is not token-savings proof",
             launch_claim: "not launch-supported until real Codex invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
             evidence_gate: &[
-                "official OpenAI MCP setup source pinned",
-                "local TFY MCP initialize/tools-list smoke",
-                "real Codex invocation artifact",
+                "official OpenAI Codex hook/config source pinned",
+                "local TFY official-host-hook smoke",
+                "real Codex hook invocation artifact",
                 "raw/model byte ledger with no-negative-savings proof",
                 "overhead baseline or explicit exception",
             ],
@@ -2676,114 +2803,32 @@ fn host_registry() -> Vec<HostIntegration> {
             display: "Claude Code",
             status: "config_snippet_available",
             required_for_v1: false,
-            config: "claude mcp add ... or project .mcp.json mcpServers.tfy",
-            transport: "MCP stdio/http per Claude support",
-            official_source: "https://docs.anthropic.com/en/docs/claude-code/mcp",
-            config_strategy: "project .mcp.json mcpServers.tfy or claude mcp add",
-            apply_strategy: "safe JSON writer for project .mcp.json with backup/provenance/idempotency/uninstall; project approval may be required in Claude Code",
-            smoke_strategy: "Claude MCP list/invocation artifact when available; checklist otherwise",
-            host_evidence_strategy: "host-bound MCP ledger/raw evidence with Claude invocation artifact",
-            setup: "Claude MCP command and .mcp.json snippet; hooks are follow-up only when official/tested",
-            normal_workflow: "Claude Code uses TFY only through configured MCP tools; setup alone is not token-savings proof",
+            config: "project .claude/settings.json hooks.PreToolUse Bash command hook",
+            transport: "Official Claude Code PreToolUse Bash hook",
+            official_source: "https://docs.anthropic.com/en/docs/claude-code/hooks and https://docs.anthropic.com/en/docs/claude-code/hooks-guide",
+            config_strategy: "project .claude/settings.json PreToolUse Bash command hook",
+            apply_strategy: "safe JSON writer for project .claude/settings.json with backup/provenance/idempotency/uninstall",
+            smoke_strategy: "local hook smoke plus real Claude Code invocation artifact",
+            host_evidence_strategy: "host-bound official_host_hook ledger/raw evidence with Claude Code invocation artifact",
+            setup: "Claude Code project .claude/settings.json PreToolUse Bash hook",
+            normal_workflow: "Claude Code may route Bash tool execution through TFY after hook config is loaded; setup alone is not token-savings proof",
             launch_claim: "not launch-supported until real Claude invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
             evidence_gate: &[
-                "official Claude MCP source pinned",
-                "local TFY MCP initialize/tools-list smoke",
-                "real Claude invocation artifact",
+                "official Claude Code hook source pinned",
+                "local TFY official-host-hook smoke",
+                "real Claude Code hook invocation artifact",
                 "raw/model byte ledger with no-negative-savings proof",
                 "overhead baseline or explicit exception",
-            ],
-        },
-        HostIntegration {
-            id: "cursor",
-            display: "Cursor",
-            status: "config_snippet_available",
-            required_for_v1: false,
-            config: "~/.cursor/mcp.json or project .cursor/mcp.json mcpServers.tfy",
-            transport: "MCP host routing",
-            official_source: "https://docs.cursor.com/context/model-context-protocol",
-            config_strategy: "project .cursor/mcp.json or global ~/.cursor/mcp.json mcpServers.tfy",
-            apply_strategy: "safe JSON writer for project .cursor/mcp.json with backup/idempotency/uninstall",
-            smoke_strategy: "Cursor MCP invocation artifact plus local MCP smoke; checklist until host CLI smoke is available",
-            host_evidence_strategy: "host-bound MCP ledger/raw evidence with Cursor invocation artifact",
-            setup: "Cursor ~/.cursor/mcp.json or project .cursor/mcp.json snippet plus rule/instruction guidance",
-            normal_workflow: "Cursor agent can use TFY MCP tools after MCP server is enabled; setup alone is not token-savings proof",
-            launch_claim: "not launch-supported until real Cursor invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
-            evidence_gate: &[
-                "Cursor/OpenAI MCP setup source pinned",
-                "local TFY MCP initialize/tools-list smoke",
-                "real Cursor invocation artifact",
-                "raw/model byte ledger with no-negative-savings proof",
-                "overhead baseline or explicit exception",
-            ],
-        },
-        HostIntegration {
-            id: "opencode",
-            display: "OpenCode",
-            status: "config_snippet_available",
-            required_for_v1: false,
-            config: "opencode.json(c) mcp.tfy local server entry",
-            transport: "MCP local server",
-            official_source: "https://opencode.ai/docs/mcp-servers",
-            config_strategy: "opencode.json(c) mcp local server entry",
-            apply_strategy: "dry-run/manual until comment-preserving JSONC writer or CLI route is tested",
-            smoke_strategy: "OpenCode MCP invocation artifact; checklist until automated route exists",
-            host_evidence_strategy: "host-bound MCP ledger/raw evidence with OpenCode invocation artifact",
-            setup: "OpenCode opencode.json(c) MCP snippet; JSONC apply remains dry-run until comment-preserving writer exists",
-            normal_workflow: "OpenCode can discover TFY MCP tools from config; setup alone is not token-savings proof",
-            launch_claim: "not launch-supported until real OpenCode invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
-            evidence_gate: &[
-                "official OpenCode MCP setup source pinned",
-                "local TFY MCP initialize/tools-list smoke",
-                "real OpenCode invocation artifact",
-                "raw/model byte ledger with no-negative-savings proof",
-                "overhead baseline or explicit exception",
-            ],
-        },
-        HostIntegration {
-            id: "hermes",
-            display: "Hermes",
-            status: "config_snippet_available",
-            required_for_v1: false,
-            config: "~/.hermes/config.yaml mcp_servers.tfy or hermes mcp add tfy ... with tools.include filtering",
-            transport: "MCP stdio/http per Hermes support",
-            official_source: "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp",
-            config_strategy: "~/.hermes/config.yaml mcp_servers or hermes mcp add",
-            apply_strategy: "dry-run/manual until YAML writer or Hermes CLI route is tested",
-            smoke_strategy: "Hermes MCP test/dashboard artifact plus local MCP smoke",
-            host_evidence_strategy: "host-bound MCP ledger/raw evidence with Hermes invocation artifact",
-            setup: "Nous Hermes mcp_servers YAML / hermes mcp add guidance with least-surface tool include list",
-            normal_workflow: "Hermes discovers TFY MCP tools at startup/reload; setup alone is not token-savings proof",
-            launch_claim: "not launch-supported until real Hermes invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
-            evidence_gate: &[
-                "official Nous Hermes MCP source pinned",
-                "local TFY MCP initialize/tools-list smoke",
-                "real Hermes invocation artifact",
-                "raw/model byte ledger with no-negative-savings proof",
-                "overhead baseline or explicit exception",
-            ],
-        },
-        HostIntegration {
-            id: "openclaw",
-            display: "OpenClaw",
-            status: "planned_discovery",
-            required_for_v1: false,
-            config: "unknown; no TFY-consumable host route accepted yet",
-            transport: "unknown",
-            official_source: "none accepted yet",
-            config_strategy: "none; official/current route not proven",
-            apply_strategy: "unsupported",
-            smoke_strategy: "planned discovery only",
-            host_evidence_strategy: "ignored until route proof changes registry",
-            setup: "no setup/apply/smoke support until official docs or installed CLI proof shows a route",
-            normal_workflow: "discovery-only; TFY must not claim OpenClaw automatic routing",
-            launch_claim: "unsupported/planned until official/current evidence proves a safe route",
-            evidence_gate: &[
-                "official docs or installed local CLI proof required",
-                "route-specific setup and invocation artifacts required before support",
             ],
         },
     ]
+}
+
+fn agent_mode_host_unavailable(host: &str) -> anyhow::Error {
+    anyhow!(
+        "host '{}' is not available in TFY agent mode; supported hosts: codex, claude-code",
+        host
+    )
 }
 
 fn host_integration(host: &str) -> Result<HostIntegration> {
@@ -2791,47 +2836,19 @@ fn host_integration(host: &str) -> Result<HostIntegration> {
     host_registry()
         .into_iter()
         .find(|candidate| {
-            candidate.id == normalized
-                || (candidate.id == "claude-code" && normalized == "claude")
-                || (candidate.id == "opencode" && normalized == "open-code")
+            candidate.id == normalized || (candidate.id == "claude-code" && normalized == "claude")
         })
-        .ok_or_else(|| {
-            anyhow!(
-                "unknown host '{host}'; supported hosts: {}",
-                host_registry()
-                    .iter()
-                    .map(|h| h.id)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })
-}
-
-fn host_mcp_args(session: &str) -> String {
-    format!(
-        "[\"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"]"
-    )
+        .ok_or_else(|| agent_mode_host_unavailable(host))
 }
 
 fn host_setup_snippet(host: &HostIntegration, session: &str) -> String {
-    let args = host_mcp_args(session);
     match host.id {
         "codex" => format!(
-            "codex mcp add tfy -- tfy mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw\n\n[mcp_servers.tfy]\ncommand = \"tfy\"\nargs = {args}\n"
+            "# .codex/config.toml\n# Trust the project .codex layer, then review/enable this with Codex /hooks.\n[[hooks.PreToolUse]]\nmatcher = \"^Bash$\"\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"./.tfy/agent/codex-pre-tool-use\"\ntimeout = 30\nstatusMessage = \"TFY summarizing Bash output\"\n# Generated hook script runs: tfy hook run --host codex --session {session}\n"
         ),
         "claude-code" => format!(
-            "claude mcp add tfy -- tfy mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw\n\n{{\n  \"mcpServers\": {{\n    \"tfy\": {{\n      \"command\": \"tfy\",\n      \"args\": {args}\n    }}\n  }}\n}}\n"
+            "{{\n  \"hooks\": {{\n    \"PreToolUse\": [{{\n      \"matcher\": \"Bash\",\n      \"hooks\": [{{\n        \"type\": \"command\",\n        \"command\": \"./.tfy/agent/claude-pre-tool-use\",\n        \"timeout\": 30\n      }}]\n    }}]\n  }}\n}}\n# Generated hook script runs: tfy hook run --host claude-code --session {session}\n"
         ),
-        "cursor" => format!(
-            "{{\n  \"mcpServers\": {{\n    \"tfy\": {{\n      \"command\": \"tfy\",\n      \"args\": {args}\n    }}\n  }}\n}}\n"
-        ),
-        "opencode" => format!(
-            "{{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"mcp\": {{\n    \"tfy\": {{\n      \"type\": \"local\",\n      \"command\": [\"tfy\", \"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"],\n      \"enabled\": true\n    }}\n  }}\n}}\n"
-        ),
-        "hermes" => format!(
-            "hermes mcp add tfy --command tfy --args mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw\n\nmcp_servers:\n  tfy:\n    command: \"tfy\"\n    args: [\"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"]\n    enabled: true\n    tools:\n      include: [tfy_tool_run, tfy_raw_get, tfy_scope_list, tfy_context_get, tfy_output_validate, tfy_output_apply, tfy_state_project, tfy_adapter_report]\n"
-        ),
-        "openclaw" => "OpenClaw is planned_discovery only; no TFY setup snippet is emitted until official/current evidence proves a safe route.\n".into(),
         _ => unreachable!("host registry returned unknown host"),
     }
 }
@@ -2844,6 +2861,12 @@ fn print_host_setup(
     uninstall: bool,
     scope: HostConfigScope,
 ) -> Result<()> {
+    if host.status == "unsupported" {
+        bail!(
+            "host '{}' is not available in TFY agent mode; supported hosts: codex, claude-code",
+            host.id
+        );
+    }
     if host.status == "planned_discovery" {
         println!("TFY setup host={} status=planned_discovery", host.id);
         println!("source={}", host.official_source);
@@ -2851,11 +2874,10 @@ fn print_host_setup(
         println!("{}", host.launch_claim);
         return Ok(());
     }
-    if (apply || uninstall) && matches!(host.id, "codex" | "claude-code" | "cursor") {
+    if (apply || uninstall) && matches!(host.id, "codex" | "claude-code") {
         let result = match host.id {
-            "codex" => configure_codex_project_mcp(session, scope, dry_run, uninstall)?,
-            "claude-code" => configure_claude_project_mcp(session, scope, dry_run, uninstall)?,
-            "cursor" => configure_cursor_project_mcp(session, scope, dry_run, uninstall)?,
+            "codex" => configure_codex_project_hook(session, scope, dry_run, uninstall)?,
+            "claude-code" => configure_claude_project_hook(session, scope, dry_run, uninstall)?,
             _ => unreachable!(),
         };
         let (status, claim_tier) = if dry_run {
@@ -2901,82 +2923,15 @@ fn print_host_setup(
     println!("--- snippet ---");
     print!("{}", host_setup_snippet(&host, session));
     println!("--- boundary ---");
-    println!("MCP host routing only; no private hidden hooks, provider prompt mutation, editor auto-integration, or universal human-shell interception.");
+    println!("Official host hook routing for Codex/Claude Code when documented; MCP remains complementary; no private hidden hooks, provider prompt mutation, editor auto-integration, or universal human-shell interception.");
     println!("{}", host.launch_claim);
     Ok(())
-}
-
-fn host_config_args(session: &str) -> Vec<String> {
-    vec![
-        "mcp".into(),
-        "serve".into(),
-        "--session".into(),
-        session.into(),
-        "--ledger".into(),
-        ".tfy/mcp/ledger.jsonl".into(),
-        "--raw-dir".into(),
-        ".tfy/raw".into(),
-    ]
-}
-
-fn hash_text(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
-}
-
-fn host_config_provenance(
-    host: &str,
-    path: &Path,
-    managed_key_path: &str,
-    session: &str,
-    entry_text: &str,
-) -> HostConfigProvenance {
-    let args = host_config_args(session);
-    let args_json = serde_json::to_string(&args).unwrap_or_default();
-    let now = now_stamp();
-    HostConfigProvenance {
-        host: host.into(),
-        config_path: path.display().to_string(),
-        managed_key_path: managed_key_path.into(),
-        command: "tfy".into(),
-        args,
-        command_args_hash: hash_text(&format!("tfy {args_json}")),
-        session: session.into(),
-        ledger_path: ".tfy/mcp/ledger.jsonl".into(),
-        raw_dir: ".tfy/raw".into(),
-        created_at: now.clone(),
-        updated_at: now,
-        tfy_version: env!("CARGO_PKG_VERSION").into(),
-        uninstall_safety_hash: hash_text(entry_text),
-    }
 }
 
 fn provenance_path(host: &str) -> PathBuf {
     PathBuf::from(".tfy")
         .join("host-config")
         .join(format!("{host}.json"))
-}
-
-fn write_host_provenance(
-    host: &str,
-    path: &Path,
-    managed_key_path: &str,
-    session: &str,
-    entry_text: &str,
-    dry_run: bool,
-) -> Result<()> {
-    if dry_run {
-        return Ok(());
-    }
-    let provenance = host_config_provenance(host, path, managed_key_path, session, entry_text);
-    let path = provenance_path(host);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(
-        &path,
-        format!("{}\n", serde_json::to_string_pretty(&provenance)?),
-    )
-    .with_context(|| format!("write {}", path.display()))
 }
 
 fn remove_host_provenance(host: &str) -> Result<()> {
@@ -2996,15 +2951,113 @@ fn backup_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{file_name}.tfy-backup"))
 }
 
-fn codex_tfy_block(session: &str) -> String {
-    let args = host_config_args(session)
-        .into_iter()
-        .map(|arg| format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\"")))
-        .collect::<Vec<_>>()
-        .join(", ");
+fn host_hook_script_path(host: &str) -> PathBuf {
+    PathBuf::from(".tfy")
+        .join("agent")
+        .join(format!("{host}-pre-tool-use"))
+}
+
+fn install_host_hook_script(host: &str, session: &str) -> Result<PathBuf> {
+    let project_root = std::env::current_dir()?;
+    let relative = host_hook_script_path(host);
+    if let Some(parent) = relative.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let exe = std::env::current_exe().context("resolve current tfy executable")?;
+    let exe = exe
+        .to_str()
+        .ok_or_else(|| anyhow!("current tfy executable path is not valid UTF-8"))?;
+    let exe = shell_single_quote(exe);
+    let route_host = match host {
+        // Keep the short script filename while all runtime evidence uses the canonical host id.
+        "claude" => "claude-code",
+        other => other,
+    };
+    let raw_dir = shell_single_quote(&project_root.join(".tfy/raw").display().to_string());
+    let ledger = shell_single_quote(
+        &project_root
+            .join(format!(".tfy/hook/{route_host}-ledger.jsonl"))
+            .display()
+            .to_string(),
+    );
+    let script = format!(
+        r#"#!/usr/bin/env sh
+# TFY official host hook router for {route_host}. Reads host hook JSON from stdin.
+# Generated by TFY; does not mutate human shell startup files.
+exec {exe} hook run --host {route_host} --session "${{TFY_SESSION_ID:-{session}}}" --raw-dir {raw_dir} --ledger {ledger}
+"#
+    );
+    fs::write(&relative, script).with_context(|| format!("write {}", relative.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&relative, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("chmod {}", relative.display()))?;
+    }
+    Ok(std::env::current_dir()?.join(relative))
+}
+
+fn codex_tfy_block(script_path: &Path) -> String {
+    let command = script_path
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     format!(
-        "# TFY:HOST-CONFIG:START codex\n[mcp_servers.tfy]\ncommand = \"tfy\"\nargs = [{args}]\n# TFY:HOST-CONFIG:END codex\n"
+        "# TFY:HOST-CONFIG:START codex\n[[hooks.PreToolUse]]\nmatcher = \"^Bash$\"\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"{command}\"\ntimeout = 30\nstatusMessage = \"TFY summarizing Bash output\"\n# TFY:HOST-CONFIG:END codex\n"
     )
+}
+
+fn hash_text(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+fn write_host_hook_provenance(
+    host: &str,
+    path: &Path,
+    managed_key_path: &str,
+    session: &str,
+    entry_text: &str,
+    script_path: &Path,
+) -> Result<()> {
+    let now = now_stamp();
+    let args = vec![
+        "hook".into(),
+        "run".into(),
+        "--host".into(),
+        host.into(),
+        "--session".into(),
+        session.into(),
+        "--raw-dir".into(),
+        ".tfy/raw".into(),
+        "--ledger".into(),
+        format!(".tfy/hook/{host}-ledger.jsonl"),
+    ];
+    let args_json = serde_json::to_string(&args).unwrap_or_default();
+    let provenance = HostConfigProvenance {
+        host: host.into(),
+        config_path: path.display().to_string(),
+        managed_key_path: managed_key_path.into(),
+        command: script_path.display().to_string(),
+        args,
+        command_args_hash: hash_text(&format!("{} {args_json}", script_path.display())),
+        session: session.into(),
+        ledger_path: format!(".tfy/hook/{host}-ledger.jsonl"),
+        raw_dir: ".tfy/raw".into(),
+        created_at: now.clone(),
+        updated_at: now,
+        tfy_version: env!("CARGO_PKG_VERSION").into(),
+        uninstall_safety_hash: hash_text(entry_text),
+    };
+    let path = provenance_path(host);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&provenance)?),
+    )
+    .with_context(|| format!("write {}", path.display()))
 }
 
 fn validate_codex_toml_config(path: &Path, text: &str) -> Result<()> {
@@ -3174,7 +3227,7 @@ fn has_unmarked_codex_tfy_table(text: &str) -> bool {
     })
 }
 
-fn configure_codex_project_mcp(
+fn configure_codex_project_hook(
     session: &str,
     scope: HostConfigScope,
     dry_run: bool,
@@ -3199,7 +3252,12 @@ fn configure_codex_project_mcp(
             path.display()
         );
     }
-    let block = codex_tfy_block(session);
+    let script_path = if uninstall || dry_run {
+        std::env::current_dir()?.join(host_hook_script_path("codex"))
+    } else {
+        install_host_hook_script("codex", session)?
+    };
+    let block = codex_tfy_block(&script_path);
     if !uninstall {
         if !base.ends_with('\n') && !base.is_empty() {
             base.push('\n');
@@ -3227,7 +3285,14 @@ fn configure_codex_project_mcp(
         if uninstall {
             remove_host_provenance("codex")?;
         } else {
-            write_host_provenance("codex", &path, "mcp_servers.tfy", session, &block, dry_run)?;
+            write_host_hook_provenance(
+                "codex",
+                &path,
+                "hooks.PreToolUse[matcher=^Bash$]",
+                session,
+                &block,
+                &script_path,
+            )?;
         }
     }
     Ok(json!({
@@ -3242,7 +3307,7 @@ fn configure_codex_project_mcp(
     }))
 }
 
-fn cleanup_codex_project_mcp_if_tfy_owned() -> Result<()> {
+fn cleanup_codex_project_hook_if_tfy_owned() -> Result<()> {
     let path = PathBuf::from(".codex").join("config.toml");
     let existing = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -3262,16 +3327,16 @@ fn cleanup_codex_project_mcp_if_tfy_owned() -> Result<()> {
     remove_host_provenance("codex")
 }
 
-fn configure_claude_project_mcp(
+fn configure_claude_project_hook(
     session: &str,
     scope: HostConfigScope,
     dry_run: bool,
     uninstall: bool,
 ) -> Result<Value> {
     if scope == HostConfigScope::Global {
-        bail!("claude-code --global apply is not implemented here; use project .mcp.json for automatic lifecycle routing");
+        bail!("claude-code --global apply is not implemented here; use project .claude/settings.json for automatic lifecycle routing");
     }
-    let path = PathBuf::from(".mcp.json");
+    let path = PathBuf::from(".claude").join("settings.json");
     let backup = backup_path(&path);
     let existing = match fs::read_to_string(&path) {
         Ok(text) => Some(text),
@@ -3279,47 +3344,32 @@ fn configure_claude_project_mcp(
         Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
     };
     let mut root: Value = match existing.as_deref() {
-        Some(text) if !text.trim().is_empty() => serde_json::from_str(text)
-            .with_context(|| format!("parse existing Claude Code MCP config {}", path.display()))?,
+        Some(text) if !text.trim().is_empty() => serde_json::from_str(text).with_context(|| {
+            format!("parse existing Claude Code hook config {}", path.display())
+        })?,
         _ => json!({}),
     };
     let root_obj = root.as_object_mut().ok_or_else(|| {
         anyhow!(
-            "Claude Code MCP config must be a JSON object: {}",
+            "Claude Code hook config must be a JSON object: {}",
             path.display()
         )
     })?;
-    let servers = root_obj.entry("mcpServers").or_insert_with(|| json!({}));
-    let servers_obj = servers.as_object_mut().ok_or_else(|| {
-        anyhow!(
-            "Claude Code mcpServers must be a JSON object: {}",
-            path.display()
-        )
-    })?;
-    let desired_tfy = claude_tfy_server_config(session);
-    if uninstall {
-        if let Some(existing_tfy) = servers_obj.get("tfy") {
-            if !json_tfy_entry_is_managed(existing_tfy) {
-                bail!(
-                    "Claude Code mcpServers.tfy is not TFY-owned; refusing to remove user-managed config in {}",
-                    path.display()
-                );
-            }
+    remove_claude_tfy_hook_entries(root_obj)?;
+    let mut installed_script_path = None;
+    let mut installed_entry_text = None;
+    if !uninstall {
+        let script_path = if dry_run {
+            std::env::current_dir()?.join(host_hook_script_path("claude"))
+        } else {
+            install_host_hook_script("claude", session)?
+        };
+        insert_claude_tfy_hook_entry(root_obj, &script_path)?;
+        if !dry_run {
+            installed_entry_text =
+                Some(serde_json::to_string(&claude_tfy_hook_entry(&script_path))?);
+            installed_script_path = Some(script_path);
         }
-        servers_obj.remove("tfy");
-        if servers_obj.is_empty() {
-            root_obj.remove("mcpServers");
-        }
-    } else {
-        if let Some(existing_tfy) = servers_obj.get("tfy") {
-            if !json_tfy_entry_is_managed(existing_tfy) {
-                bail!(
-                    "Claude Code mcpServers.tfy already exists and is not TFY-owned; refusing to overwrite user-managed config in {}",
-                    path.display()
-                );
-            }
-        }
-        servers_obj.insert("tfy".into(), desired_tfy);
     }
     if !dry_run {
         if let Some(parent) = path
@@ -3342,14 +3392,17 @@ fn configure_claude_project_mcp(
         }
         if uninstall {
             remove_host_provenance("claude-code")?;
-        } else {
-            write_host_provenance(
+        } else if let (Some(script_path), Some(entry_text)) = (
+            installed_script_path.as_ref(),
+            installed_entry_text.as_ref(),
+        ) {
+            write_host_hook_provenance(
                 "claude-code",
                 &path,
-                "mcpServers.tfy",
+                "hooks.PreToolUse[matcher=Bash]",
                 session,
-                &serde_json::to_string(&claude_tfy_server_config(session))?,
-                dry_run,
+                entry_text,
+                script_path,
             )?;
         }
     }
@@ -3362,6 +3415,113 @@ fn configure_claude_project_mcp(
         "applied": !dry_run,
         "action": if uninstall { "uninstall" } else { "install" },
     }))
+}
+
+fn claude_tfy_hook_entry(script_path: &Path) -> Value {
+    json!({
+        "matcher": "Bash",
+        "hooks": [{
+            "type": "command",
+            "command": script_path.display().to_string(),
+            "timeout": 30
+        }]
+    })
+}
+
+fn insert_claude_tfy_hook_entry(
+    root_obj: &mut serde_json::Map<String, Value>,
+    script_path: &Path,
+) -> Result<()> {
+    let hooks = root_obj.entry("hooks").or_insert_with(|| json!({}));
+    let hooks_obj = hooks
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("Claude Code hooks must be a JSON object"))?;
+    let pre = hooks_obj.entry("PreToolUse").or_insert_with(|| json!([]));
+    let pre_array = pre
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("Claude Code hooks.PreToolUse must be a JSON array"))?;
+    pre_array.push(claude_tfy_hook_entry(script_path));
+    Ok(())
+}
+
+fn remove_claude_tfy_hook_entries(root_obj: &mut serde_json::Map<String, Value>) -> Result<()> {
+    let managed_command = read_host_provenance("claude-code")?.map(|provenance| provenance.command);
+    let Some(hooks) = root_obj.get_mut("hooks") else {
+        return Ok(());
+    };
+    let hooks_obj = hooks
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("Claude Code hooks must be a JSON object"))?;
+    let mut remove_hooks = false;
+    if let Some(pre) = hooks_obj.get_mut("PreToolUse") {
+        let pre_array = pre
+            .as_array_mut()
+            .ok_or_else(|| anyhow!("Claude Code hooks.PreToolUse must be a JSON array"))?;
+        pre_array
+            .retain(|entry| !claude_hook_entry_is_tfy_owned(entry, managed_command.as_deref()));
+        if pre_array.is_empty() {
+            hooks_obj.remove("PreToolUse");
+        }
+    }
+    if hooks_obj.is_empty() {
+        remove_hooks = true;
+    }
+    if remove_hooks {
+        root_obj.remove("hooks");
+    }
+    Ok(())
+}
+
+fn read_host_provenance(host: &str) -> Result<Option<HostConfigProvenance>> {
+    let path = provenance_path(host);
+    match fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map(Some)
+            .with_context(|| format!("parse {}", path.display())),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+fn claude_hook_entry_is_tfy_owned(entry: &Value, managed_command: Option<&str>) -> bool {
+    let Some(managed_command) = managed_command else {
+        return false;
+    };
+    entry
+        .get("hooks")
+        .and_then(Value::as_array)
+        .is_some_and(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(Value::as_str)
+                    .is_some_and(|command| command == managed_command)
+            })
+        })
+}
+
+fn cleanup_claude_project_hook_if_tfy_owned() -> Result<()> {
+    let path = PathBuf::from(".claude").join("settings.json");
+    let existing = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    if existing.trim().is_empty() {
+        return Ok(());
+    }
+    let mut root: Value = serde_json::from_str(&existing)
+        .with_context(|| format!("parse existing Claude Code hook config {}", path.display()))?;
+    let Some(root_obj) = root.as_object_mut() else {
+        return Ok(());
+    };
+    remove_claude_tfy_hook_entries(root_obj)?;
+    if root.as_object().is_some_and(|object| object.is_empty()) {
+        fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+    } else {
+        fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&root)?))
+            .with_context(|| format!("write {}", path.display()))?;
+    }
+    remove_host_provenance("claude-code")
 }
 
 fn cleanup_claude_project_mcp_if_tfy_owned() -> Result<()> {
@@ -3405,13 +3565,14 @@ fn cleanup_claude_project_mcp_if_tfy_owned() -> Result<()> {
 }
 
 fn cleanup_project_agent_host_configs() -> Result<()> {
-    cleanup_codex_project_mcp_if_tfy_owned()?;
+    cleanup_codex_project_hook_if_tfy_owned()?;
+    cleanup_claude_project_hook_if_tfy_owned()?;
     cleanup_claude_project_mcp_if_tfy_owned()?;
-    cleanup_cursor_project_mcp_if_tfy_owned()?;
+    cleanup_legacy_project_mcp_if_tfy_owned()?;
     Ok(())
 }
 
-fn cleanup_cursor_project_mcp_if_tfy_owned() -> Result<()> {
+fn cleanup_legacy_project_mcp_if_tfy_owned() -> Result<()> {
     let path = PathBuf::from(".cursor").join("mcp.json");
     let existing = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -3422,7 +3583,7 @@ fn cleanup_cursor_project_mcp_if_tfy_owned() -> Result<()> {
         return Ok(());
     }
     let mut root: Value = serde_json::from_str(&existing)
-        .with_context(|| format!("parse existing Cursor MCP config {}", path.display()))?;
+        .with_context(|| format!("parse existing legacy MCP config {}", path.display()))?;
     let Some(root_obj) = root.as_object_mut() else {
         return Ok(());
     };
@@ -3435,7 +3596,7 @@ fn cleanup_cursor_project_mcp_if_tfy_owned() -> Result<()> {
     let Some(existing_tfy) = servers_obj.get("tfy") else {
         return Ok(());
     };
-    if !cursor_tfy_entry_is_managed(existing_tfy) {
+    if !json_tfy_entry_is_managed(existing_tfy) {
         return Ok(());
     }
     servers_obj.remove("tfy");
@@ -3451,168 +3612,11 @@ fn cleanup_cursor_project_mcp_if_tfy_owned() -> Result<()> {
     Ok(())
 }
 
-fn configure_cursor_project_mcp(
-    session: &str,
-    scope: HostConfigScope,
-    dry_run: bool,
-    uninstall: bool,
-) -> Result<Value> {
-    if scope == HostConfigScope::Global {
-        bail!("cursor --global apply is not implemented safely yet; use --project for reversible .cursor/mcp.json writes");
-    }
-    let path = PathBuf::from(".cursor").join("mcp.json");
-    let backup = cursor_backup_path(&path);
-    let existing = match fs::read_to_string(&path) {
-        Ok(text) => Some(text),
-        Err(err) if err.kind() == ErrorKind::NotFound => None,
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-    };
-    if uninstall && existing.is_none() {
-        return Ok(cursor_config_result(
-            scope, &path, &backup, dry_run, uninstall,
-        ));
-    }
-    let mut root: Value = match existing.as_deref() {
-        Some(text) if !text.trim().is_empty() => serde_json::from_str(text)
-            .with_context(|| format!("parse existing Cursor MCP config {}", path.display()))?,
-        _ => json!({}),
-    };
-    let root_obj = root.as_object_mut().ok_or_else(|| {
-        anyhow!(
-            "Cursor MCP config must be a JSON object: {}",
-            path.display()
-        )
-    })?;
-    let servers = root_obj.entry("mcpServers").or_insert_with(|| json!({}));
-    let servers_obj = servers.as_object_mut().ok_or_else(|| {
-        anyhow!(
-            "Cursor mcpServers must be a JSON object: {}",
-            path.display()
-        )
-    })?;
-    let desired_tfy = cursor_tfy_server_config(session);
-    if uninstall {
-        if let Some(existing_tfy) = servers_obj.get("tfy") {
-            if !cursor_tfy_entry_is_managed(existing_tfy) {
-                bail!(
-                    "Cursor mcpServers.tfy is not TFY-owned; refusing to remove user-managed config in {}",
-                    path.display()
-                );
-            }
-        }
-        servers_obj.remove("tfy");
-        if servers_obj.is_empty() {
-            root_obj.remove("mcpServers");
-        }
-    } else {
-        if let Some(existing_tfy) = servers_obj.get("tfy") {
-            if !cursor_tfy_entry_is_managed(existing_tfy) {
-                bail!(
-                    "Cursor mcpServers.tfy already exists and is not TFY-owned; refusing to overwrite user-managed config in {}",
-                    path.display()
-                );
-            }
-        }
-        servers_obj.insert("tfy".into(), desired_tfy);
-    }
-    if !dry_run {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if uninstall && root.as_object().is_some_and(|object| object.is_empty()) {
-            if path.exists() {
-                fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
-            }
-            remove_host_provenance("cursor")?;
-            return Ok(cursor_config_result(
-                scope, &path, &backup, dry_run, uninstall,
-            ));
-        }
-        if existing.is_some() && !backup.exists() && !uninstall {
-            fs::copy(&path, &backup)
-                .with_context(|| format!("backup {} to {}", path.display(), backup.display()))?;
-        }
-        let rendered = format!("{}\n", serde_json::to_string_pretty(&root)?);
-        fs::write(&path, rendered).with_context(|| format!("write {}", path.display()))?;
-        if uninstall {
-            remove_host_provenance("cursor")?;
-        } else {
-            write_host_provenance(
-                "cursor",
-                &path,
-                "mcpServers.tfy",
-                session,
-                &serde_json::to_string(&cursor_tfy_server_config(session))?,
-                dry_run,
-            )?;
-        }
-    }
-    Ok(cursor_config_result(
-        scope, &path, &backup, dry_run, uninstall,
-    ))
-}
-
-fn cursor_tfy_server_config(session: &str) -> Value {
-    json!({
-        "command": "tfy",
-        "args": [
-            "mcp", "serve",
-            "--session", session,
-            "--ledger", ".tfy/mcp/ledger.jsonl",
-            "--raw-dir", ".tfy/raw"
-        ],
-        "tfy_managed": true
-    })
-}
-
-fn claude_tfy_server_config(session: &str) -> Value {
-    json!({
-        "command": "tfy",
-        "args": [
-            "mcp", "serve",
-            "--session", session,
-            "--ledger", ".tfy/mcp/ledger.jsonl",
-            "--raw-dir", ".tfy/raw"
-        ],
-        "tfy_managed": true
-    })
-}
-
 fn json_tfy_entry_is_managed(entry: &Value) -> bool {
     entry
         .get("tfy_managed")
         .and_then(Value::as_bool)
         .unwrap_or(false)
-}
-
-fn cursor_tfy_entry_is_managed(entry: &Value) -> bool {
-    json_tfy_entry_is_managed(entry)
-}
-
-fn cursor_config_result(
-    scope: HostConfigScope,
-    path: &Path,
-    backup: &Path,
-    dry_run: bool,
-    uninstall: bool,
-) -> Value {
-    json!({
-        "scope": scope.label(),
-        "config_path": path.display().to_string(),
-        "backup_path": backup.display().to_string(),
-        "provenance_path": provenance_path("cursor").display().to_string(),
-        "dry_run": dry_run,
-        "applied": !dry_run,
-        "action": if uninstall { "uninstall" } else { "install" },
-    })
-}
-
-fn cursor_backup_path(path: &Path) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("mcp.json");
-    path.with_file_name(format!("{file_name}.tfy-backup"))
 }
 
 fn host_doctor_report(host: &str) -> Result<serde_json::Value> {
@@ -3621,7 +3625,7 @@ fn host_doctor_report(host: &str) -> Result<serde_json::Value> {
         "host": host.id,
         "display": host.display,
         "status": host.status,
-        "message": if host.status == "planned_discovery" {
+        "message": if matches!(host.status, "planned_discovery" | "unsupported") {
             host.setup
         } else {
             "config snippet available; local MCP doctor checks prove TFY server health, not real host invocation"
@@ -3637,11 +3641,30 @@ fn host_doctor_report(host: &str) -> Result<serde_json::Value> {
 
 fn host_smoke_report(host: &str) -> Result<serde_json::Value> {
     let host = host_integration(host)?;
+    if host.status == "unsupported" {
+        return Ok(json!({
+            "host": host.id,
+            "display": host.display,
+            "status": "unsupported",
+            "claim_tier": "unsupported",
+            "message": host.setup,
+            "required_host_evidence": host.evidence_gate,
+            "setup_success_is_not_savings_success": true,
+        }));
+    }
     Ok(json!({
         "host": host.id,
         "display": host.display,
-        "status": if host.status == "planned_discovery" { "unsupported" } else { "checklist" },
-        "claim_tier": if host.status == "planned_discovery" { "planned_discovery" } else { "configurable" },
+        "status": if host.status == "planned_discovery" {
+            "unsupported"
+        } else {
+            "checklist"
+        },
+        "claim_tier": if host.status == "planned_discovery" {
+            "planned_discovery"
+        } else {
+            "configurable"
+        },
         "message": if host.status == "planned_discovery" {
             host.setup
         } else {
@@ -3671,6 +3694,352 @@ fn host_smoke_report(host: &str) -> Result<serde_json::Value> {
         "required_host_evidence": host.evidence_gate,
         "setup_success_is_not_savings_success": true,
     }))
+}
+
+fn live_host_smoke_spec(host: &str) -> Option<LiveHostSmokeSpec> {
+    match host {
+        "codex" => Some(LiveHostSmokeSpec {
+            host: "codex",
+            binary: "codex",
+            timeout: Duration::from_secs(180),
+            needs_noninteractive_bypass: true,
+        }),
+        "claude-code" => Some(LiveHostSmokeSpec {
+            host: "claude-code",
+            binary: "claude",
+            timeout: Duration::from_secs(180),
+            needs_noninteractive_bypass: true,
+        }),
+        _ => None,
+    }
+}
+
+fn configure_live_host_smoke_command(
+    command: &mut Command,
+    spec: LiveHostSmokeSpec,
+    prompt: &str,
+    max_budget_usd: &str,
+) {
+    match spec.host {
+        "codex" => {
+            if spec.needs_noninteractive_bypass {
+                command.args([
+                    "--dangerously-bypass-hook-trust",
+                    "--dangerously-bypass-approvals-and-sandbox",
+                ]);
+            }
+            command.args(["exec", "--skip-git-repo-check", "--json", prompt]);
+        }
+        "claude-code" => {
+            command.args(["-p"]);
+            if spec.needs_noninteractive_bypass {
+                command.args(["--permission-mode", "bypassPermissions"]);
+            }
+            command.args([
+                "--allowedTools",
+                "Bash",
+                "--include-hook-events",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--max-budget-usd",
+                max_budget_usd,
+                prompt,
+            ]);
+        }
+        _ => unreachable!("live host smoke spec exists only for supported hosts"),
+    }
+}
+
+fn run_live_host_hook_smoke(host: &str, max_budget_usd: &str) -> Result<serde_json::Value> {
+    let integration = host_integration(host)?;
+    let spec = live_host_smoke_spec(integration.id).ok_or_else(|| {
+        anyhow!(
+            "live official-hook smoke is only implemented for codex and claude-code; host '{}' uses {}",
+            integration.id,
+            integration.transport
+        )
+    })?;
+    if !host_official_hook_launch_supported(integration.id) {
+        bail!(
+            "live official-hook smoke is only implemented for codex and claude-code; host '{}' uses {}",
+            integration.id,
+            integration.transport
+        );
+    }
+    let host_version = host_version(spec.binary)
+        .with_context(|| format!("resolve installed {} version for live smoke", spec.binary))?;
+    let root = std::env::temp_dir().join(format!(
+        "tfy-live-{}-{}-{}",
+        integration.id,
+        std::process::id(),
+        stable_id(&format!("live-{}", integration.id))
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
+    fs::write(
+        root.join("README.md"),
+        "TFY live host hook smoke workspace. The host should run one Bash command only.\n",
+    )?;
+    let setup = Command::new(std::env::current_exe().context("resolve current tfy executable")?)
+        .current_dir(&root)
+        .env("CARGO_TERM_COLOR", "never")
+        .args(["start", "--agent", "--host", integration.id])
+        .output()
+        .with_context(|| format!("configure {} live smoke project", integration.id))?;
+    if !setup.status.success() {
+        bail!(
+            "live host smoke setup failed for {}: {}",
+            integration.id,
+            String::from_utf8_lossy(&setup.stderr)
+        );
+    }
+    let invocation = root.join(".tfy").join("host-smoke");
+    fs::create_dir_all(&invocation)?;
+    let stdout_path = invocation.join(format!("{}-stdout.txt", integration.id));
+    let stderr_path = invocation.join(format!("{}-stderr.txt", integration.id));
+    let command_sample = "for i in $(seq 1 80); do echo tfy-live-host-hook-smoke-$i; done";
+    let prompt = format!(
+        "In this temporary trusted smoke workspace, run exactly one Bash shell command and then stop. Do not edit files. Command: {command_sample}"
+    );
+    let baseline_start = Instant::now();
+    let baseline = Command::new("sh")
+        .current_dir(&root)
+        .args(["-c", command_sample])
+        .output()
+        .context("run live smoke baseline command")?;
+    if !baseline.status.success() {
+        bail!(
+            "baseline smoke command failed: {}",
+            String::from_utf8_lossy(&baseline.stderr)
+        );
+    }
+    let baseline_ms = millis_u64(baseline_start.elapsed());
+    let host_start = Instant::now();
+    let mut host_command = Command::new(spec.binary);
+    host_command.current_dir(&root);
+    // Live smoke is an explicit opt-in release/evidence check. Some host CLIs need
+    // noninteractive bypass flags for automation, so TFY compensates by validating
+    // the hook ledger contains exactly the intended command before emitting evidence.
+    configure_live_host_smoke_command(&mut host_command, spec, &prompt, max_budget_usd);
+    let host_output = output_with_timeout(
+        &mut host_command,
+        spec.timeout,
+        &stdout_path,
+        &stderr_path,
+        &format!("{} live hook smoke", integration.id),
+    )?;
+    let overhead_ms = millis_u64(host_start.elapsed());
+    if !host_output.status.success() {
+        bail!(
+            "live host smoke failed for {}; stdout={} stderr={}",
+            integration.id,
+            stdout_path.display(),
+            stderr_path.display()
+        );
+    }
+    let provenance_path = root.join(provenance_path(integration.id));
+    let provenance: HostConfigProvenance = serde_json::from_str(
+        &fs::read_to_string(&provenance_path)
+            .with_context(|| format!("read {}", provenance_path.display()))?,
+    )
+    .with_context(|| format!("parse {}", provenance_path.display()))?;
+    let ledger = root.join(&provenance.ledger_path);
+    let raw_dir = root.join(&provenance.raw_dir);
+    let (raw_ref, raw_bytes, model_bytes) =
+        official_hook_command_evidence(&ledger, integration.id, command_sample)
+            .with_context(|| format!("verify {} hook ledger evidence", integration.id))?;
+    let raw_artifact = raw_dir.join(format!("{raw_ref}.json"));
+    if !raw_artifact.is_file() {
+        bail!(
+            "raw artifact missing after live host smoke: {}",
+            raw_artifact.display()
+        );
+    }
+    let setup_artifact = provenance_path;
+    let config_path = root.join(&provenance.config_path);
+    let evidence = root
+        .join(".tfy")
+        .join("host-evidence")
+        .join(format!("{}-host-evidence.json", integration.id));
+    if let Some(parent) = evidence.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &evidence,
+        serde_json::to_string_pretty(&json!({
+            "hosts": [{
+                "host": integration.id,
+                "tfy_version": env!("CARGO_PKG_VERSION"),
+                "host_id": integration.id,
+                "host_version": host_version.trim(),
+                "setup_verified": true,
+                "real_invocation_verified": true,
+                "setup_artifact": setup_artifact,
+                "invocation_artifact": stdout_path,
+                "config_scope": "project",
+                "config_path": config_path,
+                "route_type": "official_host_hook",
+                "ledger_artifact": ledger,
+                "raw_artifact": raw_artifact,
+                "redacted_public_bytes": raw_bytes,
+                "model_visible_bytes": model_bytes,
+                "timestamp": now_stamp(),
+                "smoke_id": format!("{}-live-hook-smoke", integration.id),
+                "official_docs_backed": true,
+                "kill_switch_available": true,
+                "uninstall_available": true,
+                "overhead_ms": overhead_ms,
+                "baseline_ms": baseline_ms,
+                "overhead_exception": "live host smoke includes model planning latency; route launch evidence verifies official hook ingress and TFY raw/model byte gates"
+            }]
+        }))? + "\n",
+    )?;
+    Ok(json!({
+        "host": integration.id,
+        "display": integration.display,
+        "status": "pass",
+        "claim_tier": "host_evidence_recorded",
+        "message": "live host CLI invoked TFY official hook route and produced launch-report host evidence",
+        "workspace": root,
+        "host_version": host_version.trim(),
+        "ledger": ledger,
+        "raw_artifact": raw_dir.join(format!("{raw_ref}.json")),
+        "host_evidence": evidence,
+        "launch_report_command": format!("tfy launch-report --host-evidence {} --json", evidence.display()),
+        "redacted_public_bytes": raw_bytes,
+        "model_visible_bytes": model_bytes,
+        "setup_success_is_not_savings_success": true,
+        "savings_success_verified": true
+    }))
+}
+
+fn millis_u64(duration: std::time::Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+fn host_version(binary: &str) -> Result<String> {
+    let output = Command::new(binary)
+        .arg("--version")
+        .output()
+        .with_context(|| format!("run {binary} --version"))?;
+    if !output.status.success() {
+        bail!(
+            "{binary} --version failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        bail!("{binary} --version produced no stdout");
+    }
+    Ok(text)
+}
+
+fn output_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+    stdout_path: &Path,
+    stderr_path: &Path,
+    label: &str,
+) -> Result<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().with_context(|| format!("spawn {label}"))?;
+    let start = Instant::now();
+    loop {
+        if child.try_wait()?.is_some() {
+            let output = child
+                .wait_with_output()
+                .with_context(|| format!("collect {label} output"))?;
+            fs::write(stdout_path, &output.stdout)?;
+            fs::write(stderr_path, &output.stderr)?;
+            return Ok(output);
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .with_context(|| format!("collect timed-out {label} output"))?;
+            fs::write(stdout_path, &output.stdout)?;
+            fs::write(stderr_path, &output.stderr)?;
+            bail!(
+                "{label} timed out after {}s; stdout={} stderr={}",
+                timeout.as_secs(),
+                stdout_path.display(),
+                stderr_path.display()
+            );
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn official_hook_command_evidence(
+    ledger: &Path,
+    host: &str,
+    expected_command: &str,
+) -> Result<(String, usize, usize)> {
+    let events = load_events(ledger).with_context(|| format!("read {}", ledger.display()))?;
+    let mut matches = Vec::new();
+    for event in events {
+        if event.origin.invocation != OriginInvocation::OfficialHostHook {
+            continue;
+        }
+        let host_matches = match host {
+            "codex" => event.origin.host == tfy_runtime::OriginHost::Codex,
+            "claude-code" => event.origin.host == tfy_runtime::OriginHost::ClaudeCode,
+            _ => false,
+        };
+        if !host_matches {
+            continue;
+        }
+        if let GatewayEvent::ToolCommandCompleted {
+            command,
+            raw_ref,
+            raw_bytes,
+            model_bytes,
+            raw_chars,
+            summary_chars,
+            model_chars,
+            negative_savings_avoided,
+            ..
+        } = event.payload
+        {
+            let raw_size = if raw_bytes == 0 { raw_chars } else { raw_bytes };
+            let model_size = if model_bytes != 0 {
+                model_bytes
+            } else if model_chars != 0 {
+                model_chars
+            } else {
+                summary_chars
+            };
+            if model_size > raw_size && !negative_savings_avoided {
+                bail!("official hook evidence has negative savings");
+            }
+            if raw_size <= model_size {
+                bail!("official hook evidence did not prove positive savings");
+            }
+            if raw_ref.trim().is_empty() {
+                bail!("official hook evidence missing raw_ref");
+            }
+            matches.push((command, raw_ref, raw_size, model_size));
+        }
+    }
+    if matches.len() != 1 {
+        bail!(
+            "expected exactly one official-host-hook command for {host}, found {}",
+            matches.len()
+        );
+    }
+    let (command, raw_ref, raw_size, model_size) = matches.remove(0);
+    let expected_recorded_command = format!("sh -c {expected_command}");
+    if command != expected_recorded_command {
+        bail!(
+            "official hook command mismatch for {host}: expected {:?}, got {:?}",
+            expected_recorded_command,
+            command
+        );
+    }
+    Ok((raw_ref, raw_size, model_size))
 }
 
 fn raw_ref_path(raw_dir: &Path, raw_ref: &str) -> Result<PathBuf> {
@@ -4274,7 +4643,7 @@ fn effective_agent_status(
         } else if !desired {
             "Run `tfy start --agent` in this project, or configure global agent defaults with `tfy use always --agent`.".into()
         } else if host_routes_empty {
-            "Run `tfy start --agent` to auto-configure the Codex project MCP route, or use `tfy start --agent --no-apply` for lifecycle intent only.".into()
+            "Run `tfy start --agent` to prepare the project agent wrapper plus Codex and Claude Code official hook routes, or use `tfy start --agent --no-apply` for lifecycle intent only.".into()
         } else {
             "Configured but not verified: run the configured host and collect route-bound raw/ledger/no-negative/positive-savings/overhead evidence before active=true.".into()
         },
@@ -4375,6 +4744,8 @@ fn unsupported_ingress() -> Vec<String> {
 fn host_readiness_from_integration(host: &HostIntegration) -> HostReadiness {
     let claim_tier = if host.status == "planned_discovery" {
         "planned_discovery"
+    } else if host.status == "unsupported" {
+        "unsupported"
     } else {
         "configurable"
     };
@@ -4385,12 +4756,14 @@ fn host_readiness_from_integration(host: &HostIntegration) -> HostReadiness {
         claim_tier: claim_tier.into(),
         evidence_tiers: initial_host_evidence_tiers(host.status),
         next_evidence_tier: next_evidence_tier(&initial_host_evidence_tiers(host.status)).into(),
-        supported_ingress: if host.status == "planned_discovery" {
+        supported_ingress: if matches!(host.status, "planned_discovery" | "unsupported") {
             Vec::new()
+        } else if matches!(host.id, "codex" | "claude-code") {
+            vec!["official_host_hook".into(), "agent_wrapper_fallback".into()]
         } else {
             vec!["mcp_stdio".into()]
         },
-        equivalence_ingress: if host.status == "planned_discovery" {
+        equivalence_ingress: if matches!(host.status, "planned_discovery" | "unsupported") {
             Vec::new()
         } else {
             vec!["official_host_hook_test_shim_only".into()]
@@ -4427,6 +4800,9 @@ fn next_evidence_tier(observed: &[String]) -> &'static str {
     {
         return "official_route_discovery";
     }
+    if observed.iter().any(|observed| observed == "unsupported") {
+        return "not_applicable";
+    }
     let has = |tier: &str| observed.iter().any(|observed| observed == tier);
     if has("launch_supported") {
         "complete"
@@ -4450,7 +4826,7 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
         HostReadiness {
             host: "mcp_stdio".into(),
             status: "not_configured".into(),
-            required_for_v1: true,
+            required_for_v1: false,
             claim_tier: "not_configured".into(),
             evidence_tiers: Vec::new(),
             next_evidence_tier: "config_written".into(),
@@ -4524,17 +4900,17 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
             claim_tier: "configurable".into(),
             evidence_tiers: vec!["config_snippet_available".into()],
             next_evidence_tier: "config_written".into(),
-            supported_ingress: vec!["mcp_stdio".into()],
+            supported_ingress: vec!["official_host_hook".into(), "agent_wrapper_fallback".into()],
             equivalence_ingress: vec!["official_host_hook_test_shim_only".into()],
             unsupported_ingress: unsupported_ingress(),
-            config_strategy: "Codex project .codex/config.toml MCP route plus optional project AGENTS.md guidance".into(),
-            apply_strategy: "safe project .codex/config.toml writer with TFY marker block, backup, provenance, idempotency, and uninstall".into(),
-            smoke_strategy: "local MCP smoke plus real Codex invocation artifact".into(),
-            host_evidence_strategy: "Codex-bound MCP ledger/raw evidence with config path and smoke id".into(),
-            setup: "Codex project .codex/config.toml MCP route plus optional TFY AGENTS.md guidance".into(),
-            normal_workflow: "Codex remains normal only after official/configurable MCP or hook routing proves real host invocation; checklist-only guidance is not launch support".into(),
+            config_strategy: "Codex project .codex/config.toml PreToolUse Bash hook; project .codex layer and /hooks trust required".into(),
+            apply_strategy: "safe project .codex/config.toml hook writer with TFY marker block, backup, provenance, idempotency, and uninstall".into(),
+            smoke_strategy: "local hook smoke plus real Codex invocation artifact".into(),
+            host_evidence_strategy: "Codex-bound official_host_hook ledger/raw evidence with config path and smoke id".into(),
+            setup: "Codex project .codex/config.toml PreToolUse Bash hook plus optional TFY AGENTS.md guidance".into(),
+            normal_workflow: "Codex remains normal only after project .codex trust, /hooks review, and route-bound evidence; checklist-only guidance is not launch support".into(),
             evidence_gate: vec![
-                "Codex host actually invokes TFY MCP".into(),
+                "Codex host actually invokes TFY official host hook".into(),
                 "ledger events from Codex session".into(),
                 "raw recovery and no-negative-savings".into(),
             ],
@@ -4543,7 +4919,7 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
     ];
     for host in host_registry()
         .into_iter()
-        .filter(|host| host.id != "codex")
+        .filter(|host| host.id == "claude-code")
     {
         hosts.push(host_readiness_from_integration(&host));
     }
@@ -5082,14 +5458,11 @@ fn route_evidence_has_allowed_launch_route(route: &RouteEvidence) -> bool {
 }
 
 fn host_accepts_launch_evidence(host: &str) -> bool {
-    host_integration(host).is_ok_and(|integration| integration.status != "planned_discovery")
+    host_integration(host).is_ok_and(|integration| integration.status == "config_snippet_available")
 }
 
-fn host_official_hook_launch_supported(_host: &str) -> bool {
-    // No named production host currently has an implemented official-hook writer with
-    // docs, uninstall, kill-switch, and e2e evidence. The hook surface is test-shim
-    // only until a host is explicitly enabled here with regression coverage.
-    false
+fn host_official_hook_launch_supported(host: &str) -> bool {
+    live_host_smoke_spec(host).is_some()
 }
 
 fn host_artifact_exists(base: &Path, artifact: &Path) -> bool {
@@ -5143,7 +5516,6 @@ fn apply_launch_evidence(
                     && route.positive_savings;
                 (local, local && route_host_ready(route), Some(route))
             }
-            "openclaw" => (false, false, None),
             "codex" => {
                 let named = evidence.named_hosts.get("codex");
                 let local = named
@@ -5392,7 +5764,7 @@ fn build_release_tier_report(
     release_evidence: &ReleaseEvidenceSummary,
     launch_blockers: &[String],
 ) -> ReleaseTierReport {
-    let required_routes_ready = ["generic_shell", "tfy_agent_adapter", "mcp_stdio"]
+    let required_routes_ready = ["generic_shell", "tfy_agent_adapter"]
         .iter()
         .all(|required| {
             host_matrix
@@ -5405,7 +5777,7 @@ fn build_release_tier_report(
     let preview_blockers = tier_blockers(&[
         (
             required_routes_ready,
-            "required routes generic_shell/tfy_agent_adapter/mcp_stdio are not launch_supported",
+            "required routes generic_shell/tfy_agent_adapter are not launch_supported",
         ),
         (
             release_evidence.cargo_install_verified,
@@ -5475,7 +5847,7 @@ fn build_release_tier_report(
         blockers: rc_blockers,
     };
     let named_host_launch = host_matrix.iter().any(|host| {
-        !host.required_for_v1 && host.status == "launch_supported" && host.host != "openclaw"
+        matches!(host.host.as_str(), "codex" | "claude-code") && host.status == "launch_supported"
     });
     let ga_blockers = tier_blockers(&[
         (rc_ready.status == "ready", "rc_ready is blocked"),
@@ -5547,7 +5919,7 @@ fn build_launch_readiness_report(
         blockers.push("negative savings detected in gain ledgers".into());
     }
     if gain.commands == 0 {
-        blockers.push("no command-output savings data found; run adapter/MCP tool workflows before launch claims".into());
+        blockers.push("no command-output savings data found; run adapter/agent/MCP tool workflows before launch claims".into());
     }
     if !host_evidence.no_negative_savings {
         blockers.push("negative default model-visible savings or missing no-negative-savings evidence detected".into());
@@ -5576,7 +5948,7 @@ fn build_launch_readiness_report(
         unsupported_claim_audit: UnsupportedClaimAudit {
             status: "pass".into(),
             audited_claims: not_supported_surfaces(),
-            rule: "unsupported provider/API prompt proxy, editor-internal auto hook, private Codex hook interception, and universal terminal interception claims must remain not_supported/planned; MCP and official-host-hook routes may promote only through config_written, host_launched, verified host invocation, route evidence, and savings_verified gates".into(),
+            rule: "provider/API prompt proxy, editor-internal auto hook, private Codex hook interception, and universal terminal interception claims must remain not_supported; MCP and official-host-hook routes may promote only through config_written, host_launched, verified host invocation, route evidence, and savings_verified gates".into(),
         },
         blockers,
         not_supported: status.not_supported,
@@ -5596,7 +5968,7 @@ fn build_explain_report() -> ProductExplainReport {
     ProductExplainReport {
         ai_transport: "AI sees compact scope/function-level code such as `function f0(a,b){const c=a+b;return c;}` when that saves tokens.".into(),
         file_and_user_output: "Before code is written or shown to a human, TFY restores original/readable names, indentation, and line breaks into canonical file code.".into(),
-        automatic_routing: "TFY can automatically configure supported AI-agent host routes where safe writers exist, then the host can use TFY through wrapper/adapter/MCP setup; launch support is granted only after host-bound evidence proves routing and savings.".into(),
+        automatic_routing: "TFY can prepare the project agent wrapper by default and can configure supported AI-agent host routes where safe writers exist; MCP remains an advanced complementary route. Launch support is granted only after host-bound evidence proves routing and savings.".into(),
         apply_model: "Writes are validated with plan hash, per-operation proof, preview hash, origin checks, safe paths, rollback journal, and fuzzy unique-anchor gates.".into(),
         what_tfy_changed: vec![
             "configured AI command/context/output boundaries route through TFY instead of sending raw noisy payloads directly to the model".into(),

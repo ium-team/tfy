@@ -14,6 +14,13 @@ TFY is a Rust-first token-saving middleware for AI-agent I/O boundaries. It shou
 4. **Truthful adapter claims** — MCP support means host-routed MCP tool/resource integration. Do not claim private Codex hook interception, provider prompt mutation, or universal shell interception unless implemented and tested.
 5. **Preview-only output validation** — do not claim workspace apply authority until explicit authority/provenance gates and tests exist.
 
+## Product routing rules
+
+- Bare project-local `tfy start --agent` is the simple product path: it must prepare the generic TFY agent wrapper plus Codex and Claude Code official project hook routes by default; public product wording should name supported hosts only.
+- Do not regress bare `tfy start --agent` back to wrapper-only behavior unless the product direction is explicitly changed with tests and docs.
+- Do not implement that default by aliasing it to `--host all`; this would silently expand scope beyond the Codex/Claude supported named-host path.
+- Setup/configuration remains `configured_unverified` and `active=false` until real route-bound raw/ledger/no-negative/positive-savings evidence exists. Never treat host config creation as launch support.
+
 ## Code ownership map
 
 - `crates/tfy-core/` — reusable token-saving primitives, raw store, redaction, context/code compression, command feedback.

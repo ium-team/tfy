@@ -203,7 +203,7 @@ fn adapter_capabilities_marks_generic_shell_and_mcp_supported() {
         && target["automatic_interception"] == "mcp_host_routing_required_not_private_hook"));
     assert!(targets
         .iter()
-        .any(|target| target["target"] == "provider" && target["status"] != "supported"));
+        .all(|target| target["target"] != "provider" && target["target"] != "editor"));
 }
 
 #[test]

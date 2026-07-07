@@ -1,10 +1,10 @@
 # TFY Release Readiness
 
-TFY release claims are evidence-gated. Developer Preview and RC are separate gates: Developer Preview proves local supported routes plus installable artifacts, while RC additionally proves review/CI/release closeout. GA and public superiority claims require stricter evidence.
+TFY release claims are evidence-gated. TFY is stable-first: stable is the normal product channel, while preview is a pre-release/development validation channel used for large changes before promotion. Developer preview and RC are separate gates: developer preview proves local supported routes plus installable artifacts, while RC additionally proves review/CI/release closeout. GA and public superiority claims require stricter evidence.
 
 ## Release tiers
 
-- `developer_preview_ready`: `cargo install`/release build verified, npm preview install smoke passes when the npm channel is in scope, GitHub Release archive/checksum evidence exists, first-success quickstart passes, required routes (`generic_shell`, `tfy_agent_adapter`, `mcp_stdio`) reach `launch_supported`, raw lifecycle commands work, a TFY benchmark manifest exists, and unsupported claim audit passes.
+- `developer_preview_ready`: `cargo install`/release build verified, npm preview install smoke passes when the npm channel is in scope, GitHub Release archive/checksum evidence exists, first-success quickstart passes, required command routes (`generic_shell`, `tfy_agent_adapter`) reach `launch_supported`; MCP remains advanced/complementary, raw lifecycle commands work, a TFY benchmark manifest exists, and unsupported claim audit passes.
 - `rc_ready`: developer preview ready plus archive/checksum dry-run, docs/demo/release notes complete, independent reviews approved, and PR/CI green.
 - `ga_ready`: RC ready plus at least one named AI host real invocation with route-bound ledger/raw/no-negative/positive-savings evidence and a reproducible named-host demo.
 - `public_superiority_claim_ready`: GA/RC plus reviewed external benchmark manifest with baseline, corpus, reproducibility, correctness/no-lost-evidence proof, and overhead comparison.
@@ -16,6 +16,9 @@ TFY release claims are evidence-gated. Developer Preview and RC are separate gat
 ./scripts/release-dry-run.sh
 SMOKE_JSON=.tfy/release/smoke.json
 tfy smoke --all --json > "$SMOKE_JSON"
+# Optional named-host GA evidence, run only when installed/authenticated host CLIs are in scope:
+tfy smoke --host codex --live --json > .tfy/release/codex-live-smoke.json
+tfy smoke --host claude-code --live --json > .tfy/release/claude-live-smoke.json
 tfy raw --list --json
 ARGS=(launch-report --all --release-evidence .tfy/release/release-evidence.json --json)
 while IFS= read -r item; do
