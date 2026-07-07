@@ -7,7 +7,7 @@ body:
     id: host
     attributes:
       label: Agent host/runtime
-      placeholder: Codex, Claude Code, OpenCode, Cursor, VS Code, etc.
+      placeholder: Codex, Claude Code
     validations:
       required: true
   - type: textarea

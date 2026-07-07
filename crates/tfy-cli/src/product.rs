@@ -60,7 +60,7 @@ pub(crate) struct InitCmd {
 pub(crate) struct DoctorCmd {
     #[arg(long)]
     pub codex: bool,
-    /// Named AI-agent host to diagnose (codex, claude-code, opencode, hermes, openclaw).
+    /// Named AI-agent host to diagnose (codex, claude-code).
     #[arg(long = "host")]
     pub host: Vec<String>,
     #[arg(long)]
@@ -113,7 +113,7 @@ pub(crate) struct SetupCmd {
     /// Print Codex integration setup guidance.
     #[arg(long)]
     pub codex: bool,
-    /// Named AI-agent host to configure (codex, claude-code, opencode, hermes, openclaw).
+    /// Named AI-agent host to configure (codex, claude-code).
     #[arg(long = "host")]
     pub host: Vec<String>,
     #[arg(long)]
@@ -156,10 +156,10 @@ pub(crate) struct StartCmd {
     /// Target alias: agent/ai, human, or both.
     #[arg(value_name = "TARGET")]
     pub target_alias: Option<String>,
-    /// Named AI-agent host setup route (codex, claude-code, opencode, hermes, openclaw, all).
+    /// Named AI-agent host setup route (codex, claude-code, all).
     #[arg(long)]
     pub host: Option<String>,
-    /// Apply only safe, implemented host configuration writers. Unsupported hosts stay guidance-only.
+    /// Apply only safe Codex/Claude Code project config writers; unknown hosts fail closed.
     #[arg(long)]
     pub apply: bool,
     /// Record lifecycle intent only; do not write supported host config.
@@ -1981,7 +1981,7 @@ fn execute_lifecycle_start(scope: LifecycleScope, cmd: StartCmd) -> Result<()> {
         && (cmd.host.is_some() || cmd.apply || cmd.no_apply)
     {
         println!(
-            "global_host_apply=false reason=project_scoped_host_config_required next_action=run `tfy start --agent` inside each project to create the wrapper, or explicit `--host ...` to write Codex/Claude config"
+            "global_host_apply=false reason=project_scoped_host_config_required next_action=run `tfy start --agent` inside each project to create the wrapper, or explicit `--host ...` to write Codex/Claude Code config"
         );
     }
     if targets.contains(&LifecycleTarget::Agent) {
@@ -2821,94 +2821,14 @@ fn host_registry() -> Vec<HostIntegration> {
                 "overhead baseline or explicit exception",
             ],
         },
-        HostIntegration {
-            id: "cursor",
-            display: "Cursor",
-            status: "unsupported",
-            required_for_v1: false,
-            config: "unsupported; TFY does not write or advertise Cursor setup",
-            transport: "unsupported",
-            official_source: "none accepted for the current TFY product scope",
-            config_strategy: "unsupported; use Codex or Claude Code named host routes, or the generic wrapper fallback for other agents",
-            apply_strategy: "unsupported; no .cursor/mcp.json writer is exposed outside legacy TFY-owned cleanup",
-            smoke_strategy: "unsupported; Cursor evidence is ignored for launch promotion",
-            host_evidence_strategy: "unsupported; Cursor host evidence cannot promote TFY launch support",
-            setup: "Cursor is unsupported in the current TFY product scope; no setup snippet is emitted.",
-            normal_workflow: "unsupported; TFY does not claim Cursor command interception or MCP routing.",
-            launch_claim: "unsupported; Cursor cannot become launch-supported in this product scope",
-            evidence_gate: &[
-                "product scope explicitly excludes Cursor",
-                "no Cursor setup writer or snippet is exposed",
-                "legacy TFY-owned .cursor/mcp.json cleanup may run only through scoped cleanup",
-            ],
-        },
-        HostIntegration {
-            id: "opencode",
-            display: "OpenCode",
-            status: "config_snippet_available",
-            required_for_v1: false,
-            config: "opencode.json(c) mcp.tfy local server entry",
-            transport: "MCP local server",
-            official_source: "https://opencode.ai/docs/mcp-servers",
-            config_strategy: "opencode.json(c) mcp local server entry",
-            apply_strategy: "dry-run/manual until comment-preserving JSONC writer or CLI route is tested",
-            smoke_strategy: "OpenCode MCP invocation artifact; checklist until automated route exists",
-            host_evidence_strategy: "host-bound MCP ledger/raw evidence with OpenCode invocation artifact",
-            setup: "OpenCode opencode.json(c) MCP snippet; JSONC apply remains dry-run until comment-preserving writer exists",
-            normal_workflow: "OpenCode can discover TFY MCP tools from config; setup alone is not token-savings proof",
-            launch_claim: "not launch-supported until real OpenCode invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
-            evidence_gate: &[
-                "official OpenCode MCP setup source pinned",
-                "local TFY MCP initialize/tools-list smoke",
-                "real OpenCode invocation artifact",
-                "raw/model byte ledger with no-negative-savings proof",
-                "overhead baseline or explicit exception",
-            ],
-        },
-        HostIntegration {
-            id: "hermes",
-            display: "Hermes",
-            status: "config_snippet_available",
-            required_for_v1: false,
-            config: "~/.hermes/config.yaml mcp_servers.tfy or hermes mcp add tfy ... with tools.include filtering",
-            transport: "MCP stdio/http per Hermes support",
-            official_source: "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp",
-            config_strategy: "~/.hermes/config.yaml mcp_servers or hermes mcp add",
-            apply_strategy: "dry-run/manual until YAML writer or Hermes CLI route is tested",
-            smoke_strategy: "Hermes MCP test/dashboard artifact plus local MCP smoke",
-            host_evidence_strategy: "host-bound MCP ledger/raw evidence with Hermes invocation artifact",
-            setup: "Nous Hermes mcp_servers YAML / hermes mcp add guidance with least-surface tool include list",
-            normal_workflow: "Hermes discovers TFY MCP tools at startup/reload; setup alone is not token-savings proof",
-            launch_claim: "not launch-supported until real Hermes invocation artifact plus TFY ledger/raw/no-negative/positive-savings evidence exists",
-            evidence_gate: &[
-                "official Nous Hermes MCP source pinned",
-                "local TFY MCP initialize/tools-list smoke",
-                "real Hermes invocation artifact",
-                "raw/model byte ledger with no-negative-savings proof",
-                "overhead baseline or explicit exception",
-            ],
-        },
-        HostIntegration {
-            id: "openclaw",
-            display: "OpenClaw",
-            status: "planned_discovery",
-            required_for_v1: false,
-            config: "unknown; no TFY-consumable host route accepted yet",
-            transport: "unknown",
-            official_source: "none accepted yet",
-            config_strategy: "none; official/current route not proven",
-            apply_strategy: "unsupported",
-            smoke_strategy: "planned discovery only",
-            host_evidence_strategy: "ignored until route proof changes registry",
-            setup: "no setup/apply/smoke support until official docs or installed CLI proof shows a route",
-            normal_workflow: "discovery-only; TFY must not claim OpenClaw automatic routing",
-            launch_claim: "unsupported/planned until official/current evidence proves a safe route",
-            evidence_gate: &[
-                "official docs or installed local CLI proof required",
-                "route-specific setup and invocation artifacts required before support",
-            ],
-        },
     ]
+}
+
+fn agent_mode_host_unavailable(host: &str) -> anyhow::Error {
+    anyhow!(
+        "host '{}' is not available in TFY agent mode; supported hosts: codex, claude-code",
+        host
+    )
 }
 
 fn host_integration(host: &str) -> Result<HostIntegration> {
@@ -2916,20 +2836,9 @@ fn host_integration(host: &str) -> Result<HostIntegration> {
     host_registry()
         .into_iter()
         .find(|candidate| {
-            candidate.id == normalized
-                || (candidate.id == "claude-code" && normalized == "claude")
-                || (candidate.id == "opencode" && normalized == "open-code")
+            candidate.id == normalized || (candidate.id == "claude-code" && normalized == "claude")
         })
-        .ok_or_else(|| {
-            anyhow!(
-                "unknown host '{host}'; supported hosts: {}",
-                host_registry()
-                    .iter()
-                    .map(|h| h.id)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })
+        .ok_or_else(|| agent_mode_host_unavailable(host))
 }
 
 fn host_setup_snippet(host: &HostIntegration, session: &str) -> String {
@@ -2940,14 +2849,6 @@ fn host_setup_snippet(host: &HostIntegration, session: &str) -> String {
         "claude-code" => format!(
             "{{\n  \"hooks\": {{\n    \"PreToolUse\": [{{\n      \"matcher\": \"Bash\",\n      \"hooks\": [{{\n        \"type\": \"command\",\n        \"command\": \"./.tfy/agent/claude-pre-tool-use\",\n        \"timeout\": 30\n      }}]\n    }}]\n  }}\n}}\n# Generated hook script runs: tfy hook run --host claude-code --session {session}\n"
         ),
-        "cursor" => "Cursor is unsupported in the current TFY product scope; no setup snippet is emitted.\n".into(),
-        "opencode" => format!(
-            "{{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"mcp\": {{\n    \"tfy\": {{\n      \"type\": \"local\",\n      \"command\": [\"tfy\", \"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"],\n      \"enabled\": true\n    }}\n  }}\n}}\n"
-        ),
-        "hermes" => format!(
-            "hermes mcp add tfy --command tfy --args mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw\n\nmcp_servers:\n  tfy:\n    command: \"tfy\"\n    args: [\"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"]\n    enabled: true\n    tools:\n      include: [tfy_tool_run, tfy_raw_get, tfy_scope_list, tfy_context_get, tfy_output_validate, tfy_output_apply, tfy_state_project, tfy_adapter_report]\n"
-        ),
-        "openclaw" => "OpenClaw is planned_discovery only; no TFY setup snippet is emitted until official/current evidence proves a safe route.\n".into(),
         _ => unreachable!("host registry returned unknown host"),
     }
 }
@@ -2962,7 +2863,7 @@ fn print_host_setup(
 ) -> Result<()> {
     if host.status == "unsupported" {
         bail!(
-            "host '{}' is unsupported in TFY current product scope; supported named hosts: codex, claude-code; generic wrapper fallback remains available; legacy TFY-owned Cursor cleanup is only available through `tfy fuckyou --agent --yes`",
+            "host '{}' is not available in TFY agent mode; supported hosts: codex, claude-code",
             host.id
         );
     }
@@ -3667,11 +3568,11 @@ fn cleanup_project_agent_host_configs() -> Result<()> {
     cleanup_codex_project_hook_if_tfy_owned()?;
     cleanup_claude_project_hook_if_tfy_owned()?;
     cleanup_claude_project_mcp_if_tfy_owned()?;
-    cleanup_cursor_project_mcp_if_tfy_owned()?;
+    cleanup_legacy_project_mcp_if_tfy_owned()?;
     Ok(())
 }
 
-fn cleanup_cursor_project_mcp_if_tfy_owned() -> Result<()> {
+fn cleanup_legacy_project_mcp_if_tfy_owned() -> Result<()> {
     let path = PathBuf::from(".cursor").join("mcp.json");
     let existing = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -3682,7 +3583,7 @@ fn cleanup_cursor_project_mcp_if_tfy_owned() -> Result<()> {
         return Ok(());
     }
     let mut root: Value = serde_json::from_str(&existing)
-        .with_context(|| format!("parse existing Cursor MCP config {}", path.display()))?;
+        .with_context(|| format!("parse existing legacy MCP config {}", path.display()))?;
     let Some(root_obj) = root.as_object_mut() else {
         return Ok(());
     };
@@ -3695,7 +3596,7 @@ fn cleanup_cursor_project_mcp_if_tfy_owned() -> Result<()> {
     let Some(existing_tfy) = servers_obj.get("tfy") else {
         return Ok(());
     };
-    if !cursor_tfy_entry_is_managed(existing_tfy) {
+    if !json_tfy_entry_is_managed(existing_tfy) {
         return Ok(());
     }
     servers_obj.remove("tfy");
@@ -3716,10 +3617,6 @@ fn json_tfy_entry_is_managed(entry: &Value) -> bool {
         .get("tfy_managed")
         .and_then(Value::as_bool)
         .unwrap_or(false)
-}
-
-fn cursor_tfy_entry_is_managed(entry: &Value) -> bool {
-    json_tfy_entry_is_managed(entry)
 }
 
 fn host_doctor_report(host: &str) -> Result<serde_json::Value> {
@@ -5022,7 +4919,7 @@ fn minimum_v1_host_matrix() -> Vec<HostReadiness> {
     ];
     for host in host_registry()
         .into_iter()
-        .filter(|host| host.id != "codex")
+        .filter(|host| host.id == "claude-code")
     {
         hosts.push(host_readiness_from_integration(&host));
     }
@@ -5619,7 +5516,6 @@ fn apply_launch_evidence(
                     && route.positive_savings;
                 (local, local && route_host_ready(route), Some(route))
             }
-            "openclaw" => (false, false, None),
             "codex" => {
                 let named = evidence.named_hosts.get("codex");
                 let local = named
@@ -5951,10 +5847,7 @@ fn build_release_tier_report(
         blockers: rc_blockers,
     };
     let named_host_launch = host_matrix.iter().any(|host| {
-        matches!(
-            host.host.as_str(),
-            "codex" | "claude-code" | "opencode" | "hermes"
-        ) && host.status == "launch_supported"
+        matches!(host.host.as_str(), "codex" | "claude-code") && host.status == "launch_supported"
     });
     let ga_blockers = tier_blockers(&[
         (rc_ready.status == "ready", "rc_ready is blocked"),
@@ -6055,7 +5948,7 @@ fn build_launch_readiness_report(
         unsupported_claim_audit: UnsupportedClaimAudit {
             status: "pass".into(),
             audited_claims: not_supported_surfaces(),
-            rule: "unsupported provider/API prompt proxy, editor-internal auto hook, private Codex hook interception, and universal terminal interception claims must remain not_supported/planned; MCP and official-host-hook routes may promote only through config_written, host_launched, verified host invocation, route evidence, and savings_verified gates".into(),
+            rule: "provider/API prompt proxy, editor-internal auto hook, private Codex hook interception, and universal terminal interception claims must remain not_supported; MCP and official-host-hook routes may promote only through config_written, host_launched, verified host invocation, route evidence, and savings_verified gates".into(),
         },
         blockers,
         not_supported: status.not_supported,

@@ -236,7 +236,14 @@ fn hook_run_fails_closed_for_unsupported_host_even_with_explicit_command() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("unsupported hook target"), "{stderr}");
+    assert!(
+        stderr.contains("not available in TFY agent mode"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("supported hosts: codex, claude-code"),
+        "{stderr}"
+    );
 }
 
 #[test]

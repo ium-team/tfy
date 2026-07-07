@@ -60,17 +60,13 @@ pub(crate) fn execute_hook(cmd: HookCmd) -> Result<()> {
             "does_not_implement": ["summarization", "redaction", "restore", "apply", "claim_promotion"],
             "kill_switch": {
                 "env": "TFY_HOOK_DISABLE=1",
-                "per_host": "planned",
-                "uninstall": "required_before_host_writer_support"
+                "per_host": "same TFY-owned project config uninstall path as setup",
+                "uninstall": "tfy fuckyou --agent --yes or host-specific setup uninstall"
             },
             "targets": [
                 {"target":"test-shim","status":"supported_for_equivalence_tests","claim_tier":"route_evidence_recorded"},
                 {"target":"codex","status":"supported_configured_unverified","claim_tier":"config_written"},
-                {"target":"claude-code","status":"supported_configured_unverified","claim_tier":"config_written"},
-                {"target":"cursor","status":"unsupported","claim_tier":"unsupported"},
-                {"target":"opencode","status":"planned_official_docs_required","claim_tier":"planned_discovery"},
-                {"target":"hermes","status":"planned_official_docs_required","claim_tier":"planned_discovery"},
-                {"target":"openclaw","status":"planned_discovery","claim_tier":"planned_discovery"}
+                {"target":"claude-code","status":"supported_configured_unverified","claim_tier":"config_written"}
             ],
             "not_claimed": ["private_codex_hook", "provider_prompt_gateway", "universal_shell_interception", "editor_auto_integration"]
         })),
@@ -119,7 +115,7 @@ fn ensure_supported_hook_host(host: &str) -> Result<()> {
     if host.eq_ignore_ascii_case("test-shim") || is_real_hook_host(host) {
         return Ok(());
     }
-    bail!("unsupported hook target '{host}'; supported hook run targets are test-shim, codex, and claude-code")
+    bail!("host '{host}' is not available in TFY agent mode; supported hosts: codex, claude-code")
 }
 
 fn is_real_hook_host(host: &str) -> bool {
@@ -136,9 +132,10 @@ fn execute_hook_install(target: &str, dry_run: bool) -> Result<()> {
     let status = match target {
         "test-shim" => "supported_for_equivalence_tests",
         "codex" | "claude-code" => "supported_configured_unverified",
-        "cursor" => bail!("hook target 'cursor' is unsupported in TFY current product scope; supported hook targets are test-shim, codex, and claude-code"),
-        "opencode" | "hermes" | "openclaw" => "planned_official_docs_required",
-        other => bail!("unknown hook target '{other}'"),
+        other => bail!(
+            "target '{}' is not available in TFY agent mode; supported hosts: codex, claude-code",
+            other
+        ),
     };
     println!("TFY hook install dry-run");
     println!("target={target} status={status}");
