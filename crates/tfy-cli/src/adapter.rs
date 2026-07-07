@@ -94,9 +94,9 @@ pub(crate) fn execute_adapter(cmd: AdapterCmd) -> Result<()> {
                 },
                 {
                     "target": "cursor",
-                    "status": "config_snippet_available",
-                    "automatic_interception": "mcp_host_routing_required_not_private_hook",
-                    "claim_gate": "real_host_invocation_plus_ledger_raw_no_negative_savings_evidence"
+                    "status": "unsupported",
+                    "automatic_interception": "unsupported",
+                    "claim_gate": "unsupported_current_product_scope"
                 },
                 {
                     "target": "opencode",

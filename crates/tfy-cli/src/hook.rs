@@ -67,7 +67,7 @@ pub(crate) fn execute_hook(cmd: HookCmd) -> Result<()> {
                 {"target":"test-shim","status":"supported_for_equivalence_tests","claim_tier":"route_evidence_recorded"},
                 {"target":"codex","status":"supported_configured_unverified","claim_tier":"config_written"},
                 {"target":"claude-code","status":"supported_configured_unverified","claim_tier":"config_written"},
-                {"target":"cursor","status":"planned_official_docs_required","claim_tier":"planned_discovery"},
+                {"target":"cursor","status":"unsupported","claim_tier":"unsupported"},
                 {"target":"opencode","status":"planned_official_docs_required","claim_tier":"planned_discovery"},
                 {"target":"hermes","status":"planned_official_docs_required","claim_tier":"planned_discovery"},
                 {"target":"openclaw","status":"planned_discovery","claim_tier":"planned_discovery"}
@@ -136,7 +136,8 @@ fn execute_hook_install(target: &str, dry_run: bool) -> Result<()> {
     let status = match target {
         "test-shim" => "supported_for_equivalence_tests",
         "codex" | "claude-code" => "supported_configured_unverified",
-        "cursor" | "opencode" | "hermes" | "openclaw" => "planned_official_docs_required",
+        "cursor" => bail!("hook target 'cursor' is unsupported in TFY current product scope; supported hook targets are test-shim, codex, and claude-code"),
+        "opencode" | "hermes" | "openclaw" => "planned_official_docs_required",
         other => bail!("unknown hook target '{other}'"),
     };
     println!("TFY hook install dry-run");

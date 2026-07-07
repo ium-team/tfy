@@ -63,7 +63,8 @@ fn mcp_capabilities() -> serde_json::Value {
         "stdout_contract": "json_rpc_only",
         "logs": "stderr_or_file_only",
         "automatic_interception": "mcp_host_routing_required_not_private_hook",
-        "supported_targets": ["mcp-stdio", "codex-setup-snippet", "claude-code-setup-snippet", "cursor-setup-snippet", "opencode-setup-snippet", "hermes-setup-snippet", "openclaw-planned-discovery"],
+        "supported_targets": ["mcp-stdio", "codex-setup-snippet", "claude-code-setup-snippet", "opencode-setup-snippet", "hermes-setup-snippet", "openclaw-planned-discovery"],
+        "unsupported_targets": ["cursor"],
         "not_claimed": ["private_codex_hook", "provider_prompt_gateway", "universal_shell_interception"],
         "tools": mcp_tools(),
         "resource_templates": mcp_resource_templates(),
@@ -119,9 +120,7 @@ fn mcp_install_text(target: &str, session: &str) -> Result<String> {
         "claude-code" | "claude" => format!(
             "TFY MCP Claude Code setup dry-run\n\nclaude mcp add tfy -- tfy mcp serve --session {session} --ledger .tfy/mcp/ledger.jsonl --raw-dir .tfy/raw\n\n# Project .mcp.json snippet\n{{\n  \"mcpServers\": {{\n    \"tfy\": {{\"command\": \"tfy\", \"args\": {args}}}\n  }}\n}}\n\n{boundary}\n"
         ),
-        "cursor" => format!(
-            "TFY MCP Cursor setup dry-run\n\n# ~/.cursor/mcp.json or project .cursor/mcp.json snippet\n{{\n  \"mcpServers\": {{\n    \"tfy\": {{\"command\": \"tfy\", \"args\": {args}}}\n  }}\n}}\n\n{boundary}\n"
-        ),
+        "cursor" => bail!("mcp install target 'cursor' is unsupported in TFY current product scope; supported targets: codex, claude-code, opencode, hermes, openclaw"),
         "opencode" | "open-code" => format!(
             "TFY MCP OpenCode setup dry-run\n\n# opencode.json(c) snippet; JSONC apply is dry-run only until comment-preserving writer exists\n{{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"mcp\": {{\n    \"tfy\": {{\"type\": \"local\", \"command\": [\"tfy\", \"mcp\", \"serve\", \"--session\", \"{session}\", \"--ledger\", \".tfy/mcp/ledger.jsonl\", \"--raw-dir\", \".tfy/raw\"], \"enabled\": true}}\n  }}\n}}\n\n{boundary}\n"
         ),
@@ -131,7 +130,7 @@ fn mcp_install_text(target: &str, session: &str) -> Result<String> {
         "openclaw" => format!(
             "TFY MCP OpenClaw setup dry-run\n\nstatus=planned_discovery\nNo setup snippet is emitted until official/current evidence proves a TFY-consumable MCP or wrapper route.\n\n{boundary}\n"
         ),
-        _ => bail!("mcp install target '{target}' is not implemented; supported targets: codex, claude-code, cursor, opencode, hermes, openclaw"),
+        _ => bail!("mcp install target '{target}' is not implemented; supported targets: codex, claude-code, opencode, hermes, openclaw"),
     };
     Ok(body)
 }
