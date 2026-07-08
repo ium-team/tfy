@@ -1,33 +1,37 @@
 # TFY Release Versioning Guide
 
-This guide is the plain-language rulebook for choosing TFY release versions.
-Use it before running the manual GitHub Release workflow or publishing npm.
+TFY uses one product line with two forward release maturity states:
 
-TFY intentionally has only two public release channels:
+1. **Beta** — development/validation builds that are publicly testable but not the default stable install.
+2. **Stable** — completed normal releases with no prerelease suffix.
 
-1. **Stable** — the safer, already-tested public release.
-2. **Public-test / preview** — the newest public testing release for dogfooding.
+The version number communicates the planned feature/release line. The suffix communicates maturity.
 
-There is no third channel for nightly, canary, alpha, or experimental releases unless the project explicitly adds one later.
+## Quick rule
 
-## Quick decision tree
-
-Use this table first:
-
-| Situation | Version to make | Channel | npm install users run |
+| Situation | Version format | npm dist-tag | Install command |
 | --- | --- | --- | --- |
-| First public testing build for a planned stable version | `N.N.N-preview.0` | `preview` | `npm install -g @ium/tfy-cli@preview` |
-| Another public testing build for the same planned stable version | `N.N.N-preview.1`, then `.2`, `.3`, ... | `preview` | `npm install -g @ium/tfy-cli@preview` |
-| The preview has been tested enough and should become the safer release | `N.N.N` | `stable` | `npm install -g @ium/tfy-cli` |
-| Small fix after a stable release | Next patch, usually `N.N.(N+1)-preview.0` first | `preview` | `npm install -g @ium/tfy-cli@preview` |
-| New user-visible feature set | Next minor, usually `N.(N+1).0-preview.0` first | `preview` | `npm install -g @ium/tfy-cli@preview` |
-| Breaking CLI/config/API change | Next major, usually `(N+1).0.0-preview.0` first | `preview` | `npm install -g @ium/tfy-cli@preview` |
+| First beta for a planned stable version | `N.N.N-beta.0` | `beta` | `npm install -g @ium/tfy-cli@beta` |
+| Another beta for the same planned stable version | `N.N.N-beta.1`, then `.2`, `.3`, ... | `beta` | `npm install -g @ium/tfy-cli@beta` |
+| The beta has been validated enough and becomes the completed release | `N.N.N` | `latest` | `npm install -g @ium/tfy-cli` |
+| Small fix after a stable release | Next patch, usually `N.N.(N+1)-beta.0` first | `beta` | `npm install -g @ium/tfy-cli@beta` |
+| New user-visible feature set | Next minor, usually `N.(N+1).0-beta.0` first | `beta` | `npm install -g @ium/tfy-cli@beta` |
+| Breaking CLI/config/API change | Next major, usually `(N+1).0.0-beta.0` first | `beta` | `npm install -g @ium/tfy-cli@beta` |
 
-## Version formats
+Examples:
 
-### Stable versions
+```text
+0.1.1-beta.0  # first beta for the 0.1.1 feature line
+0.1.1-beta.1  # second beta for that same feature line
+0.1.1         # completed stable 0.1.1
+0.1.2-beta.0  # next patch/fix line begins in beta
+```
 
-Stable versions must look like this:
+Historical note: `0.1.0-preview.*` releases exist from the earlier naming policy. They remain historical exact-version releases, but new development/validation builds use `beta`.
+
+## Stable versions
+
+Stable versions have no suffix:
 
 ```text
 N.N.N
@@ -36,285 +40,257 @@ N.N.N
 Examples:
 
 ```text
-0.1.0
 0.1.1
 0.2.0
 1.0.0
 ```
 
-Stable release metadata:
+Stable metadata:
 
-| Field | Rule |
+| Field | Value |
 | --- | --- |
 | Release channel | `stable` |
 | npm dist-tag | `latest` |
 | GitHub tag | `vN.N.N` |
-| Git source ref | `main` only |
 | Cargo workspace version | `N.N.N` |
 | npm package version | `N.N.N` |
 
-Important: npm calls the stable dist-tag `latest`. In TFY, `latest` means “our stable channel”, not “publish every newest preview here”. Do not publish preview builds to the npm `latest` tag. If a preview ever appears on `latest`, follow the canonical dist-tag checklist in `docs/RELEASE_READINESS.md` and keep preview releases on `preview` only.
+Important: npm calls the stable dist-tag `latest`. In TFY, `latest` means “our stable channel,” not “publish every newest beta here.” Do not publish beta builds to the npm `latest` tag.
 
-### Public-test / preview versions
+## Beta versions
 
-Preview versions must look like this:
+Beta versions use the SemVer prerelease suffix:
 
 ```text
-N.N.N-preview.N
+N.N.N-beta.N
 ```
 
 Examples:
 
 ```text
-0.1.0-preview.0
-0.1.0-preview.1
-0.1.1-preview.0
-0.2.0-preview.0
+0.1.1-beta.0
+0.1.1-beta.1
+0.2.0-beta.0
 ```
 
-Preview release metadata:
+Beta metadata:
 
-| Field | Rule |
+| Field | Value |
 | --- | --- |
-| Release channel | `preview` |
-| npm dist-tag | `preview` |
-| GitHub tag | `vN.N.N-preview.N` |
-| Git source ref | `develop` or `release/*` |
-| Cargo workspace version | base version only: `N.N.N` |
-| npm package version | full preview version: `N.N.N-preview.N` |
+| Release channel | `beta` |
+| npm dist-tag | `beta` |
+| GitHub tag | `vN.N.N-beta.N` |
+| Cargo workspace version | base version: `N.N.N` |
+| npm package version | full beta version: `N.N.N-beta.N` |
 
-Example:
+Example for `0.1.1-beta.0`:
 
-| File/system | Value for `0.1.0-preview.2` |
+| File/system | Value |
 | --- | --- |
-| Cargo workspace version | `0.1.0` |
-| npm package version | `0.1.0-preview.2` |
-| GitHub tag | `v0.1.0-preview.2` |
-| npm dist-tag | `preview` |
+| `Cargo.toml` workspace package version | `0.1.1` |
+| `npm/tfy-cli/package.json` version | `0.1.1-beta.0` |
+| Manual Release workflow `version` input | `0.1.1-beta.0` |
+| Manual Release workflow `channel` input | `beta` |
+| npm dist-tag | `beta` |
 
-Preview archive filenames use the base version, not the full preview suffix. For example, `0.1.0-preview.2` creates assets like:
+Beta archive filenames use the base version, not the full beta suffix. For example, `0.1.1-beta.0` creates assets like:
 
 ```text
-tfy-0.1.0-linux-x86_64.tar.gz
-tfy-0.1.0-linux-x86_64.tar.gz.sha256
+tfy-0.1.1-linux-x86_64.tar.gz
+tfy-0.1.1-linux-x86_64.tar.gz.sha256
 ```
 
-The GitHub Release tag still includes the full preview suffix:
+The GitHub Release tag still includes the full beta suffix:
 
 ```text
-v0.1.0-preview.2
+v0.1.1-beta.0
 ```
 
-## What number should increase?
+## Which number changes?
 
-TFY uses the normal `MAJOR.MINOR.PATCH` idea:
+TFY is still pre-1.0, but the same intent rules apply.
+
+### Patch bump
+
+Use when the change is a bug fix, docs/release policy cleanup, small compatibility fix, or a narrow behavior correction.
 
 ```text
-MAJOR.MINOR.PATCH
+0.1.1-beta.0
+0.1.1
+0.1.2-beta.0
+0.1.2
 ```
 
-For `0.1.3`:
+### Minor bump
 
-- `0` is MAJOR.
-- `1` is MINOR.
-- `3` is PATCH.
-
-### Increase PATCH for small fixes
-
-Use a patch bump when the change fixes or sharpens the current release line without adding a large feature set.
-
-Examples:
-
-- Fix npm installer behavior.
-- Fix GitHub Release packaging.
-- Fix Windows archive behavior.
-- Drop or document an unsupported prebuilt target.
-- Fix docs or release metadata.
-
-Example flow:
+Use when the change adds a meaningful user-visible feature set or new mode.
 
 ```text
-0.1.0-preview.0
-0.1.0-preview.1
 0.1.0
-0.1.1-preview.0
-0.1.1
-```
-
-### Increase MINOR for new features
-
-Use a minor bump when users get new behavior, but existing commands/configs are still intended to work.
-
-Examples:
-
-- Add a new `tfy` subcommand.
-- Add a new supported host integration.
-- Add a new gateway capability.
-- Add a meaningful user-visible workflow.
-
-Example flow:
-
-```text
-0.1.1
-0.2.0-preview.0
-0.2.0-preview.1
+0.2.0-beta.0
 0.2.0
 ```
 
-### Increase MAJOR for breaking changes
+### Major bump
 
-Use a major bump when existing users may need to change commands, config, or automation.
-
-Examples:
-
-- Remove or rename an existing command.
-- Change config file format incompatibly.
-- Change npm package/install contract incompatibly.
-- Break public CLI or machine-readable output contracts.
-
-Example flow:
+Use when the change breaks CLI/config/API compatibility or changes core trust/security contracts.
 
 ```text
-0.9.4
-1.0.0-preview.0
-1.0.0-preview.1
+1.0.0-beta.0
 1.0.0
 ```
 
-While TFY is still `0.x`, avoid major bumps unless there is a very clear breaking public contract decision.
+## How beta numbers work
 
-## How preview numbers work
-
-The number after `preview.` counts public testing builds for the same planned stable version.
-
-Example:
+The number after `beta.` counts validation builds for the same planned stable version.
 
 ```text
-0.1.1-preview.0  # first public test candidate for 0.1.1
-0.1.1-preview.1  # second public test candidate for 0.1.1
-0.1.1-preview.2  # third public test candidate for 0.1.1
-0.1.1            # stable release after enough testing
+0.1.1-beta.0  # first beta candidate for 0.1.1
+0.1.1-beta.1  # second beta candidate for 0.1.1
+0.1.1-beta.2  # third beta candidate for 0.1.1
 ```
 
-Do not publish `0.1.1-preview.0` again after it already exists. Every public test retry for the same base version gets the next preview number.
+Do not publish `0.1.1-beta.0` again after it already exists. Every public test retry for the same base version gets the next beta number.
 
-## Recommended TFY release flow
+## Common flows
 
-For early TFY releases, use this simple flow:
+### First stable not released yet
 
 ```text
-0.1.0-preview.0  # first public test
-0.1.0-preview.1  # fix issues found in first public test
-0.1.0-preview.2  # fix more issues if needed
-0.1.0            # stable once tested enough
-0.1.1-preview.0  # next small fix cycle
-0.1.1            # stable patch release
-0.2.0-preview.0  # next feature cycle
-0.2.0            # stable feature release
+0.1.0-preview.0  # historical old naming
+0.1.0-preview.1  # historical old naming
+0.1.1-beta.0     # current forward beta naming
+0.1.1-beta.1     # beta fix if needed
+0.1.1            # stable once validated enough
 ```
 
-When unsure, choose preview first. Stable should be the version that has already survived public-test/manual testing.
+While no stable exists, the recommended install command is:
 
-## Manual Release workflow input examples
+```sh
+npm install -g @ium/tfy-cli@beta
+```
 
-### Preview dry-run
-
-Use this before creating the real GitHub Release:
+### Feature line with beta validation
 
 ```text
-version: 0.1.0-preview.0
-channel: preview
+0.1.1-beta.0  # feature implementation enters beta
+0.1.1-beta.1  # fixes from beta feedback
+0.1.1         # stable promotion
+```
+
+### Next feature set
+
+```text
+0.2.0-beta.0
+0.2.0-beta.1
+0.2.0
+```
+
+## Choosing beta vs stable
+
+Choose **beta** when:
+
+- The change is new enough that real install/use validation is still needed.
+- The release includes a new user flow, adapter, host route, or release automation change.
+- CI/local checks pass but the release has not survived public/manual use.
+- There is no stable release yet.
+
+Choose **stable** when:
+
+- The same version line has passed beta validation or equivalent manual/dogfood evidence.
+- Release artifacts, npm install, and docs have been verified.
+- Supported route claims remain evidence-backed.
+- Maintainers are comfortable making it the default `npm install -g @ium/tfy-cli` version.
+
+When unsure, choose beta first. Stable should be the version that has already survived beta/manual testing.
+
+## Manual Release workflow examples
+
+Beta release from `develop`:
+
+```text
+version: 0.1.1-beta.0
+channel: beta
 source_ref: develop
-dry_run: true
 ```
 
-### Preview real GitHub Release
-
-Use this after the dry-run passes:
+Beta release from a stabilization branch:
 
 ```text
-version: 0.1.0-preview.0
-channel: preview
-source_ref: develop
-dry_run: false
+version: 0.1.1-beta.1
+channel: beta
+source_ref: release/0.1.1
 ```
 
-### Stable dry-run
-
-Stable releases must come from `main`:
+Stable release:
 
 ```text
-version: 0.1.0
+version: 0.1.1
 channel: stable
 source_ref: main
-dry_run: true
-```
-
-### Stable real GitHub Release
-
-Use this after the stable dry-run passes:
-
-```text
-version: 0.1.0
-channel: stable
-source_ref: main
-dry_run: false
 ```
 
 ## Files that must agree
 
-Before a release, the version metadata must agree with the channel.
+For beta `0.1.1-beta.0`:
 
-For preview `0.1.0-preview.0`:
-
-| Location | Required value |
+| Place | Expected value |
 | --- | --- |
-| `Cargo.toml` workspace package version | `0.1.0` |
-| `npm/tfy-cli/package.json` version | `0.1.0-preview.0` |
-| Manual Release workflow `version` input | `0.1.0-preview.0` |
-| Manual Release workflow `channel` input | `preview` |
-| Manual Release workflow `source_ref` input | `develop` or `release/*` |
+| `Cargo.toml` workspace package version | `0.1.1` |
+| `npm/tfy-cli/package.json` version | `0.1.1-beta.0` |
+| Manual Release workflow `version` input | `0.1.1-beta.0` |
+| Manual Release workflow `channel` input | `beta` |
+| npm publish dist-tag | `beta` |
 
-For stable `0.1.0`:
+For stable `0.1.1`:
 
-| Location | Required value |
+| Place | Expected value |
 | --- | --- |
-| `Cargo.toml` workspace package version | `0.1.0` |
-| `npm/tfy-cli/package.json` version | `0.1.0` |
-| Manual Release workflow `version` input | `0.1.0` |
+| `Cargo.toml` workspace package version | `0.1.1` |
+| `npm/tfy-cli/package.json` version | `0.1.1` |
+| Manual Release workflow `version` input | `0.1.1` |
 | Manual Release workflow `channel` input | `stable` |
-| Manual Release workflow `source_ref` input | `main` |
+| npm publish dist-tag | `latest` |
 
-The helper script checks this:
-
-```sh
-node scripts/check-release-version.js --version 0.1.0-preview.0 --channel preview --source-ref develop --json
-node scripts/check-release-version.js --version 0.1.0 --channel stable --source-ref main --json
-```
-
-## npm install forms
-
-Use npm's `@version` or `@tag` syntax:
+## Install examples
 
 ```sh
-npm install -g @ium/tfy-cli              # stable channel, npm dist-tag latest; only after first stable exists
-npm install -g @ium/tfy-cli@preview      # public-test channel; use this while preview-only
-npm install -g @ium/tfy-cli@0.1.0        # exact stable version
-npm install -g @ium/tfy-cli@0.1.0-preview.0  # exact preview version
+npm install -g @ium/tfy-cli             # stable channel after stable exists
+npm install -g @ium/tfy-cli@beta        # beta channel; use this while beta-only
+npm install -g @ium/tfy-cli@0.1.1       # exact stable version
+npm install -g @ium/tfy-cli@0.1.1-beta.0  # exact beta version
 ```
 
-Do not use slash-style version installs:
+Historical preview versions, if needed, also use exact npm version syntax:
 
 ```sh
-npm install -g @ium/tfy-cli/v0.1.0       # wrong for npm package versions
+npm install -g @ium/tfy-cli@0.1.0-preview.1
 ```
 
-## Naming reminder
+Do not use slash-style package versions:
 
-The npm package name and command name are different on purpose:
+```sh
+npm install -g @ium/tfy-cli/v0.1.1       # wrong for npm package versions
+```
 
-| Layer | Name |
-| --- | --- |
-| npm package | `@ium/tfy-cli` |
-| installed command | `tfy` |
-| GitHub Release tag | `vN.N.N` or `vN.N.N-preview.N` |
+## Release helper checks
+
+```sh
+node scripts/check-release-version.js --version 0.1.1-beta.0 --channel beta --source-ref develop --json
+node scripts/check-release-version.js --version 0.1.1 --channel stable --source-ref main --cargo-version 0.1.1 --npm-version 0.1.1 --json
+node scripts/npm-publish-plan.js --version 0.1.1-beta.0 --channel beta --source-ref develop
+node scripts/npm-dist-tag-check.js --version 0.1.1-beta.0 --channel beta
+```
+
+The release helper rejects mismatched channel/version/source combinations before packaging or publishing.
+
+## Final checklist
+
+Before release:
+
+1. Pick the next version line based on feature/change size.
+2. Use `-beta.N` until the version is completed/stable.
+3. Keep Cargo base version and npm package version aligned by channel.
+4. Run the release helper checks.
+5. Run the full verification gate.
+6. Use beta dist-tag for beta and latest dist-tag for stable.

@@ -52,16 +52,6 @@ A method fails if:
 
 Launch and status claims must be generated from route-bound evidence tiers, not from setup text alone. The canonical promotion ladder is:
 
-1. `config_snippet_available`
-2. `config_written`
-3. `host_launched`
-4. `verified_host_mcp_invocation` or `verified_host_hook`
-5. `route_evidence_recorded`
-6. `savings_verified`
-7. `launch_supported`
-
-Provider/API prompt proxying, private Codex hook interception, universal terminal interception, and editor-internal auto hooks remain unsupported unless a separate official adapter, kill switch/uninstall path, and host e2e evidence are implemented and tested. MCP and hook shims may only route into the shared TFY gateways; they cannot independently promote claims.
-
 ## Command-output superiority benchmark gate
 
 TFY may use external command-output baselines as internal comparison lanes, but public

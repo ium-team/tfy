@@ -11,7 +11,7 @@ TFY is a Rust-first token-saving middleware for AI-agent I/O boundaries. It shou
 1. **Plain text by default** — model-facing command output must not default to JSON envelopes.
 2. **No negative savings** — only summarize when the model-visible result is smaller than redacted public raw output.
 3. **Raw evidence first** — exact stdout/stderr bytes must be stored locally before reduction, redaction, suppression, or summarization.
-4. **Truthful adapter claims** — MCP support means host-routed MCP tool/resource integration. Do not claim private Codex hook interception, provider prompt mutation, or universal shell interception unless implemented and tested.
+4. **Truthful adapter claims** — do not claim private Codex hook interception, provider prompt mutation, or universal shell interception unless implemented and tested.
 5. **Preview-only output validation** — do not claim workspace apply authority until explicit authority/provenance gates and tests exist.
 
 ## Product routing rules
@@ -28,7 +28,6 @@ TFY is a Rust-first token-saving middleware for AI-agent I/O boundaries. It shou
 - `crates/tfy-cli/src/main.rs` — CLI declaration and dispatch only.
 - `crates/tfy-cli/src/gateways.rs` — Tool/Context/Output gateway execution.
 - `crates/tfy-cli/src/adapter.rs` — generic-shell adapter install/run/report behavior.
-- `crates/tfy-cli/src/mcp.rs` — stdio MCP JSON-RPC server and Codex MCP setup snippet.
 - `crates/tfy-cli/src/util.rs` — small CLI helper functions only.
 - `docs/` — durable architecture, protocol, harness, and contributor documentation.
 - `.github/` — GitHub issue, PR, and CI scaffolding.
@@ -127,10 +126,8 @@ Useful focused checks:
 ```bash
 cargo test -p tfy-cli --test tool_gateway
 cargo test -p tfy-cli --test adapter_gateway
-cargo test -p tfy-cli --test mcp_server
 cargo run -q -p tfy-cli -- tool-gateway -- sh -c 'printf ok'
 cargo run -q -p tfy-cli -- adapter capabilities
-cargo run -q -p tfy-cli -- mcp capabilities
 ```
 
 ## Documentation placement

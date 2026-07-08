@@ -338,7 +338,9 @@ fn validate_origin(origin: &Origin) -> Result<()> {
         || !origin.intercepted
         || origin.user_shell_mutated
     {
-        bail!("workspace apply plan requires explicit agent/mcp/test origin without human shell mutation");
+        bail!(
+            "workspace apply plan requires explicit agent/test origin without human shell mutation"
+        );
     }
     Ok(())
 }

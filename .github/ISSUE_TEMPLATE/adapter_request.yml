@@ -14,7 +14,7 @@ body:
     id: hook
     attributes:
       label: Available integration point
-      description: Shell hook, MCP, plugin API, editor extension, provider gateway, or other documented API.
+      description: Shell hook, plugin API, editor extension, provider gateway, or other documented API.
     validations:
       required: true
   - type: textarea

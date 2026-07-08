@@ -7,7 +7,8 @@ const { assertNpmPackageIdentity, NPM_BINARY_NAME, NPM_PACKAGE_DIR, NPM_PACKAGE_
 const { archiveName, baseVersion, cleanVersion, supportedTargets } = require(`../${NPM_PACKAGE_DIR}/scripts/lib/platform`);
 
 const STABLE_VERSION_RE = /^\d+\.\d+\.\d+$/;
-const PREVIEW_VERSION_RE = /^(\d+\.\d+\.\d+)-preview\.\d+$/;
+const BETA_VERSION_RE = /^(\d+\.\d+\.\d+)-beta\.\d+$/;
+const LEGACY_PREVIEW_VERSION_RE = /^(\d+\.\d+\.\d+)-preview\.\d+$/;
 
 function parseArgs(argv) {
   const args = {};
@@ -44,7 +45,7 @@ function readNpmPackageVersion(root = process.cwd()) {
 
 function defaultSourceRef(channel) {
   if (channel === 'stable') return 'main';
-  if (channel === 'preview') return 'develop';
+  if (channel === 'beta') return 'develop';
   throw new Error(`unsupported release channel: ${channel}`);
 }
 
@@ -61,7 +62,7 @@ function isSafeSourceRef(sourceRef) {
 function sourceRefAllowed(channel, sourceRef) {
   if (!isSafeSourceRef(sourceRef)) return false;
   if (channel === 'stable') return sourceRef === 'main';
-  if (channel === 'preview') return sourceRef === 'develop' || sourceRef.startsWith('release/');
+  if (channel === 'beta') return sourceRef === 'develop' || sourceRef.startsWith('release/');
   return false;
 }
 
@@ -98,7 +99,7 @@ function metadataForTarget(version, target) {
 function validateRelease(options) {
   assertNpmPackageIdentity(options.root);
   const channel = options.channel;
-  if (!['stable', 'preview'].includes(channel)) throw new Error('channel must be stable or preview');
+  if (!['stable', 'beta'].includes(channel)) throw new Error('channel must be stable or beta');
 
   const version = cleanVersion(options.version || '');
   if (!version) throw new Error('version is required');
@@ -111,7 +112,7 @@ function validateRelease(options) {
   if (!sourceRefAllowed(channel, sourceRef)) {
     errors.push(channel === 'stable'
       ? `stable releases must use source_ref=main, got ${sourceRef}`
-      : `preview releases must use source_ref=develop or release/*, got ${sourceRef}`);
+      : `beta releases must use source_ref=develop or release/*, got ${sourceRef}`);
   }
 
   if (channel === 'stable') {
@@ -119,10 +120,10 @@ function validateRelease(options) {
     if (cargoVersion !== version) errors.push(`Cargo workspace version must equal stable version ${version}, got ${cargoVersion}`);
     if (npmVersion !== version) errors.push(`npm package version must equal stable version ${version}, got ${npmVersion}`);
   } else {
-    const match = version.match(PREVIEW_VERSION_RE);
-    if (!match) errors.push(`preview version must match N.N.N-preview.N, got ${version}`);
-    if (cargoVersion !== versionBase) errors.push(`Cargo workspace version must equal preview base ${versionBase}, got ${cargoVersion}`);
-    if (npmVersion !== version) errors.push(`npm package version must equal preview version ${version}, got ${npmVersion}`);
+    const match = version.match(BETA_VERSION_RE);
+    if (!match) errors.push(`beta version must match N.N.N-beta.N, got ${version}`);
+    if (cargoVersion !== versionBase) errors.push(`Cargo workspace version must equal beta base ${versionBase}, got ${cargoVersion}`);
+    if (npmVersion !== version) errors.push(`npm package version must equal beta version ${version}, got ${npmVersion}`);
   }
 
   const inputTargets = options.targets || supportedTargets();
@@ -144,14 +145,14 @@ function validateRelease(options) {
     package_name: NPM_PACKAGE_NAME,
     binary_name: NPM_BINARY_NAME,
     channel,
-    npm_dist_tag: channel === 'stable' ? 'latest' : 'preview',
+    npm_dist_tag: channel === 'stable' ? 'latest' : 'beta',
     version,
     base_version: versionBase,
     cargo_version: cargoVersion,
     npm_version: npmVersion,
     tag: `v${version}`,
     source_ref: sourceRef,
-    prerelease: channel === 'preview',
+    prerelease: channel === 'beta',
     github_latest: channel === 'stable',
     archive_version: versionBase,
     targets
@@ -181,7 +182,8 @@ if (require.main === module) {
 }
 
 module.exports = {
-  PREVIEW_VERSION_RE,
+  BETA_VERSION_RE,
+  LEGACY_PREVIEW_VERSION_RE,
   STABLE_VERSION_RE,
   assertSupportedTargetSet,
   defaultSourceRef,

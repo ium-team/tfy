@@ -141,14 +141,6 @@ Implemented test coverage now includes:
 
 Remaining adapter tests before stronger claims:
 
-- Codex hook interception e2e.
-- MCP stdio server e2e: implemented in `crates/tfy-cli/tests/mcp_server.rs` for tools/resources; broader host-specific proxy routing remains follow-up.
-- Editor file/context adapter e2e.
-- Provider cache/layout hit/miss/accounting e2e.
-- Private Codex hook/provider/editor interception.
-- Fuzzy workspace mutation beyond fail-closed/preview-only behavior.
-
-
 ## Adapter v1 verification
 
 Adapter v1 is verified by `crates/tfy-cli/tests/adapter_gateway.rs` and these smoke commands:
@@ -163,50 +155,11 @@ cargo run -p tfy-cli -- adapter report --session smoke
 
 Required evidence:
 
-- tiny output remains plain text with no JSON leakage;
-- long output summarizes only when shorter and includes raw recovery;
-- failures preserve original exit code;
-- session report shows raw/model-visible byte size, estimated token savings, rendering counts, and raw refs;
-- dry-run install does not write files;
-- docs do not claim Codex/MCP/editor/provider automatic interception without matching adapter e2e tests.
-
 Adapter reports use `raw_bytes` and `model_bytes` as the public size contract. Legacy runtime ledger fields such as `raw_chars` / `model_chars` are compatibility-only and are not emitted by `tfy adapter report`.
-
-## MCP/Codex adapter foundation tests
-
-`crates/tfy-cli/tests/mcp_server.rs` verifies:
-
-- `tfy mcp capabilities` reports stdio support and does not claim private hooks/provider gateway/universal interception.
-- `tfy mcp install --target codex --dry-run` writes nothing and prints both a concrete `codex mcp add tfy -- tfy mcp serve ...` command and TOML snippet.
-- MCP `initialize` declares both `capabilities.tools` and `capabilities.resources`.
-- `tools/list` exposes TFY tool names.
-- `resources/list` returns concrete session resources, while `resources/templates/list` returns URI templates.
-- `tfy_tool_run` preserves failing command exit metadata without terminating the MCP server.
-- `resources/read` recovers raw output and reports byte-only adapter metrics.
-
-Additional MCP hardening tests verify:
-
-- JSON-RPC notifications do not emit response objects on stdout.
-- `tfy://state/{session}` and `tfy_state_project` are scoped to the requested session and do not leak evidence from other sessions sharing the same ledger file.
-- Adapter reports expose the byte contract fields `raw_bytes`, `model_bytes`, `saved_bytes`, and `net_savings_ratio` while still omitting public `raw_chars` / `model_chars` fields.
-- MCP tools list includes `tfy_restore_display`, `tfy_workspace_validate`, and `tfy_workspace_apply` for host-routed display and exact workspace apply paths.
 
 ## Product UX P0 verification
 
 `crates/tfy-cli/tests/product_ux.rs` verifies the product-facing lifecycle layer:
-
-- `tfy init --codex --dry-run` writes nothing and prints the `mcp_host_routed` / `instruction_guidance` tiers, TFY marker names, and `codex mcp add tfy -- tfy mcp serve ...`.
-- `tfy init --codex --project --apply` creates or replaces exactly one marker-bounded `AGENTS.md` block and preserves non-TFY content.
-- `tfy init --show` reports marker state; `tfy init --uninstall --codex --project --apply` removes only the TFY-owned block.
-- `tfy doctor --codex --json` starts a local MCP child, verifies `initialize` and required tools, checks writable local dirs, and warns rather than overclaims Codex config state.
-- `tfy smoke --mcp --json` runs the local MCP Code I/O workflow end to end, records Tool/Context/Output/State evidence, and proves preview validation does not mutate while proof-gated apply does.
-- `tfy smoke --all --json` runs generic-shell, agent-wrapper, and MCP smokes and emits ledger paths that can be supplied to `tfy launch-report --all --ledger ...`; without separate artifact-backed host setup/real-invocation and overhead evidence these routes are only `verified_local_mcp`.
-- `tfy smoke --codex` is checklist/report-only and states that no Codex host invocation is claimed.
-- `tfy gain` reports `No TFY savings data found yet` on empty ledgers and reports real bytes/tokens from adapter, agent, or MCP `tfy_tool_run` `ToolCommandCompleted` command events when present, including `repeat_elided` counts for unchanged repeated output.
-- `tfy setup --ai --host <host> --dry-run` and `tfy mcp install --target <host> --dry-run` emit truthful setup snippets for Codex and Claude Code.
-- Explicit host options outside the supported Codex/Claude Code set fail closed before writing host config and show the supported alternatives only.
-- `tfy status --json` exposes both canonical status and claim-tier taxonomy for required routes and named hosts.
-- `tfy launch-report --json` exposes the `mcp_stdio`, `tfy_agent_adapter`, `generic_shell`, and supported named-host readiness matrix, blocks release while required v1 command routes (`tfy_agent_adapter`, `generic_shell`) lack `launch_supported` evidence and keeps `mcp_stdio` advanced/complementary, promotes local smoke only to `verified_local_mcp`, requires artifact-backed `--host-evidence` JSON plus overhead evidence before `launch_supported`, keeps Codex and Claude Code non-blocking below launch support without host-bound route/config/ledger/raw/no-negative/positive-savings evidence, lists unsupported provider/editor/private-hook/universal-terminal paths, reports exact byte savings plus conservative token proxy estimates, and includes the seven required launch benchmark scenario names.
 
 ## Human `start --human` auto-intercept regression
 

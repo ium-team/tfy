@@ -186,7 +186,7 @@ fn adapter_install_generic_shell_dry_run_does_not_write() {
 }
 
 #[test]
-fn adapter_capabilities_marks_generic_shell_and_mcp_supported() {
+fn adapter_capabilities_marks_generic_shell_supported() {
     let output = Command::new(env!("CARGO_BIN_EXE_tfy"))
         .args(["adapter", "capabilities"])
         .output()
@@ -198,9 +198,7 @@ fn adapter_capabilities_marks_generic_shell_and_mcp_supported() {
     assert!(targets
         .iter()
         .any(|target| target["target"] == "generic-shell" && target["status"] == "supported"));
-    assert!(targets.iter().any(|target| target["target"] == "mcp"
-        && target["status"] == "supported"
-        && target["automatic_interception"] == "mcp_host_routing_required_not_private_hook"));
+    assert_eq!(targets.len(), 3);
     assert!(targets
         .iter()
         .all(|target| target["target"] != "provider" && target["target"] != "editor"));

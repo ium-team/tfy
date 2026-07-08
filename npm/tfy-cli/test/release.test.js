@@ -16,42 +16,42 @@ const identityRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tfy-identity-test-')
 fs.mkdirSync(path.join(identityRoot, 'npm', 'tfy-cli'), { recursive: true });
 fs.writeFileSync(path.join(identityRoot, 'npm', 'tfy-cli', 'package.json'), JSON.stringify({
   name: 'wrong-name',
-  version: '0.1.1-preview.0',
+  version: '0.1.1-beta.0',
   bin: { tfy: 'bin/tfy.js' }
 }));
 assert.throws(() => validateRelease({
   root: identityRoot,
-  channel: 'preview',
-  version: '0.1.1-preview.0',
+  channel: 'beta',
+  version: '0.1.1-beta.0',
   cargoVersion: '0.1.1',
-  npmVersion: '0.1.1-preview.0'
+  npmVersion: '0.1.1-beta.0'
 }), /package.json name must equal @ium\/tfy-cli/);
 fs.writeFileSync(path.join(identityRoot, 'npm', 'tfy-cli', 'package.json'), JSON.stringify({
   name: '@ium/tfy-cli',
-  version: '0.1.1-preview.0',
+  version: '0.1.1-beta.0',
   bin: { nope: 'bin/tfy.js' }
 }));
 assert.throws(() => validateRelease({
   root: identityRoot,
-  channel: 'preview',
-  version: '0.1.1-preview.0',
+  channel: 'beta',
+  version: '0.1.1-beta.0',
   cargoVersion: '0.1.1',
-  npmVersion: '0.1.1-preview.0'
+  npmVersion: '0.1.1-beta.0'
 }), /package.json bin must expose tfy/);
 
-const preview = validateRelease({
-  channel: 'preview',
-  version: '0.1.1-preview.0',
+const beta = validateRelease({
+  channel: 'beta',
+  version: '0.1.1-beta.0',
   cargoVersion: '0.1.1',
-  npmVersion: '0.1.1-preview.0'
+  npmVersion: '0.1.1-beta.0'
 });
-assert.strictEqual(preview.tag, 'v0.1.1-preview.0');
-assert.strictEqual(preview.source_ref, 'develop');
-assert.strictEqual(preview.npm_dist_tag, 'preview');
-assert.strictEqual(preview.prerelease, true);
-assert.strictEqual(preview.archive_version, '0.1.1');
-assert.strictEqual(preview.targets.length, supportedTargets().length);
-assert(preview.targets.some(target => target.archive === 'tfy-0.1.1-linux-x86_64.tar.gz'));
+assert.strictEqual(beta.tag, 'v0.1.1-beta.0');
+assert.strictEqual(beta.source_ref, 'develop');
+assert.strictEqual(beta.npm_dist_tag, 'beta');
+assert.strictEqual(beta.prerelease, true);
+assert.strictEqual(beta.archive_version, '0.1.1');
+assert.strictEqual(beta.targets.length, supportedTargets().length);
+assert(beta.targets.some(target => target.archive === 'tfy-0.1.1-linux-x86_64.tar.gz'));
 
 const stable = validateRelease({
   channel: 'stable',
@@ -65,35 +65,35 @@ assert.strictEqual(stable.npm_dist_tag, 'latest');
 assert.strictEqual(stable.prerelease, false);
 assert.strictEqual(stable.github_latest, true);
 
-const previewPublish = npmPublishPlan({
-  channel: 'preview',
-  version: '0.1.1-preview.0',
+const betaPublish = npmPublishPlan({
+  channel: 'beta',
+  version: '0.1.1-beta.0',
   sourceRef: 'develop',
   cargoVersion: '0.1.1',
-  npmVersion: '0.1.1-preview.0'
+  npmVersion: '0.1.1-beta.0'
 });
-assert.strictEqual(previewPublish.package_name, '@ium/tfy-cli');
-assert.strictEqual(previewPublish.package_dir, 'npm/tfy-cli');
-assert.strictEqual(previewPublish.binary_name, 'tfy');
-assert.strictEqual(previewPublish.npm_dist_tag, 'preview');
-assert.deepStrictEqual(previewPublish.publish_command, ['npm', 'publish', './npm/tfy-cli', '--tag', 'preview', '--access', 'public']);
-assert(previewPublish.github_release_required_first);
-assert(previewPublish.warnings.some(warning => warning.includes('npm dist-tag check')));
-assert(previewPublish.verify_commands.some(command => command[0] === 'node' && command[1] === 'scripts/npm-dist-tag-check.js'));
-assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1-preview.0', distTags: { preview: '0.1.1-preview.0' } }).status, 'pass');
-assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1-preview.0', distTags: { preview: '0.1.1-preview.0', latest: '0.1.1-preview.0' } }).status, 'fail');
-assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1-preview.0', distTags: { preview: '0.1.1-preview.0', latest: '0.1.0-preview.0' }, allowPrestablePreviewLatest: true }).status, 'pass');
-assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1-preview.0', distTags: { preview: '0.1.1-preview.0', latest: '0.1.0' } }).status, 'pass');
-assert.strictEqual(validateDistTags({ channel: 'preview', version: '0.1.1', distTags: { preview: '0.1.1' } }).status, 'fail');
-const previewDistTagCli = spawnSync(process.execPath, [path.resolve(__dirname, '..', '..', '..', 'scripts', 'npm-dist-tag-check.js'), '--version', '0.1.1-preview.0', '--channel', 'preview', '--dist-tags-json', '{"preview":"0.1.1-preview.0"}', '--json'], { encoding: 'utf8' });
-assert.strictEqual(previewDistTagCli.status, 0, previewDistTagCli.stderr);
-assert.strictEqual(JSON.parse(previewDistTagCli.stdout).status, 'pass');
-const previewLatestCli = spawnSync(process.execPath, [path.resolve(__dirname, '..', '..', '..', 'scripts', 'npm-dist-tag-check.js'), '--version', '0.1.1-preview.0', '--channel', 'preview', '--dist-tags-json', '{"preview":"0.1.1-preview.0","latest":"0.1.1-preview.0"}', '--json'], { encoding: 'utf8' });
-assert.strictEqual(previewLatestCli.status, 1);
-assert.strictEqual(JSON.parse(previewLatestCli.stdout).status, 'fail');
-const previewAllowedLatestCli = spawnSync(process.execPath, [path.resolve(__dirname, '..', '..', '..', 'scripts', 'npm-dist-tag-check.js'), '--version', '0.1.1-preview.0', '--channel', 'preview', '--dist-tags-json', '{"preview":"0.1.1-preview.0","latest":"0.1.0-preview.0"}', '--allow-prestable-preview-latest', '--json'], { encoding: 'utf8' });
-assert.strictEqual(previewAllowedLatestCli.status, 0, previewAllowedLatestCli.stderr);
-assert.strictEqual(JSON.parse(previewAllowedLatestCli.stdout).allow_prestable_preview_latest, true);
+assert.strictEqual(betaPublish.package_name, '@ium/tfy-cli');
+assert.strictEqual(betaPublish.package_dir, 'npm/tfy-cli');
+assert.strictEqual(betaPublish.binary_name, 'tfy');
+assert.strictEqual(betaPublish.npm_dist_tag, 'beta');
+assert.deepStrictEqual(betaPublish.publish_command, ['npm', 'publish', './npm/tfy-cli', '--tag', 'beta', '--access', 'public']);
+assert(betaPublish.github_release_required_first);
+assert(betaPublish.warnings.some(warning => warning.includes('npm dist-tag check')));
+assert(betaPublish.verify_commands.some(command => command[0] === 'node' && command[1] === 'scripts/npm-dist-tag-check.js'));
+assert.strictEqual(validateDistTags({ channel: 'beta', version: '0.1.1-beta.0', distTags: { beta: '0.1.1-beta.0' } }).status, 'pass');
+assert.strictEqual(validateDistTags({ channel: 'beta', version: '0.1.1-beta.0', distTags: { beta: '0.1.1-beta.0', latest: '0.1.1-beta.0' } }).status, 'fail');
+assert.strictEqual(validateDistTags({ channel: 'beta', version: '0.1.1-beta.0', distTags: { beta: '0.1.1-beta.0', latest: '0.1.0-beta.0' }, allowPrestablePrereleaseLatest: true }).status, 'pass');
+assert.strictEqual(validateDistTags({ channel: 'beta', version: '0.1.1-beta.0', distTags: { beta: '0.1.1-beta.0', latest: '0.1.0' } }).status, 'pass');
+assert.strictEqual(validateDistTags({ channel: 'beta', version: '0.1.1', distTags: { beta: '0.1.1' } }).status, 'fail');
+const betaDistTagCli = spawnSync(process.execPath, [path.resolve(__dirname, '..', '..', '..', 'scripts', 'npm-dist-tag-check.js'), '--version', '0.1.1-beta.0', '--channel', 'beta', '--dist-tags-json', '{"beta":"0.1.1-beta.0"}', '--json'], { encoding: 'utf8' });
+assert.strictEqual(betaDistTagCli.status, 0, betaDistTagCli.stderr);
+assert.strictEqual(JSON.parse(betaDistTagCli.stdout).status, 'pass');
+const betaLatestCli = spawnSync(process.execPath, [path.resolve(__dirname, '..', '..', '..', 'scripts', 'npm-dist-tag-check.js'), '--version', '0.1.1-beta.0', '--channel', 'beta', '--dist-tags-json', '{"beta":"0.1.1-beta.0","latest":"0.1.1-beta.0"}', '--json'], { encoding: 'utf8' });
+assert.strictEqual(betaLatestCli.status, 1);
+assert.strictEqual(JSON.parse(betaLatestCli.stdout).status, 'fail');
+const betaAllowedLatestCli = spawnSync(process.execPath, [path.resolve(__dirname, '..', '..', '..', 'scripts', 'npm-dist-tag-check.js'), '--version', '0.1.1-beta.0', '--channel', 'beta', '--dist-tags-json', '{"beta":"0.1.1-beta.0","latest":"0.1.0-beta.0"}', '--allow-prestable-prerelease-latest', '--json'], { encoding: 'utf8' });
+assert.strictEqual(betaAllowedLatestCli.status, 0, betaAllowedLatestCli.stderr);
+assert.strictEqual(JSON.parse(betaAllowedLatestCli.stdout).allow_prestable_prerelease_latest, true);
 
 const stablePublish = npmPublishPlan({
   channel: 'stable',
@@ -105,51 +105,51 @@ const stablePublish = npmPublishPlan({
 assert.strictEqual(stablePublish.npm_dist_tag, 'latest');
 assert.deepStrictEqual(stablePublish.publish_command, ['npm', 'publish', './npm/tfy-cli', '--tag', 'latest', '--access', 'public']);
 assert(stablePublish.warnings.some(warning => warning.includes('Only reviewed stable releases')));
-assert.strictEqual(validateDistTags({ channel: 'stable', version: '1.2.3', distTags: { latest: '1.2.3', preview: '1.2.4-preview.0' } }).status, 'pass');
+assert.strictEqual(validateDistTags({ channel: 'stable', version: '1.2.3', distTags: { latest: '1.2.3', beta: '1.2.4-beta.0' } }).status, 'pass');
 assert.strictEqual(validateDistTags({ channel: 'stable', version: '1.2.3', distTags: { latest: '1.2.2' } }).status, 'fail');
-assert.strictEqual(validateDistTags({ channel: 'stable', version: '1.2.3-preview.0', distTags: { latest: '1.2.3-preview.0' } }).status, 'fail');
+assert.strictEqual(validateDistTags({ channel: 'stable', version: '1.2.3-beta.0', distTags: { latest: '1.2.3-beta.0' } }).status, 'fail');
 assert.throws(() => npmPublishPlan({
   channel: 'stable',
-  version: '1.2.3-preview.0',
+  version: '1.2.3-beta.0',
   sourceRef: 'develop',
   cargoVersion: '1.2.3',
-  npmVersion: '1.2.3-preview.0'
+  npmVersion: '1.2.3-beta.0'
 }), /stable releases must use source_ref=main|stable version must match/);
 
 assert.throws(() => validateRelease({
   channel: 'stable',
-  version: '1.2.3-preview.0',
+  version: '1.2.3-beta.0',
   cargoVersion: '1.2.3',
-  npmVersion: '1.2.3-preview.0'
+  npmVersion: '1.2.3-beta.0'
 }), /stable version must match/);
 assert.throws(() => validateRelease({
-  channel: 'preview',
-  version: '1.2.3-preview.0',
+  channel: 'beta',
+  version: '1.2.3-beta.0',
   sourceRef: 'main',
   cargoVersion: '1.2.3',
-  npmVersion: '1.2.3-preview.0'
-}), /preview releases must use source_ref=develop or release/);
+  npmVersion: '1.2.3-beta.0'
+}), /beta releases must use source_ref=develop or release/);
 assert.throws(() => validateRelease({
-  channel: 'preview',
-  version: '1.2.3-preview.0',
-  cargoVersion: '1.2.3-preview.0',
-  npmVersion: '1.2.3-preview.0'
-}), /Cargo workspace version must equal preview base/);
+  channel: 'beta',
+  version: '1.2.3-beta.0',
+  cargoVersion: '1.2.3-beta.0',
+  npmVersion: '1.2.3-beta.0'
+}), /Cargo workspace version must equal beta base/);
 
 assert.throws(() => validateRelease({
-  channel: 'preview',
-  version: '1.2.3-preview.0',
+  channel: 'beta',
+  version: '1.2.3-beta.0',
   cargoVersion: '1.2.3',
-  npmVersion: '1.2.3-preview.0',
+  npmVersion: '1.2.3-beta.0',
   targets: supportedTargets().slice(1)
 }), /release target matrix must exactly match supported targets/);
 assert.throws(() => validateRelease({
-  channel: 'preview',
-  version: '1.2.3-preview.0',
+  channel: 'beta',
+  version: '1.2.3-beta.0',
   sourceRef: 'release/../bad',
   cargoVersion: '1.2.3',
-  npmVersion: '1.2.3-preview.0'
-}), /preview releases must use source_ref=develop or release/);
+  npmVersion: '1.2.3-beta.0'
+}), /beta releases must use source_ref=develop or release/);
 const duplicateTargets = supportedTargets();
 duplicateTargets[1] = duplicateTargets[0];
 assert.throws(() => assertSupportedTargetSet(duplicateTargets), /release target matrix must exactly match supported targets/);
@@ -199,8 +199,8 @@ const target = resolveRustTarget('x86_64-unknown-linux-gnu');
 const binDir = path.join(tmp, 'target', target.rustTarget, 'release');
 fs.mkdirSync(binDir, { recursive: true });
 fs.writeFileSync(path.join(binDir, target.binName), '#!/usr/bin/env sh\necho packaged\n');
-const manifest = packageRelease({ root: tmp, version: '0.1.1-preview.0', rustTarget: target.rustTarget, dist: 'dist' });
-assert.strictEqual(manifest.archive_name, archiveName('0.1.1-preview.0', target));
+const manifest = packageRelease({ root: tmp, version: '0.1.1-beta.0', rustTarget: target.rustTarget, dist: 'dist' });
+assert.strictEqual(manifest.archive_name, archiveName('0.1.1-beta.0', target));
 assert.strictEqual(manifest.archive_name, 'tfy-0.1.1-linux-x86_64.tar.gz');
 assert.strictEqual(fs.readFileSync(manifest.checksum_path, 'utf8'), `${manifest.sha256}  ${manifest.archive_name}\n`);
 const listed = spawnSync('tar', ['-tzf', manifest.archive_path], { encoding: 'utf8' });

@@ -78,7 +78,7 @@ jobs:
               scripts/check-release-version.js|scripts/npm-publish-plan.js|scripts/npm-dist-tag-check.js|scripts/release-config.js)
                 npm_required=true
                 ;;
-              scripts/npm-preview-smoke.js|scripts/package-release.js|scripts/release-dry-run.sh)
+              scripts/npm-beta-smoke.js|scripts/npm-preview-smoke.js|scripts/package-release.js|scripts/release-dry-run.sh)
                 rust_required=true
                 npm_required=true
                 ;;
@@ -197,7 +197,7 @@ jobs:
                 scripts/check-release-version.js|scripts/npm-publish-plan.js|scripts/npm-dist-tag-check.js|scripts/release-config.js)
                   npm_required=true
                   ;;
-                scripts/npm-preview-smoke.js|scripts/package-release.js|scripts/release-dry-run.sh)
+                scripts/npm-beta-smoke.js|scripts/npm-preview-smoke.js|scripts/package-release.js|scripts/release-dry-run.sh)
                   rust_required=true
                   npm_required=true
                   ;;
@@ -245,7 +245,7 @@ jobs:
           assert_route 'release metadata helper edits' 'scripts/check-release-version.js' false 'workflow=false claim_docs=false rust=false npm=true'
           assert_route 'claim validator edits' 'scripts/validate-command-support-matrix.js' false 'workflow=false claim_docs=true rust=false npm=false'
           assert_route 'verify script edits' 'scripts/verify.sh' false 'workflow=false claim_docs=true rust=true npm=true'
-          assert_route 'script edits' 'scripts/npm-preview-smoke.js' false 'workflow=false claim_docs=false rust=true npm=true'
+          assert_route 'script edits' 'scripts/npm-beta-smoke.js' false 'workflow=false claim_docs=false rust=true npm=true'
           assert_route 'unknown root image edits' 'image.svg' false 'workflow=false claim_docs=false rust=true npm=true'
           assert_route 'uncertain new branch push' 'assets/brand/mascot.png' true 'workflow=false claim_docs=true rust=true npm=true'
 
@@ -266,8 +266,8 @@ jobs:
       - name: Whitespace
         run: git diff --check
 
-  npm-preview-smoke:
-    name: npm preview smoke (${{ matrix.os }})
+  npm-beta-smoke:
+    name: npm beta smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs: changes
     if: ${{ needs.changes.outputs.npm_required == 'true' }}
@@ -282,15 +282,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: NPM preview install smoke
-        run: node scripts/npm-preview-smoke.js
+      - name: NPM beta install smoke
+        run: node scripts/npm-beta-smoke.js
 
   # If branch protection is enabled, require this aggregate job instead of
   # optional heavy jobs that intentionally skip for docs/static asset changes.
   ci-required:
     runs-on: ubuntu-latest
     if: ${{ always() }}
-    needs: [changes, docs-check, claim-docs-check, workflow-check, rust, npm-preview-smoke]
+    needs: [changes, docs-check, claim-docs-check, workflow-check, rust, npm-beta-smoke]
     steps:
       - name: Check required CI results
         shell: bash
@@ -300,7 +300,7 @@ jobs:
           CLAIM_DOCS_RESULT: ${{ needs.claim-docs-check.result }}
           WORKFLOW_RESULT: ${{ needs.workflow-check.result }}
           RUST_RESULT: ${{ needs.rust.result }}
-          NPM_RESULT: ${{ needs.npm-preview-smoke.result }}
+          NPM_RESULT: ${{ needs.npm-beta-smoke.result }}
           CLAIM_DOCS_REQUIRED: ${{ needs.changes.outputs.claim_docs_required }}
           WORKFLOW_REQUIRED: ${{ needs.changes.outputs.workflow_required }}
           RUST_REQUIRED: ${{ needs.changes.outputs.rust_required }}
@@ -349,11 +349,11 @@ jobs:
 
           if [ "$NPM_REQUIRED" = "true" ]; then
             if [ "$NPM_RESULT" != "success" ]; then
-              echo "npm preview smoke required but result was $NPM_RESULT" >&2
+              echo "npm beta smoke required but result was $NPM_RESULT" >&2
               exit 1
             fi
           elif [ "$NPM_RESULT" != "skipped" ]; then
-            echo "npm preview smoke should be skipped but result was $NPM_RESULT" >&2
+            echo "npm beta smoke should be skipped but result was $NPM_RESULT" >&2
             exit 1
           fi
 

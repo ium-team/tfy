@@ -60,12 +60,13 @@ assert.throws(() => validateArchiveEntries(['tfy', 'extra'], target), /archive m
 assert.strictEqual(validateArchiveEntries(['./tfy'], target), 'tfy');
 
 assert.strictEqual(canonicalReleaseBase('v0.1.0'), 'https://github.com/ium-team/tfy/releases/download/v0.1.0');
-assert.strictEqual(defaultReleaseVersion('v0.1.0-preview.0'), '0.1.0-preview.0');
-assert.deepStrictEqual(releaseUrls('0.1.0-preview.0', target), {
-  asset: 'tfy-0.1.0-linux-x86_64.tar.gz',
-  archiveUrl: 'https://github.com/ium-team/tfy/releases/download/v0.1.0-preview.0/tfy-0.1.0-linux-x86_64.tar.gz',
-  checksumUrl: 'https://github.com/ium-team/tfy/releases/download/v0.1.0-preview.0/tfy-0.1.0-linux-x86_64.tar.gz.sha256'
+assert.strictEqual(defaultReleaseVersion('v0.1.1-beta.0'), '0.1.1-beta.0');
+assert.deepStrictEqual(releaseUrls('0.1.1-beta.0', target), {
+  asset: 'tfy-0.1.1-linux-x86_64.tar.gz',
+  archiveUrl: 'https://github.com/ium-team/tfy/releases/download/v0.1.1-beta.0/tfy-0.1.1-linux-x86_64.tar.gz',
+  checksumUrl: 'https://github.com/ium-team/tfy/releases/download/v0.1.1-beta.0/tfy-0.1.1-linux-x86_64.tar.gz.sha256'
 });
+assert.strictEqual(defaultReleaseVersion('v0.1.0-preview.0'), '0.1.0-preview.0');
 
 const rcHome = path.join(tmp, 'home');
 fs.mkdirSync(path.join(rcHome, '.config', 'fish'), { recursive: true });

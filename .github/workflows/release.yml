@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version: N.N.N for stable, N.N.N-preview.N for public-test'
+        description: 'Release version: N.N.N for stable, N.N.N-beta.N for beta'
         required: true
         type: string
       channel:
@@ -12,10 +12,10 @@ on:
         required: true
         type: choice
         options:
-          - preview
+          - beta
           - stable
       source_ref:
-        description: 'Source ref. Defaults to develop for preview and main for stable.'
+        description: 'Source ref. Defaults to develop for beta and main for stable.'
         required: false
         type: string
       dry_run:
@@ -75,12 +75,12 @@ jobs:
               [ "$source_ref" = 'main' ] || { echo "stable releases must use source_ref=main" >&2; exit 1; }
               [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "stable version must match N.N.N" >&2; exit 1; }
               ;;
-            preview)
-              case "$source_ref" in develop|release/*) ;; *) echo "preview releases must use source_ref=develop or release/*" >&2; exit 1 ;; esac
-              [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]] || { echo "preview version must match N.N.N-preview.N" >&2; exit 1; }
+            beta)
+              case "$source_ref" in develop|release/*) ;; *) echo "beta releases must use source_ref=develop or release/*" >&2; exit 1 ;; esac
+              [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]] || { echo "beta version must match N.N.N-beta.N" >&2; exit 1; }
               ;;
             *)
-              echo "channel must be stable or preview" >&2
+              echo "channel must be stable or beta" >&2
               exit 1
               ;;
           esac
@@ -391,7 +391,7 @@ jobs:
             --version "${{ needs.preflight.outputs.version }}"
             --channel "${{ inputs.channel }}"
           )
-          if [ "${{ inputs.channel }}" = 'preview' ]; then
-            args+=(--allow-prestable-preview-latest)
+          if [ "${{ inputs.channel }}" = 'beta' ]; then
+            args+=(--allow-prestable-prerelease-latest)
           fi
           "${args[@]}"

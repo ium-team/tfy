@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Legacy compatibility wrapper. Forward release policy uses beta/stable.
 exec node "$ROOT/scripts/npm-beta-smoke.js"

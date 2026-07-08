@@ -32,7 +32,6 @@ pub(crate) fn parse_output_mode(value: &str) -> Result<OutputMode> {
         "text" => Ok(OutputMode::Text),
         "json" => Ok(OutputMode::Json),
         "jsonl" => Ok(OutputMode::Jsonl),
-        "mcp_resource" | "mcp-resource" => Ok(OutputMode::McpResource),
         "provider_payload" | "provider-payload" => Ok(OutputMode::ProviderPayload),
         _ => bail!("unknown output mode: {value}"),
     }

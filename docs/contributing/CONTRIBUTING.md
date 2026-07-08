@@ -92,12 +92,4 @@ If any command cannot run, document the reason and the next-best evidence.
 
 ## Architecture expectations
 
-- `main.rs` should stay dispatch-focused.
-- Transport-specific code belongs in a transport module such as `mcp.rs`.
-- Adapter-specific install/report behavior belongs in `adapter.rs`.
-- Reusable token-saving behavior belongs in `tfy-core`.
-- Runtime envelope types belong in `tfy-runtime`.
-
 ## Claim discipline
-
-Do not claim that TFY automatically intercepts a runtime unless the runtime adapter exists and has e2e tests. Current supported boundaries are CLI/generic-shell routing and MCP host routing.

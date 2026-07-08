@@ -55,7 +55,7 @@ function cleanVersion(version) {
 }
 
 function baseVersion(version) {
-  return cleanVersion(version).replace(/-preview\.\d+$/, '');
+  return cleanVersion(version).replace(/-(?:beta|preview)\.\d+$/, '');
 }
 
 function assetBaseName(version, target) {

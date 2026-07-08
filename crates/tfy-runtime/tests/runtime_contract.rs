@@ -250,3 +250,52 @@ fn command_rule_diagnostic_deserializes_from_partial_object() {
     assert!(diagnostic.path.is_empty());
     assert!(diagnostic.message.is_empty());
 }
+
+#[test]
+fn ledger_events_with_removed_route_tags_remain_readable_as_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger.jsonl");
+    let line = serde_json::json!({
+        "protocol_version": RUNTIME_PROTOCOL_VERSION,
+        "adapter_kind": "legacy_removed_adapter",
+        "adapter_version": "0.0.0",
+        "supported_gateways": ["tool"],
+        "authority_mode": "execute_with_runtime_authority",
+        "session_id": "legacy-session",
+        "turn_id": null,
+        "request_id": "legacy-request",
+        "parent_event_id": null,
+        "trace_id": "legacy-trace",
+        "workspace_root": null,
+        "origin": {
+            "kind": "legacy_removed_origin",
+            "host": "generic",
+            "invocation": "legacy_removed_invocation",
+            "intercepted": true,
+            "user_shell_mutated": false
+        },
+        "route": {
+            "ingress": "legacy_removed_route",
+            "host": "generic",
+            "claim_tier": "legacy_removed_claim"
+        },
+        "provenance": {"raw_refs": ["cmdout_deadbeef0000_0000000000000000"], "validation_status": "valid"},
+        "policy": RuntimePolicy::default(),
+        "payload": {
+            "kind": "tool_command_completed",
+            "command": "printf ok",
+            "exit_code": 0,
+            "risk": "success",
+            "raw_ref": "cmdout_deadbeef0000_0000000000000000"
+        }
+    });
+    std::fs::write(&ledger, format!("{}\n", line)).unwrap();
+
+    let events = load_events(&ledger).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].adapter_kind, AdapterKind::Unknown);
+    assert_eq!(events[0].origin.kind, OriginKind::Unknown);
+    assert_eq!(events[0].origin.invocation, OriginInvocation::Unknown);
+    assert_eq!(events[0].route.ingress, RouteIngressKind::Unknown);
+    assert_eq!(events[0].route.claim_tier, RouteClaimTier::Unknown);
+}
