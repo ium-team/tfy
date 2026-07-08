@@ -6,7 +6,6 @@ mod display;
 mod gateways;
 mod hook;
 mod human;
-mod mcp;
 mod product;
 mod rules;
 mod util;
@@ -28,7 +27,6 @@ use gateways::{
 };
 use hook::{execute_hook, HookCmd};
 use human::{execute_human, HumanCmd};
-use mcp::{execute_mcp, McpCmd};
 use product::{
     execute_bench, execute_doctor, execute_explain, execute_fuckyou, execute_gain, execute_global,
     execute_init, execute_launch_report, execute_raw, execute_setup, execute_smoke, execute_start,
@@ -63,11 +61,6 @@ enum Cmd {
         #[command(subcommand)]
         cmd: AdapterCmd,
     },
-    /// MCP stdio server and host setup commands for advanced agent-native tool/resource integration.
-    Mcp {
-        #[command(subcommand)]
-        cmd: McpCmd,
-    },
     /// Optional official-host hook shims. Thin routers to shared TFY gateways, disabled unless configured.
     Hook {
         #[command(subcommand)]
@@ -82,9 +75,9 @@ enum Cmd {
     Init(InitCmd),
     /// Diagnose local TFY and optional Codex-facing integration readiness.
     Doctor(DoctorCmd),
-    /// Run local adapter/agent/MCP smoke tests or print host-facing smoke checklists.
+    /// Run local adapter/agent smoke tests or print host-facing smoke checklists.
     Smoke(SmokeCmd),
-    /// Report measured TFY savings from adapter/agent/MCP ledgers.
+    /// Report measured TFY savings from adapter/agent ledgers.
     Gain(GainCmd),
     /// Easy setup for AI-agent host routing or explicit human shell auto-activation.
     Setup(SetupCmd),
@@ -436,7 +429,6 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Agent { cmd } => execute_agent(cmd)?,
         Cmd::Adapter { cmd } => execute_adapter(cmd)?,
-        Cmd::Mcp { cmd } => execute_mcp(cmd)?,
         Cmd::Hook { cmd } => execute_hook(cmd)?,
         Cmd::Human { cmd } => execute_human(cmd)?,
         Cmd::Init(cmd) => execute_init(cmd)?,

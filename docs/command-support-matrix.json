@@ -24,7 +24,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "possible",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -35,7 +34,6 @@
       "strategy_kind": "dsl",
       "unsupported_subcases": [
         "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet",
         "Not human auto-safe by default"
       ]
     },
@@ -50,7 +48,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -60,8 +57,7 @@
       "source_ref": "biome",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -75,7 +71,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -85,8 +80,7 @@
       "source_ref": "bundle-install",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -100,7 +94,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -125,7 +118,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -150,7 +142,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -175,7 +166,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -200,7 +190,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -225,7 +214,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -235,8 +223,7 @@
       "source_ref": "df",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -250,7 +237,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "possible",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -261,7 +247,6 @@
       "strategy_kind": "dsl",
       "unsupported_subcases": [
         "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet",
         "Not human auto-safe by default"
       ]
     },
@@ -276,7 +261,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -286,8 +270,7 @@
       "source_ref": "dotnet",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -301,7 +284,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -311,8 +293,7 @@
       "source_ref": "dotnet-build",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -326,7 +307,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -336,8 +316,7 @@
       "source_ref": "du",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -351,7 +330,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "possible",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -362,7 +340,6 @@
       "strategy_kind": "dsl",
       "unsupported_subcases": [
         "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet",
         "Not human auto-safe by default"
       ]
     },
@@ -377,7 +354,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -387,8 +363,7 @@
       "source_ref": "find",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -402,7 +377,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "possible",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -413,7 +387,6 @@
       "strategy_kind": "dsl",
       "unsupported_subcases": [
         "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet",
         "Not human auto-safe by default"
       ]
     },
@@ -428,7 +401,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -453,7 +425,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -478,7 +449,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -503,7 +473,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -528,7 +497,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -553,7 +521,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -563,8 +530,7 @@
       "source_ref": "golangci-lint",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -578,7 +544,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -603,7 +568,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -613,8 +577,7 @@
       "source_ref": "grep",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -628,7 +591,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "possible",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -639,7 +601,6 @@
       "strategy_kind": "dsl",
       "unsupported_subcases": [
         "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet",
         "Not human auto-safe by default"
       ]
     },
@@ -654,7 +615,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -664,8 +624,7 @@
       "source_ref": "jq",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -679,7 +638,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -689,8 +647,7 @@
       "source_ref": "just",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -704,7 +661,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "possible",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -715,7 +671,6 @@
       "strategy_kind": "dsl",
       "unsupported_subcases": [
         "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet",
         "Not human auto-safe by default"
       ]
     },
@@ -730,7 +685,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -740,8 +694,7 @@
       "source_ref": "lint",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -755,7 +708,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -765,8 +717,7 @@
       "source_ref": "make",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -780,7 +731,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -805,7 +755,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -815,8 +764,7 @@
       "source_ref": "mypy",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -830,7 +778,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -840,8 +787,7 @@
       "source_ref": "next",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -855,7 +801,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -865,8 +810,7 @@
       "source_ref": "npm_install",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -880,7 +824,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -905,7 +848,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -915,8 +857,7 @@
       "source_ref": "nx",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -930,7 +871,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -940,8 +880,7 @@
       "source_ref": "pip",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -955,7 +894,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "possible",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -966,7 +904,6 @@
       "strategy_kind": "dsl",
       "unsupported_subcases": [
         "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet",
         "Not human auto-safe by default"
       ]
     },
@@ -981,7 +918,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -991,8 +927,7 @@
       "source_ref": "pnpm_install",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1006,7 +941,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -1031,7 +965,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1041,8 +974,7 @@
       "source_ref": "poetry-install",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1056,7 +988,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1066,8 +997,7 @@
       "source_ref": "pre-commit",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1081,7 +1011,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1091,8 +1020,7 @@
       "source_ref": "prettier",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1106,7 +1034,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "possible",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1117,7 +1044,6 @@
       "strategy_kind": "dsl",
       "unsupported_subcases": [
         "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet",
         "Not human auto-safe by default"
       ]
     },
@@ -1132,7 +1058,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1142,8 +1067,7 @@
       "source_ref": "ps",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1157,7 +1081,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -1182,7 +1105,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1192,8 +1114,7 @@
       "source_ref": "rspec",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1207,7 +1128,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1217,8 +1137,7 @@
       "source_ref": "rubocop",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1232,7 +1151,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1242,8 +1160,7 @@
       "source_ref": "ruff",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1257,7 +1174,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1267,8 +1183,7 @@
       "source_ref": "shellcheck",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1282,7 +1197,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "possible",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1293,7 +1207,6 @@
       "strategy_kind": "dsl",
       "unsupported_subcases": [
         "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet",
         "Not human auto-safe by default"
       ]
     },
@@ -1308,7 +1221,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "possible",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1319,7 +1231,6 @@
       "strategy_kind": "dsl",
       "unsupported_subcases": [
         "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet",
         "Not human auto-safe by default"
       ]
     },
@@ -1334,7 +1245,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "possible",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1345,7 +1255,6 @@
       "strategy_kind": "dsl",
       "unsupported_subcases": [
         "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet",
         "Not human auto-safe by default"
       ]
     },
@@ -1360,7 +1269,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,
@@ -1385,7 +1293,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1395,8 +1302,7 @@
       "source_ref": "turbo",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1410,7 +1316,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1420,8 +1325,7 @@
       "source_ref": "uv-sync",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1435,7 +1339,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1445,8 +1348,7 @@
       "source_ref": "vitest",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1460,7 +1362,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1470,8 +1371,7 @@
       "source_ref": "wc",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1485,7 +1385,6 @@
       "human_auto_wrapped": true,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Built-in TFY DSL filter with inline fixture coverage; external comparison claims remain blocked.",
       "parity_claim_eligible": false,
@@ -1495,8 +1394,7 @@
       "source_ref": "yarn_install",
       "strategy_kind": "dsl",
       "unsupported_subcases": [
-        "No benchmark-manifest comparison row yet",
-        "No MCP route equivalence evidence yet"
+        "No benchmark-manifest comparison row yet"
       ]
     },
     {
@@ -1510,7 +1408,6 @@
       "human_auto_wrapped": false,
       "implemented": true,
       "interactive_risk": "none",
-      "mcp_route_verified": false,
       "no_negative_verified": true,
       "notes": "Existing TFY P0 family; not yet benchmark-manifest-coupled for external comparison.",
       "parity_claim_eligible": false,

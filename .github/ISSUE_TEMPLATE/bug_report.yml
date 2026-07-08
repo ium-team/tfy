@@ -29,7 +29,7 @@ body:
       options:
         - tool-gateway
         - generic-shell adapter
-        - MCP server
+        - server
         - context gateway
         - output gateway
         - state gateway

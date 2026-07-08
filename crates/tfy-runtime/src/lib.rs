@@ -21,12 +21,13 @@ pub enum GatewayKind {
 #[serde(rename_all = "snake_case")]
 pub enum AdapterKind {
     Shell,
-    Mcp,
     Codex,
     Editor,
     Provider,
     TestHarness,
     Cli,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,8 +35,9 @@ pub enum AdapterKind {
 pub enum OriginKind {
     AgentRuntime,
     HumanCli,
-    McpHost,
     TestHarness,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,12 +54,13 @@ pub enum OriginHost {
 #[serde(rename_all = "snake_case")]
 pub enum OriginInvocation {
     Wrapper,
-    McpTool,
     ExplicitCli,
     OfficialHostHook,
     HostConfig,
     PrivateHook,
     ProviderGateway,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,16 +93,6 @@ impl Origin {
         }
     }
 
-    pub fn mcp_host(host: OriginHost) -> Self {
-        Self {
-            kind: OriginKind::McpHost,
-            host,
-            invocation: OriginInvocation::McpTool,
-            intercepted: true,
-            user_shell_mutated: false,
-        }
-    }
-
     pub fn human_managed_session() -> Self {
         Self {
             kind: OriginKind::HumanCli,
@@ -121,14 +114,14 @@ impl Default for Origin {
 #[serde(rename_all = "snake_case")]
 pub enum RouteIngressKind {
     CliGateway,
-    McpTool,
     GenericShellAdapter,
     HumanManagedSession,
     AgentWrapper,
     HostHook,
-    HostMcpConfig,
     EditorConfigWriter,
     TestHarness,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -138,13 +131,14 @@ pub enum RouteClaimTier {
     ConfigSnippetAvailable,
     ConfigWritten,
     HostLaunched,
-    VerifiedHostMcpInvocation,
     VerifiedHostHook,
     RouteEvidenceRecorded,
     SavingsVerified,
     LaunchSupported,
     Unsupported,
     PlannedDiscovery,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -208,17 +202,6 @@ impl RouteEvidence {
             official_docs_backed: true,
             kill_switch_available: true,
             uninstall_available: false,
-        }
-    }
-
-    pub fn mcp_tool(host: OriginHost) -> Self {
-        Self {
-            ingress: RouteIngressKind::McpTool,
-            host,
-            claim_tier: RouteClaimTier::RouteEvidenceRecorded,
-            official_docs_backed: true,
-            kill_switch_available: true,
-            ..Self::cli_gateway()
         }
     }
 
@@ -313,8 +296,9 @@ pub enum OutputMode {
     Text,
     Json,
     Jsonl,
-    McpResource,
     ProviderPayload,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

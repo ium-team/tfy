@@ -358,8 +358,6 @@ Diagnostic codes include:
 
 Agent routes store weak/generic summary custom-rule candidates in `.tfy/agent/custom-guidance.jsonl`; `tfy agent report --session <id>` reports them to the user after the agent task without polluting model-visible command output.
 
-Gateway and ledger metadata include `rule_id`, `strategy_source_kind`, and `command_rule_diagnostics` when applicable. Adapter/MCP reports aggregate `rule_counts`, `strategy_source_counts`, and `command_rule_diagnostic_counts`.
-
 ## Authoring rules with an agent
 
 Humans should not need to hand-write complex rules. Use the authoring workflow in `docs/CUSTOM_COMMAND_RULE_AUTHORING.md`, the `tfy rules ...` harness, or the project skill `.codex/skills/tfy-command-rule-author/SKILL.md`.

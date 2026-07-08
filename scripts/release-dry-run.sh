@@ -10,7 +10,7 @@ CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'impor
 RELEASE_DIR="$ROOT/.tfy/release"
 RELEASE_METADATA="$RELEASE_DIR/release-preflight.json"
 mkdir -p "$RELEASE_DIR"
-node scripts/check-release-version.js --version "$VERSION" --channel preview --source-ref develop --cargo-version "$CARGO_VERSION" --npm-version "$VERSION" --json > "$RELEASE_METADATA"
+node scripts/check-release-version.js --version "$VERSION" --channel beta --source-ref develop --cargo-version "$CARGO_VERSION" --npm-version "$VERSION" --json > "$RELEASE_METADATA"
 PLATFORM_INFO="$(node - "$VERSION" <<'NODE'
 const { NPM_PACKAGE_DIR } = require('./scripts/release-config');
 const { currentPlatform, archiveName } = require('./' + NPM_PACKAGE_DIR + '/scripts/lib/platform');
@@ -69,7 +69,7 @@ cat > "$EVIDENCE" <<EOF
   "release_manifest": "$RELEASE_MANIFEST",
   "release_preflight": "$RELEASE_METADATA",
   "npm_package_name": "$NPM_PACKAGE_NAME",
-  "npm_dist_tag": "preview",
+  "npm_dist_tag": "beta",
   "npm_bin": "tfy",
   "github_release_canonical": true,
   "asset_platform": "$ASSET_PLATFORM",
@@ -78,7 +78,7 @@ cat > "$EVIDENCE" <<EOF
   "asset_binary_name": "$BIN_NAME",
   "docs_demo_release_notes_complete": true,
   "docs_artifact": "$ROOT/docs/RELEASE_READINESS.md",
-  "release_notes_artifact": "$ROOT/docs/releases/0.1.0-preview.md",
+  "release_notes_artifact": "$ROOT/docs/releases/0.1.1-beta.md",
   "independent_reviews_approved": false,
   "pr_ci_green": false,
   "benchmark_manifest_generated": true,
@@ -94,7 +94,7 @@ cat > "$EVIDENCE" <<EOF
     "release_manifest=$RELEASE_MANIFEST",
     "release_preflight=$RELEASE_METADATA",
     "npm_package_name=$NPM_PACKAGE_NAME",
-    "npm_dist_tag=preview",
+    "npm_dist_tag=beta",
     "bench_manifest=$BENCH_MANIFEST"
   ]
 }

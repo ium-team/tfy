@@ -98,8 +98,6 @@ TFY's production integration model is AI-agent I/O middleware. The Rust core own
 - Output Gateway adapter — restores and validates structured compact patches/code before apply.
 - State Gateway ledger — event-fed compact task state from all gateways.
 
-Provider, Codex, MCP, shell, and editor integrations remain adapters around the Rust core unless a future stack decision explicitly moves an authority-path responsibility.
-
 ## Implemented runtime-interception foundation
 
 The production stack now includes `tfy-runtime`, a Rust runtime contract crate that defines versioned envelopes, adapter capabilities, negotiation, gateway events, provenance refs, validation status, and state projection primitives.
@@ -114,20 +112,6 @@ Implemented binaries/surfaces:
 - `tfy output-gateway` preview/validate
 - `tfy state-append`
 - `tfy state-project`
-
-Release boundary: local shell/tool/context/output/state gateway foundations, generic-shell adapter, and MCP stdio tool/resource server are implemented. Codex private hooks, editor, and provider adapters are still separate integration packages to build and test before claiming automatic interception for those runtimes. The Codex-facing MCP support is a setup snippet for Codex MCP configuration, not private Codex hook interception.
-
-## MCP/Codex adapter foundation v2
-
-The production stack now includes `tfy mcp serve`, a stdio MCP server that exposes existing TFY gateway capabilities as tools/resources. It is intentionally bounded:
-
-- stdout is JSON-RPC only;
-- logs and warnings use stderr/files;
-- `initialize` declares tools and resources;
-- `resources/list` returns concrete session resources;
-- `resources/templates/list` returns `tfy://raw/{raw_ref}`, `tfy://report/{session}`, and `tfy://state/{session}` templates;
-- child command failures are tool results and do not terminate the MCP process;
-- `tfy mcp install --target codex --dry-run` prints a concrete `codex mcp add` command and TOML snippet without writing config.
 
 This is the first supported agent-native integration boundary after the generic-shell adapter. It does not replace future Codex private hook/provider/editor adapters.
 

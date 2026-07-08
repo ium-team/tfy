@@ -73,9 +73,9 @@ function npmPublishPlan(options) {
       'Create and verify the matching GitHub Release assets/checksums before npm publishing.',
       metadata.channel === 'stable'
         ? 'Stable publishes must use the latest dist-tag and a plain N.N.N version.'
-        : 'Public-test publishes must use the preview dist-tag and an N.N.N-preview.N version.',
-      metadata.channel === 'preview'
-        ? 'Run the npm dist-tag check after publish; if this preview appears on npm latest, remove that dist-tag so latest remains stable-only.'
+        : 'Beta publishes must use the beta dist-tag and an N.N.N-beta.N version.',
+      metadata.channel === 'beta'
+        ? 'Run the npm dist-tag check after publish; if this beta appears on npm latest, remove that dist-tag so latest remains stable-only.'
         : 'Only reviewed stable releases may move the npm latest dist-tag.',
       'The installed executable remains tfy even though the npm package is @ium/tfy-cli.'
     ]

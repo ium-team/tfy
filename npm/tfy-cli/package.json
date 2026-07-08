@@ -1,7 +1,7 @@
 {
   "name": "@ium/tfy-cli",
-  "version": "0.1.0-preview.1",
-  "description": "TFY Developer Preview CLI installer. Installs the `tfy` command; not GA.",
+  "version": "0.1.1-beta.0",
+  "description": "TFY Beta CLI installer. Installs the `tfy` command; stable readiness remains evidence-gated.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,7 +16,7 @@
     "cli",
     "ai-agent",
     "token-saving",
-    "developer-preview"
+    "beta"
   ],
   "bin": {
     "tfy": "bin/tfy.js"
@@ -33,7 +33,7 @@
   ],
   "publishConfig": {
     "access": "public",
-    "tag": "preview"
+    "tag": "beta"
   },
   "engines": {
     "node": ">=18"

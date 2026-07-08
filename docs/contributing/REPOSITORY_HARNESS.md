@@ -4,12 +4,6 @@ This document explains the maintainability harness around TFY. It exists so futu
 
 ## Harness layers
 
-1. **Code boundaries** — Rust modules are split by responsibility: core primitives, runtime contract, CLI dispatch, gateways, adapters, MCP transport.
-2. **Agent harness** — `AGENTS.md` and `docs/AGENT_HARNESS.md` give AI agents the project map, invariants, and focused checks.
-3. **Planning artifacts** — `.omx/plans/` stores PRDs/test specs for larger stories.
-4. **GitHub templates** — `.github/` captures repeatable issue/PR expectations.
-5. **Verification script** — `scripts/verify.sh` runs the local quality gate.
-
 ## Adding a new adapter
 
 1. Document the boundary and unsupported claims.

@@ -484,8 +484,9 @@ fn workspace_rejects_human_origin_string_proof_and_symlink_escape() {
         .output()
         .unwrap();
     assert!(!bad_origin.status.success());
-    assert!(String::from_utf8_lossy(&bad_origin.stderr)
-        .contains("requires explicit agent/mcp/test origin"));
+    assert!(
+        String::from_utf8_lossy(&bad_origin.stderr).contains("requires explicit agent/test origin")
+    );
 
     let outside = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(

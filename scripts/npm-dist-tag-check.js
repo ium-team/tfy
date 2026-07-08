@@ -3,7 +3,7 @@
 
 const { spawnSync } = require('child_process');
 const { NPM_PACKAGE_NAME } = require('./release-config');
-const { PREVIEW_VERSION_RE, STABLE_VERSION_RE } = require('./check-release-version');
+const { BETA_VERSION_RE, STABLE_VERSION_RE } = require('./check-release-version');
 const { cleanVersion } = require('../npm/tfy-cli/scripts/lib/platform');
 
 function parseArgs(argv) {
@@ -12,7 +12,7 @@ function parseArgs(argv) {
     const token = argv[i];
     if (!token.startsWith('--')) throw new Error(`unexpected argument: ${token}`);
     const key = token.slice(2).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
-    if (key === 'json' || key === 'allowPrestablePreviewLatest') {
+    if (key === 'json' || key === 'allowPrestablePrereleaseLatest') {
       args[key] = true;
       continue;
     }
@@ -40,20 +40,20 @@ function validateDistTags(options) {
   const errors = [];
 
   if (!version) errors.push('version is required');
-  if (!['preview', 'stable'].includes(channel)) {
-    errors.push('channel must be preview or stable');
-  } else if (channel === 'preview' && !PREVIEW_VERSION_RE.test(version)) {
-    errors.push(`preview version must match N.N.N-preview.N, got ${version}`);
+  if (!['beta', 'stable'].includes(channel)) {
+    errors.push('channel must be beta or stable');
+  } else if (channel === 'beta' && !BETA_VERSION_RE.test(version)) {
+    errors.push(`beta version must match N.N.N-beta.N, got ${version}`);
   } else if (channel === 'stable' && !STABLE_VERSION_RE.test(version)) {
     errors.push(`stable version must match N.N.N, got ${version}`);
   }
 
-  if (channel === 'preview') {
-    if (distTags.preview !== version) {
-      errors.push(`preview dist-tag must point at ${version}, got ${distTags.preview || '(missing)'}`);
+  if (channel === 'beta') {
+    if (distTags.beta !== version) {
+      errors.push(`beta dist-tag must point at ${version}, got ${distTags.beta || '(missing)'}`);
     }
-    if (distTags.latest && /-preview\./.test(cleanVersion(distTags.latest)) && !options.allowPrestablePreviewLatest) {
-      errors.push(`latest dist-tag must not point at preview version ${distTags.latest}`);
+    if (distTags.latest && /-(?:beta|preview)\./.test(cleanVersion(distTags.latest)) && !options.allowPrestablePrereleaseLatest) {
+      errors.push(`latest dist-tag must not point at prerelease version ${distTags.latest}`);
     }
   }
 
@@ -68,7 +68,7 @@ function validateDistTags(options) {
     channel,
     version,
     dist_tags: distTags,
-    allow_prestable_preview_latest: Boolean(options.allowPrestablePreviewLatest),
+    allow_prestable_prerelease_latest: Boolean(options.allowPrestablePrereleaseLatest),
     status: errors.length ? 'fail' : 'pass',
     errors
   };
@@ -82,7 +82,7 @@ function main() {
     version: args.version,
     channel: args.channel,
     distTags,
-    allowPrestablePreviewLatest: Boolean(args.allowPrestablePreviewLatest)
+    allowPrestablePrereleaseLatest: Boolean(args.allowPrestablePrereleaseLatest)
   });
   if (args.json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

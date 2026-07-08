@@ -143,5 +143,3 @@ The runtime-interception foundation now exists in Rust:
 - `tfy-runtime` owns versioned runtime envelopes, adapter capabilities, negotiation, provenance, validation status, gateway events, and state projection.
 - CLI gateway surfaces expose Tool, Shell, Context, Output preview/validate plus proof-gated single-file selected-scope apply, and State ledger/projection paths.
 - Local shell/tool wrapping can be configured by an agent runtime to route command execution through TFY.
-
-Product status remains honest: this is not yet a Codex/MCP/provider automatic hook. Those are adapter packages that must pass their own e2e gates before being marked implemented.

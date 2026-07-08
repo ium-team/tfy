@@ -8,7 +8,7 @@ const { spawnSync } = require('child_process');
 const { NPM_PACKAGE_DIR } = require('./release-config');
 const { archiveName, baseVersion, cleanVersion, resolveRustTarget } = require(`../${NPM_PACKAGE_DIR}/scripts/lib/platform`);
 
-const RELEASE_VERSION_RE = /^\d+\.\d+\.\d+(?:-preview\.\d+)?$/;
+const RELEASE_VERSION_RE = /^\d+\.\d+\.\d+(?:-(?:beta|preview)\.\d+)?$/;
 
 function parseArgs(argv) {
   const args = { dist: 'dist' };
@@ -54,7 +54,7 @@ function packageRelease(options) {
   const root = options.root || process.cwd();
   if (options.version == null || String(options.version).trim() === '') throw new Error('version is required');
   const version = cleanVersion(options.version);
-  if (!RELEASE_VERSION_RE.test(version)) throw new Error(`version must match N.N.N or N.N.N-preview.N: ${version}`);
+  if (!RELEASE_VERSION_RE.test(version)) throw new Error(`version must match N.N.N or N.N.N-beta.N: ${version}`);
   const target = options.target || resolveRustTarget(options.rustTarget);
   const binary = path.resolve(root, options.binary || defaultBinaryPath(root, target));
   const dist = path.resolve(root, options.dist || 'dist');

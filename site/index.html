@@ -14,7 +14,7 @@
     <main>
       <section class="hero" aria-labelledby="hero-title">
         <div class="noise" aria-hidden="true"></div>
-        <p class="eyebrow">AI agent I/O middleware · Rust-first · Developer Preview</p>
+        <p class="eyebrow">AI agent I/O middleware · Rust-first · Beta</p>
         <h1 id="hero-title">Stop feeding your agent the same token sludge.</h1>
         <p class="hero-copy">
           TFY gives AI coding agents the smallest safe view of command output, project
@@ -22,7 +22,7 @@
         </p>
         <nav class="actions" aria-label="Primary actions">
           <a class="button primary" href="https://github.com/ium-team/tfy">View on GitHub</a>
-          <a class="button secondary" href="#try">Try the preview</a>
+          <a class="button secondary" href="#try">Try the beta</a>
         </nav>
         <p class="name-note">
           The name is a warning shot at wasted tokens. The product is disciplined about proof.
@@ -94,18 +94,18 @@
       </section>
 
       <section class="panel try" id="try" aria-labelledby="try-title">
-        <p class="section-kicker">Try the Developer Preview</p>
-        <h2 id="try-title">Install the preview, then prove the route.</h2>
+        <p class="section-kicker">Try the Beta</p>
+        <h2 id="try-title">Install the beta, then prove the route.</h2>
         <p>
-          The npm package is a launcher for the <code>tfy</code> command. Preview setup is useful for dogfooding;
+          The npm package is a launcher for the <code>tfy</code> command. Beta setup is useful for dogfooding;
           setup success is not the same thing as measured token savings.
         </p>
-        <pre><code>npm install -g token-fuck-you@preview
+        <pre><code>npm install -g @ium/tfy-cli@beta
 tfy start --agent --host codex
 tfy start --human
 tfy status --json</code></pre>
-        <nav class="actions compact" aria-label="Preview references">
-          <a class="button secondary" href="https://github.com/ium-team/tfy#developer-preview-installation">Read install notes</a>
+        <nav class="actions compact" aria-label="Beta references">
+          <a class="button secondary" href="https://github.com/ium-team/tfy#installation-and-first-start">Read install notes</a>
           <a class="button secondary" href="https://github.com/ium-team/tfy/blob/develop/docs/RELEASE_READINESS.md">Read release gates</a>
         </nav>
       </section>
@@ -123,11 +123,11 @@ tfy status --json</code></pre>
           <tbody>
             <tr>
               <th scope="row">Rust core + CLI</th>
-              <td>Implemented authority path for current preview work.</td>
+              <td>Implemented authority path for current beta work.</td>
             </tr>
             <tr>
-              <th scope="row">MCP / adapter routes</th>
-              <td>Configurable and evidence-gated; host routing must be proven per route.</td>
+              <th scope="row">Adapter routes</th>
+              <td>Configurable and evidence-gated; Codex and Claude Code routing must be proven per route.</td>
             </tr>
             <tr>
               <th scope="row">Named AI hosts</th>
@@ -146,7 +146,7 @@ tfy status --json</code></pre>
         <h2 id="contribute-title">Bring your worst agent logs.</h2>
         <p>
           TFY is for developers who want smaller model-visible context without hiding the facts that keep
-          AI work correct. Read the architecture, run the preview, and help harden the evidence gates.
+          AI work correct. Read the architecture, run the beta, and help harden the evidence gates.
         </p>
         <nav class="actions" aria-label="Project links">
           <a class="button primary" href="https://github.com/ium-team/tfy">GitHub</a>

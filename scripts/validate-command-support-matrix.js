@@ -40,7 +40,6 @@ const required = [
   'redaction_verified',
   'human_auto_wrapped',
   'agent_route_verified',
-  'mcp_route_verified',
   'interactive_risk',
   'claim_status',
   'parity_claim_eligible',
@@ -57,7 +56,6 @@ const bools = new Set([
   'redaction_verified',
   'human_auto_wrapped',
   'agent_route_verified',
-  'mcp_route_verified',
   'parity_claim_eligible',
 ]);
 const families = new Set();

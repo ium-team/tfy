@@ -20,17 +20,6 @@ Rules:
 
 Use Git Flow branch classes:
 
-| Prefix | Base | PR target | Use for | Example |
-|---|---|---|---|---|
-| `feature/` | `develop` | `develop` | Product feature or substantial capability | `feature/mcp-resource-cache` |
-| `bugfix/` | `develop` | `develop` | Non-emergency bug fix for next release | `bugfix/raw-ref-invalid-utf8` |
-| `hotfix/` | `main` | `main` and back-merge to `develop` | Emergency production fix | `hotfix/redaction-leak` |
-| `release/` | `develop` | `main`, then back-merge/tag to `develop` | Release stabilization | `release/0.2.0` |
-| `docs/` | `develop` | `develop` | Documentation-only change | `docs/git-flow-policy` |
-| `refactor/` | `develop` | `develop` | Internal structure change without intended behavior change | `refactor/cli-modules` |
-| `test/` | `develop` | `develop` | Test-only or fixture-only work | `test/mcp-session-scope` |
-| `chore/` | `develop` | `develop` | CI, dependency, repo hygiene | `chore/github-templates` |
-
 Deprecated/exception branch class:
 
 - `codex/*` may exist only for legacy or scratch AI-agent branches. Do not open new long-lived PRs from `codex/*`. Convert real work to the proper Git Flow prefix before review.
@@ -141,7 +130,7 @@ Not-tested: Branch protection settings were not changed through GitHub admin API
 
 ## CI branch-protection target
 
-The CI workflow uses path-aware heavy-job skipping for inert docs and static assets. If branch protection is enabled, require the stable aggregate `ci-required` check rather than optional lane jobs such as `rust`, `claim-docs-check`, or `npm preview smoke (...)`, because those jobs intentionally skip when their lane is not required.
+The CI workflow uses path-aware heavy-job skipping for inert docs and static assets. If branch protection is enabled, require the stable aggregate `ci-required` check rather than optional lane jobs such as `rust`, `claim-docs-check`, or `npm beta smoke (...)`, because those jobs intentionally skip when their lane is not required.
 
 Claim-bearing docs and matrices, such as command-support matrix files and public claim docs, are not treated as inert docs: CI routes them through the lightweight `claim-docs-check` lane (`node scripts/validate-command-support-matrix.js`) without forcing Rust or npm heavy lanes unless another changed path requires them.
 
