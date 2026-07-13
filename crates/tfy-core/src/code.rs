@@ -986,7 +986,7 @@ fn mask_strings_comments(code: &str, lang: LanguageKind) -> String {
             }
             continue;
         }
-        if [b'\'', b'"', b'`'].contains(&bytes[i]) {
+        if b"'\"`".contains(&bytes[i]) {
             let q = bytes[i];
             bytes[i] = b' ';
             i += 1;
